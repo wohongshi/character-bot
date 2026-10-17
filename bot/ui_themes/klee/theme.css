@@ -1,0 +1,14 @@
+/* 糖果爆破：圆润、彩色点点、轻微弹跳 */
+body[data-theme="klee"]{
+  background-image:
+    radial-gradient(circle at 10% 6%, rgba(255,186,164,.30), transparent 42%),
+    radial-gradient(circle at 90% 3%, rgba(148,208,240,.24), transparent 40%),
+    radial-gradient(#f8e6d1 1.2px, transparent 1.2px);
+  background-size:auto,auto,26px 26px;
+}
+body[data-theme="klee"] aside{background:linear-gradient(180deg,#fffaf0,#ffeede)}
+body[data-theme="klee"] nav button.on{background:linear-gradient(135deg,#ff7e60,#e8484f)}
+body[data-theme="klee"] .bub{border-radius:18px;border-top-left-radius:6px}
+body[data-theme="klee"] .msg.me .bub{border-radius:18px;border-top-right-radius:6px}
+body[data-theme="klee"] .card,body[data-theme="klee"] .charitem{border-radius:20px}
+body[data-theme="klee"] h2.page{letter-spacing:.5px}

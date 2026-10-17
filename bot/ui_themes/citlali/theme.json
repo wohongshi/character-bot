@@ -1,0 +1,23 @@
+{
+  "id": "citlali",
+  "name": "烟谜 · 夜雾",
+  "version": "1.0",
+  "tokens": {
+    "--bg": "#eef4f5",
+    "--paper": "rgba(255,255,255,.72)",
+    "--ink": "#23343a",
+    "--dim": "#6d858c",
+    "--line": "#cfe0e2",
+    "--red": "#3d7683",
+    "--red-deep": "#2b5c68",
+    "--red-soft": "#e2f1f2",
+    "--gold": "#c9a86a",
+    "--gold-soft": "#f6eeda",
+    "--sky": "#7fb3c4",
+    "--sky-soft": "#e9f4f7",
+    "--green": "#6f9a8d",
+    "--green-soft": "#e8f2ef",
+    "--shadow": "0 8px 28px rgba(45,90,100,.12)",
+    "--font-cute": "\"Noto Serif CJK SC\",\"Songti SC\",serif"
+  }
+}

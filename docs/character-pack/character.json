@@ -1,0 +1,12 @@
+{
+  "id": "example",
+  "name": "示例角色",
+  "en": "Example",
+  "emoji": "🌟",
+  "tagline": "一句话介绍这个角色",
+  "color": "#e8484f",
+  "color2": "#ffe3d6",
+  "greeting": "你好呀，我是示例角色。",
+  "hero_note": "这个角色的一套 SOUL、知识库、主题与插件都装在这个包里。",
+  "chips": ["介绍一下你自己", "陪我聊会儿"]
+}

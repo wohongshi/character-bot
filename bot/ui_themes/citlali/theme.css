@@ -1,0 +1,21 @@
+/* 烟谜：玻璃卡、雾面、星点、慢呼吸 */
+body[data-theme="citlali"]{
+  background-image:
+    radial-gradient(1.4px 1.4px at 18% 30%, rgba(61,118,131,.35), transparent 60%),
+    radial-gradient(1.2px 1.2px at 72% 18%, rgba(61,118,131,.28), transparent 60%),
+    radial-gradient(1.6px 1.6px at 84% 62%, rgba(120,150,160,.30), transparent 60%),
+    linear-gradient(180deg,#eef5f6,#e6eff1);
+  background-size:auto,auto,auto,100% 100%;
+}
+body[data-theme="citlali"] .card,body[data-theme="citlali"] .charitem{
+  background:rgba(255,255,255,.72);backdrop-filter:blur(10px);
+  border-width:1px;border-radius:22px}
+body[data-theme="citlali"] aside{background:linear-gradient(180deg,rgba(255,255,255,.55),rgba(214,232,234,.65));
+  border-right:1px solid #cfe0e2}
+body[data-theme="citlali"] nav button.on{background:linear-gradient(135deg,#4f8b98,#2b5c68);
+  box-shadow:0 6px 20px rgba(45,90,100,.28)}
+body[data-theme="citlali"] .bub{border-width:1px;border-radius:24px;border-top-left-radius:8px;
+  background:rgba(255,255,255,.82);backdrop-filter:blur(8px)}
+body[data-theme="citlali"] .msg.me .bub{border-radius:24px;border-top-right-radius:8px}
+body[data-theme="citlali"] h2.page{font-weight:300;letter-spacing:3px}
+body[data-theme="citlali"] .btn{border-width:1px}

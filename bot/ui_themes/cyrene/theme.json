@@ -1,0 +1,23 @@
+{
+  "id": "cyrene",
+  "name": "记忆 · 书页",
+  "version": "1.0",
+  "tokens": {
+    "--bg": "#f6f2f9",
+    "--paper": "#fffdfb",
+    "--ink": "#3b3343",
+    "--dim": "#8a7f96",
+    "--line": "#e7ddcf",
+    "--red": "#7b5fa8",
+    "--red-deep": "#5f4689",
+    "--red-soft": "#efe7fb",
+    "--gold": "#c2a86b",
+    "--gold-soft": "#f7f1e1",
+    "--sky": "#8aa6c9",
+    "--sky-soft": "#eef3fa",
+    "--green": "#7d9a78",
+    "--green-soft": "#eff4ec",
+    "--shadow": "0 6px 22px rgba(95,70,137,.10)",
+    "--font-cute": "\"Noto Serif CJK SC\",\"Songti SC\",serif"
+  }
+}

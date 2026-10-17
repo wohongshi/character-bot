@@ -1,0 +1,32 @@
+# 运行态：聊天记录、QQ 号、token、模型配置、缓存 —— 绝不入库
+state/
+bot/features/state/
+bot/features/cards/
+bot/features/__pycache__/
+bot/features/.reload
+
+# 密钥
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Go 边缘层构建产物
+edge/bin/
+
+# 构建/日志/截图
+.buildlogs/
+logs/
+*.log
+shots/
+*.tmp
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,3095 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" id="themeColor" content="#ffefdd">
+<title>Character Bot</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/img/favicon-192.png">
+<link rel="apple-touch-icon" href="/static/img/favicon-180.png">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Character Bot">
+<link rel="preload" href="/static/fonts/ZCOOLKuaiLe-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<script>
+(function(){
+  try{
+    var s = localStorage.getItem("ks_theme");
+    var d = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = (s === "light" || s === "dark") ? s : (d ? "dark" : "light");
+  }catch(e){ document.documentElement.dataset.theme = "light"; }
+})();
+</script>
+<style>
+/* ============ 字体 ============ */
+@font-face{
+  font-family:"ZCOOL KuaiLe";
+  src:url("/static/fonts/ZCOOLKuaiLe-Regular.ttf") format("truetype");
+  font-display:swap;
+}
+/* ============ 主题 ============ */
+:root{
+  --bg:#fff3e2; --paper:#fffdf6; --ink:#4a342a; --dim:#94745a; --line:#f2dcc4;
+  --red:#e8484f; --red-deep:#c93a45; --red-soft:#ffe9e6;
+  --gold:#f2b23e; --gold-soft:#fff3d6;
+  --sky:#6fb9e4; --sky-soft:#e8f5fc;
+  --green:#7aab5e; --green-soft:#eef7e8;
+  --shadow:0 4px 14px rgba(190,120,80,.14);
+  --font-cute:"ZCOOL KuaiLe","PingFang SC","HarmonyOS Sans SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+  --font-body:-apple-system,"PingFang SC","HarmonyOS Sans SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+:root{color-scheme:light dark}
+html,body{height:100%}
+body{
+  color:var(--ink);font:14px/1.65 var(--font-body);background:var(--bg);
+  background-image:
+    radial-gradient(circle at 10% 6%, rgba(255,186,164,.24), transparent 42%),
+    radial-gradient(circle at 90% 3%, rgba(148,208,240,.20), transparent 40%),
+    radial-gradient(#f8e6d1 1.2px, transparent 1.2px);
+  background-size:auto, auto, 26px 26px;
+  background-attachment:fixed;
+}
+/* 角色配色由主题插件下发（/api/theme.css），这里不再写死 */
+.charava{flex:none;width:46px;height:46px;border-radius:16px;display:grid;place-items:center;
+  font-size:22px;color:#fff;box-shadow:0 4px 10px rgba(120,80,60,.22);line-height:1}
+.charava.sm{width:38px;height:38px;border-radius:13px;font-size:18px}
+.brand .charava{width:42px;height:42px;border-radius:14px;font-size:21px}
+.chargrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(216px,1fr));gap:12px}
+.charitem{background:var(--paper);border:2px solid var(--line);border-radius:18px;padding:14px;
+  cursor:pointer;transition:transform .15s,border-color .15s,box-shadow .15s;position:relative}
+.charitem:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
+.charitem.on{border-color:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+.charitem.active{background:linear-gradient(180deg,var(--paper),var(--red-soft))}
+.charitem .nm{font-family:var(--font-cute);font-size:17px;margin-top:8px}
+.charitem .en{font-size:11px;color:var(--dim);letter-spacing:.5px}
+.charitem .tagline{font-size:12px;color:var(--dim);margin-top:4px;line-height:1.5;min-height:34px}
+.charitem .meta2{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--dim)}
+.charbadge{position:absolute;top:12px;right:12px;font-size:11px;padding:2px 8px;border-radius:999px;
+  background:var(--red);color:#fff;font-family:var(--font-cute)}
+.charbadge.off{background:#e9dccd;color:#8a6f58}
+.swatches{display:flex;gap:4px;align-items:center}
+.sw{width:18px;height:18px;border-radius:5px;border:1px solid rgba(0,0,0,.08)}
+.themegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.themecard{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.themecard .nm{font-family:var(--font-cute);font-size:14px}
+.docbox{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px 20px;
+  font-size:13.5px;line-height:1.8;max-height:70vh;overflow:auto}
+.docbox h1{font-family:var(--font-cute);font-size:20px;color:var(--red-deep);margin:6px 0 10px}
+.docbox h2{font-family:var(--font-cute);font-size:16px;color:var(--red-deep);margin:18px 0 6px;
+  padding-bottom:4px;border-bottom:1px dashed var(--line)}
+.docbox h3{font-size:14px;margin:14px 0 4px}
+.docbox p{margin:6px 0;color:var(--ink)}
+.docbox ul{margin:6px 0 6px 20px}
+.docbox li{margin:2px 0}
+.docbox code{background:var(--red-soft);padding:1px 5px;border-radius:5px;font-size:12px}
+.docbox pre{background:#2e2721;color:#f4e8d8;border-radius:10px;padding:10px 12px;overflow:auto;
+  font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;margin:8px 0}
+.docbox pre code{background:none;padding:0;color:inherit;font-size:12px}
+.docbox table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12.5px}
+.docbox th,.docbox td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+.docbox th{background:var(--red-soft);color:var(--red-deep);font-weight:600}
+.docbox tr:nth-child(even) td{background:rgba(0,0,0,.015)}
+.charsoul{width:100%;min-height:320px;font:13px/1.7 var(--font-body);border:2px solid var(--line);
+  border-radius:14px;padding:12px;background:#fffdf8}
+/* 右下角暖光 */
+body::after{
+  content:"";position:fixed;right:-140px;bottom:-160px;width:560px;height:560px;border-radius:50%;
+  background:radial-gradient(circle, rgba(255,204,176,.55) 0%, rgba(255,204,176,0) 68%);
+  pointer-events:none;z-index:0;
+}
+::selection{background:#ffd6cf;color:var(--red-deep)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#f0cdb0;border-radius:99px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#e7b28c;background-clip:content-box}
+#app{display:flex;height:100vh;max-width:1200px;margin:0 auto;position:relative;z-index:1}
+/* ============ 侧边栏 ============ */
+aside{width:214px;flex:none;background:linear-gradient(180deg,#fffaf0,#ffeede);
+  border-right:2px solid var(--line);display:flex;flex-direction:column;padding:16px 12px 10px;gap:4px}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 6px 14px;border-bottom:2px dashed #f3ddc2;margin-bottom:10px}
+.brand img{width:52px;height:52px;border-radius:50%;border:3px solid #fff;background:#fff;
+  box-shadow:var(--shadow);transition:transform .2s}
+.brand:hover img{transform:translateY(-3px) rotate(-5deg)}
+.bt{font-family:var(--font-cute);font-size:19px;color:var(--red);letter-spacing:1px;line-height:1.2}
+.bs{font-size:9.5px;color:var(--dim);letter-spacing:2.5px;margin-top:2px}
+.navgroup{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+.navlabel{font-size:9.5px;letter-spacing:1.6px;color:var(--ink-soft);padding:2px 12px 3px;opacity:.75}
+nav button kbd{margin-left:auto;font-size:9px;color:var(--ink-soft);background:rgba(255,255,255,.6);
+  border:1px solid var(--glass-line);border-radius:5px;padding:0 4px;line-height:14px}
+nav button.on kbd{color:#fff;background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.35)}
+.cmdkbtn{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:6px;
+  border:1px dashed color-mix(in srgb,var(--ink) 18%,transparent);background:rgba(255,255,255,.5);
+  border-radius:12px;padding:8px 10px;font-size:12px;color:var(--ink-soft);cursor:pointer}
+.cmdkbtn:hover{background:#fff;color:var(--ink)}
+.navgroup .navlabel:first-child{margin-top:0}
+nav button{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;
+  color:var(--ink);font-family:var(--font-cute);font-size:14.5px;padding:10px 13px;border-radius:14px;
+  cursor:pointer;text-align:left;transition:transform .15s,background .15s}
+nav button:hover{background:#fff;transform:translateX(3px)}
+nav button.on{background:linear-gradient(135deg,#ff7e60,#e8484f);color:#fff;
+  box-shadow:0 4px 12px rgba(232,72,79,.35);transform:translateX(2px)}
+.sidefoot{margin-top:auto;text-align:center;font-size:11.5px;color:#8a6a50;line-height:1.55}
+.sidefoot .peek{width:96px;display:block;margin:4px auto 2px;opacity:.92;
+  filter:drop-shadow(0 6px 10px rgba(210,130,90,.26))}
+#app:has(.hero) .sidefoot .peek{display:none}
+/* ============ 主区 ============ */
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 20px;
+  border-bottom:2px solid var(--line);background:#fffaf0d9;backdrop-filter:blur(6px)}
+.pill{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-cute);font-size:12px;
+  background:#fff;border:2px solid var(--line);border-radius:999px;padding:3px 13px;color:var(--dim)}
+.pill b{color:var(--ink);font-weight:400}
+.dot{width:9px;height:9px;border-radius:50%;background:#d9c3aa;box-shadow:0 0 0 3px #f4e6d4}
+.pill.ok{border-color:#cde7bd;background:#f6fcf1}
+.pill.ok .dot{background:var(--green);box-shadow:0 0 0 3px #e2f2d8}
+.pill.bad{border-color:#f2bcb6;background:#fff6f5}
+.pill.bad .dot{background:#e05252;box-shadow:0 0 0 3px #fadcd9}
+.pill.wait{border-color:#f0d9a8;background:#fffaef}
+.pill.wait .dot{background:var(--gold);box-shadow:0 0 0 3px #f8ecc9}
+.spacer{flex:1}
+.content{flex:1;overflow:auto;padding:18px 20px 14px;position:relative}
+h2.page{font-family:var(--font-cute);font-size:18px;font-weight:400;color:var(--red-deep);margin-bottom:4px}
+p.tip{font-size:12px;color:var(--dim);margin-bottom:14px}
+p.tip code{background:#fff;border:1px solid var(--line);border-radius:6px;padding:0 5px;font-size:11px}
+.kv{font-size:12px;color:var(--dim);margin-top:5px}
+.kv b{color:var(--ink)}
+/* ============ 按钮 ============ */
+button.btn{font-family:var(--font-cute);background:#fff;border:2px solid var(--line);border-radius:12px;
+  padding:6px 15px;font-size:13px;cursor:pointer;color:var(--ink);
+  box-shadow:0 3px 0 rgba(196,138,96,.16);transition:transform .12s,box-shadow .12s,border-color .12s}
+button.btn:hover{transform:translateY(-1px);box-shadow:0 5px 0 rgba(196,138,96,.18);border-color:#eec9a4}
+button.btn:active{transform:translateY(1px);box-shadow:0 2px 0 rgba(196,138,96,.18)}
+button.primary{background:linear-gradient(135deg,#ff7a5c,#e8484f);border-color:#d43c46;color:#fff;
+  text-shadow:0 1px 0 rgba(150,40,40,.22)}
+button.primary:hover{filter:brightness(1.05);color:#fff}
+button.tiny{padding:3px 10px;font-size:12px;border-radius:10px;box-shadow:none}
+button.tiny:hover{transform:none;box-shadow:none}
+button:disabled{opacity:.5;pointer-events:none}
+button.btn.tabon{background:var(--red-soft);border-color:#f0a99e;color:var(--red-deep);box-shadow:none}
+/* ============ 对话 ============ */
+#chatWrap{display:flex;flex-direction:column;height:100%}
+.chatbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.chatbar select{font:inherit;font-family:var(--font-cute);padding:5px 11px;border-radius:12px;
+  border:2px solid var(--line);background:#fff;color:var(--ink)}
+#msgs{flex:1;overflow:auto;padding:6px 2px;display:flex;flex-direction:column;gap:14px}
+.msg{display:flex;gap:10px;max-width:min(86%,640px);align-items:flex-start}
+.msg.me{align-self:flex-end;flex-direction:row-reverse}
+.ava{flex:none;width:38px;height:38px;border-radius:50%;overflow:hidden;border:2.5px solid #fff;
+  box-shadow:0 3px 8px rgba(200,120,80,.28);background:var(--red-soft);
+  display:flex;align-items:center;justify-content:center}
+.ava img{width:100%;height:100%;display:block;object-fit:cover}
+.msg.me .ava{background:linear-gradient(135deg,#f09a7a,#d96a55);color:#fff;font-size:12px;font-weight:700}
+.msg > div{display:flex;flex-direction:column;align-items:flex-start}
+.msg.me > div{align-items:flex-end}
+.bub{position:relative;background:#fffef8;border:2px solid var(--line);border-radius:16px;border-top-left-radius:5px;
+  padding:10px 14px;box-shadow:var(--shadow);white-space:pre-wrap;word-break:break-word;font-size:14.5px}
+.bub::before{content:"";position:absolute;left:-8px;top:15px;width:11px;height:11px;
+  background:inherit;border-left:2px solid var(--line);border-bottom:2px solid var(--line);transform:rotate(45deg)}
+.msg.me .bub::before{left:auto;right:-8px;border-left:0;border-bottom:0;
+  border-right:2px solid #f2bfb4;border-top:2px solid #f2bfb4}
+.msg.me .bub{background:linear-gradient(180deg,#ffece5,#ffdcd0);border-color:#f2bfb4;
+  border-radius:16px;border-top-right-radius:5px}
+.meta{font-size:11px;color:var(--dim);margin-top:5px}
+.msg.me .meta{text-align:right}
+.face{font-size:16px;vertical-align:-2px;margin:0 1px}
+.face.chip{font-size:11px;background:var(--gold-soft);border:1px solid #f0dcae;border-radius:6px;
+  padding:0 5px;vertical-align:1px;color:#8a6a1f}
+.typing .bub{color:#b98f6b}
+.typing .ava img{animation:run .8s ease-in-out infinite}
+.dots::after{content:"…";animation:dots 1.2s steps(4) infinite}
+/* 空状态：立绘 + 搭话 */
+.hero{margin:auto;display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center;padding:8px}
+.hero img{width:clamp(150px,30vh,235px);border-radius:26px;filter:drop-shadow(0 12px 20px rgba(215,120,90,.30));
+  animation:bob 3.4s ease-in-out infinite}
+.hbub{position:relative;background:#fff;border:2px solid var(--line);border-radius:20px;
+  border-bottom-left-radius:6px;padding:16px 20px;font-family:var(--font-cute);font-size:16px;
+  color:var(--red-deep);box-shadow:var(--shadow);max-width:330px;transform:rotate(-1.5deg)}
+.hbub small{display:block;font-family:var(--font-body);font-weight:400;color:var(--dim);
+  font-size:12px;margin-top:8px;line-height:1.7}
+#chatInput{display:flex;gap:10px;margin-top:12px;align-items:flex-end}
+#chatInput textarea{flex:1;resize:none;font:inherit;border:2px solid var(--line);border-radius:18px;
+  padding:11px 15px;min-height:48px;max-height:140px;background:#fff;box-shadow:var(--shadow);
+  transition:border-color .15s,box-shadow .15s}
+#chatInput textarea:focus{outline:none;border-color:#f3b0a5;box-shadow:0 0 0 4px rgba(232,72,79,.12)}
+#sendBtn{font-size:15px;padding:10px 24px;border-radius:999px;min-height:48px}
+.hintline{font-size:11px;color:var(--dim);text-align:right;margin-top:6px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.chips button{background:#fffaf0;border:2px solid #f3d9bd;color:#8d6a4a;border-radius:999px;
+  padding:4px 13px;font-size:12px;cursor:pointer;font-family:var(--font-cute);transition:all .15s}
+.chips button:hover{color:var(--red);border-color:#f0a99e;background:var(--red-soft);
+  transform:rotate(-1deg) translateY(-1px)}
+/* ============ 通用卡 ============ */
+.card{background:var(--paper);border:2px solid var(--line);border-radius:18px;padding:14px 18px;
+  box-shadow:var(--shadow);margin-bottom:16px}
+.card h3{font-family:var(--font-cute);font-size:15px;font-weight:400;margin-bottom:10px;color:var(--red-deep)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.stat{background:#fff;border:2px solid var(--line);border-radius:14px;padding:9px 13px}
+.stat b{display:block;font-family:var(--font-cute);font-size:20px;color:var(--red);font-weight:400}
+.stat span{font-size:11px;color:var(--dim)}
+.stat:nth-child(2) b{color:#4d93c4}
+.stat:nth-child(3) b{color:#c98d1e}
+textarea.code{width:100%;min-height:380px;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;
+  border:2px solid var(--line);border-radius:14px;padding:12px;background:#fffcf3;color:var(--ink)}
+textarea.code:focus{outline:none;border-color:#f3b0a5}
+label.f{font-family:var(--font-cute);font-size:13px;color:var(--dim);display:block;margin:10px 0 4px}
+input[type=text],input[type=number],textarea,select{font:inherit;border:2px solid var(--line);border-radius:12px;font-family:var(--font-body);background:#fff;
+  padding:6px 11px;background:#fff;color:var(--ink)}
+input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{outline:none;border-color:#f3b0a5}
+input[type=checkbox]{accent-color:var(--red);width:15px;height:15px}
+.check{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ink)}
+/* 人格页：官方介绍卡 */
+.posterRow{display:flex;gap:20px;align-items:center}
+.posterRow img{width:102px;border-radius:14px;border:3px solid #fff;
+  box-shadow:0 8px 20px rgba(190,110,80,.30);transform:rotate(-2deg);transition:transform .25s}
+.posterRow img:hover{transform:rotate(0deg) scale(1.03)}
+.pcopy{font-size:12px;color:var(--dim);line-height:1.9}
+.pcopy b{color:var(--red-deep);font-family:var(--font-cute);font-size:15px;font-weight:400}
+.pcopy .hint{display:block;margin-top:6px;font-size:11.5px}
+/* ============ 插件 ============ */
+.plgrid{display:grid;grid-template-columns:250px 1fr;gap:16px}
+/* 工坊工作台：代码区撑满、干跑台常驻可见 */
+.plview{display:flex;flex-direction:column;overflow:hidden}
+.plview .plgrid{display:grid;grid-template-columns:250px 1fr;gap:16px;flex:1;min-height:0}
+.plcolL{display:flex;flex-direction:column;min-height:0}
+.plcolL .pllist{overflow:auto;min-height:0}
+.plcolR{display:flex;flex-direction:column;min-height:0;overflow:auto}
+.plcolR textarea.code{flex:1;min-height:110px}
+.plcolR .card.dry{margin:12px 0 0}
+.pllist{background:#fff;border:2px solid var(--line);border-radius:16px;overflow:hidden;height:fit-content}
+.pllist button{display:flex;align-items:center;gap:7px;width:100%;text-align:left;border:0;
+  background:transparent;padding:10px 13px;font-size:13px;cursor:pointer;
+  border-bottom:2px dashed #f6ead8;color:var(--ink);transition:background .12s}
+.pllist button:last-child{border-bottom:0}
+.pllist button::before{content:"✦";color:#f2c78e;font-size:11px}
+.pllist button:hover{background:#fff9ee}
+.pllist button.on{background:var(--gold-soft);color:#9a6d15;font-weight:700}
+.pllist button.on::before{color:var(--gold)}
+.badge{font-size:10.5px;border-radius:99px;padding:0 8px;margin-left:auto}
+.badge.on{background:var(--green-soft);color:#487a2e}
+.badge.off{background:#f8e7e2;color:#b25a3c}
+.result{background:#fffbf0;border:2px dashed #eed7b4;border-radius:16px;padding:12px 14px;margin-top:12px;font-size:13px;max-height:200px;overflow:auto}
+.route{font-family:var(--font-cute);font-size:15px}
+.route.agent{color:#55953a}
+.route.stop{color:var(--red)}
+.say{display:flex;gap:9px;align-items:flex-start;margin-top:7px}
+.ava.sm{width:28px;height:28px;border-width:2px}
+/* ============ 知识库 ============ */
+.kbhit{border:2px solid var(--line);border-radius:14px;padding:10px 12px;margin-bottom:8px;background:#fff}
+.kbh-h{display:flex;gap:8px;align-items:center;margin-bottom:5px;font-size:11.5px;color:var(--dim);flex-wrap:wrap}
+.kbh-t{font-weight:600;color:var(--ink)}
+.kbh-s{margin-left:auto}
+.kbh-x{font-size:13px;color:var(--ink);white-space:pre-wrap}
+.kbctx{background:#fffaf0;border:2px dashed #eed7b4;border-radius:12px;padding:10px;
+  font-size:12px;white-space:pre-wrap;word-break:break-all}
+/* ============ 消息流 ============ */
+.feedbar{align-items:center}
+.feedbar select,.feedbar .btn{height:38px;box-sizing:border-box;display:inline-flex;align-items:center}
+.feed{display:flex;flex-direction:column;gap:10px}
+.fitem{display:flex;gap:12px;background:#fff;border:2px solid var(--line);border-radius:16px;
+  padding:10px 14px;box-shadow:var(--shadow)}
+.fitem .who{flex:none;width:126px;font-size:11.5px;color:var(--dim);line-height:1.5}
+.fitem .txt{flex:1;font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+.fitem.assistant{background:#fffaf2}
+.tag{font-size:10.5px;border-radius:99px;padding:1px 8px;background:var(--red-soft);
+  color:#b8433c;margin-right:4px;display:inline-block}
+.fitem.assistant .tag{background:var(--green-soft);color:#4c7a34}
+/* ============ 动效 ============ */
+@keyframes fadein{from{opacity:.3}to{opacity:1}}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+@keyframes run{0%,100%{transform:translateY(0)}40%{transform:translateY(-5px) rotate(-5deg)}70%{transform:translateY(-2px) rotate(3deg)}}
+@keyframes tw{0%,100%{opacity:.5;transform:scale(.9)}50%{opacity:1;transform:scale(1.15)}}
+@keyframes dots{0%{content:""}25%{content:"·"}50%{content:"··"}75%{content:"···"}}
+#view.fadein{animation:fadein .18s ease}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* ============ 移动端 ============ */
+@media(max-width:760px){
+  #app{flex-direction:column}
+  aside{width:100%;flex-direction:row;align-items:center;padding:8px 10px;
+    border-right:0;border-bottom:2px solid var(--line);gap:6px}
+  .brand{border-bottom:0;padding:0;margin:0 4px 0 0;gap:7px}
+  .brand img{width:38px;height:38px;border-width:2px}
+  .bs{display:none}
+  .bt{font-size:15px;white-space:nowrap}
+  nav{display:flex;flex:1;gap:4px;justify-content:flex-start;overflow-x:auto;flex-wrap:nowrap;
+    scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{padding:8px 10px;font-size:13px;justify-content:center;width:auto;flex:none}
+  nav{display:none}
+  nav button.on::after{display:none}
+  .sidefoot{display:none}
+  header{padding:6px 10px;gap:5px}
+  .pill{font-size:11px;padding:2px 9px;gap:5px}
+  .content{padding:12px 12px calc(16px + env(safe-area-inset-bottom))}
+  .hintline{display:none}
+  .msg{max-width:96%}
+  .fitem{flex-direction:column;gap:4px}
+  .fitem .who{width:auto}
+  .posterRow{flex-direction:row;align-items:center;gap:12px}
+  .posterRow img{width:86px;flex:none;border-width:2px}
+  .pcopy{flex:1;font-size:11.5px;line-height:1.7}
+  .hero{flex-direction:column;text-align:center}
+  .hbub{transform:rotate(0deg)}
+}
+@media(max-width:520px){
+  .bt{display:block;font-size:10.5px;line-height:1.2;max-width:104px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+}
+
+/* ============ 运维页 ============ */
+.opsgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+.opsline{font-size:12.5px;color:var(--dim);line-height:1.95}
+.opsline b{color:var(--ink)}
+.cfgform{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px 16px}
+.cfgrow label{font-size:12px;color:var(--dim);display:block;margin-bottom:3px}
+.cfgrow .hint{font-size:10.5px;color:#b39079}
+.cfgrow input[type=text],.cfgrow select{width:100%;box-sizing:border-box}
+.logbox{background:#2e2721;color:#f4e8d8;font:11.5px/1.6 ui-monospace,Menlo,Consolas,monospace;
+  border-radius:12px;padding:12px;max-height:430px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:4px}
+.plsgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px 16px}
+.plsrow{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);
+  padding:3px 0;border-bottom:1px dashed #f6e5d2;min-width:0}
+.plsrow .nm{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;min-width:104px;color:var(--ink)}
+.plsrow .cnt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plsrow .dot{width:7px;height:7px;border-radius:50%;flex:none}
+.plsrow .dot.yes{background:#8ec98f;box-shadow:0 0 0 2px #eaf6ea}
+.plsrow .dot.no{background:#cbb8a8}
+.logbox .le{color:#ffa48f}
+.logbox .lw{color:#ffd28a}
+/* ---- 看板（📊）：柱状图与排行，类名统一 bd- 前缀，避免撞上别处样式 ---- */
+.bd-chart{display:flex;align-items:flex-end;gap:5px;height:120px;padding:6px 2px 0;margin-top:8px}
+.bd-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.bd-bar{width:100%;max-width:34px;border-radius:6px 6px 2px 2px;
+  background:linear-gradient(180deg,#ffb08a,#e8484f);box-shadow:0 2px 6px rgba(232,72,79,.22)}
+.bd-bar.zero{background:#efdfd2;box-shadow:none}
+.bd-lb{font-size:9.5px;color:var(--dim);margin-top:4px;white-space:nowrap;transform-origin:center}
+.bd-kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+.bd-kpi .b{flex:1;min-width:112px;background:#fff;border:1px solid #f2ded0;border-radius:12px;padding:10px 12px}
+.bd-kpi .b b{display:block;font-size:21px;color:var(--red-deep);line-height:1.25}
+.bd-kpi .b span{font-size:11.5px;color:var(--dim)}
+.bd-row{display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px dashed #f6e5d2;flex-wrap:wrap}
+.bd-mk{flex:none;width:28px;text-align:center}
+.bd-nm{flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-pg{flex:1.2;min-width:110px;height:8px;background:#f4e6da;border-radius:6px;overflow:hidden}
+.bd-pg i{display:block;height:100%;background:linear-gradient(90deg,#ffb08a,#e8484f)}
+.bd-tag{flex:none;font-size:11px;color:var(--dim)}
+</style>
+<link id="charThemeCss" rel="stylesheet" href="/api/theme.css?character=klee">
+<style id="animeLayer">
+/* ===== Character Bot · Anime Layer =====
+   这一层只做视觉：所有取色都走角色主题变量（--red/--paper/--line），
+   所以换角色/换主题仍然整套跟着变；自定义项用 --ui-* 变量覆盖。 */
+:root{
+  --ui-accent:var(--red); --ui-accent2:var(--gold);
+  --ui-radius:20px; --ui-scale:1;
+  --glass:rgba(255,255,255,.58);
+  --glass-line:rgba(255,255,255,.72);
+  --ink-soft:rgba(74,52,42,.62);
+  --comic-shadow:0 10px 30px rgba(120,70,50,.12), 0 2px 0 rgba(255,255,255,.6) inset;
+}
+html{font-size:calc(16px * var(--ui-scale))}
+body{
+  background:
+    radial-gradient(1100px 620px at 12% -10%, color-mix(in srgb, var(--ui-accent) 18%, transparent), transparent 62%),
+    radial-gradient(900px 600px at 105% 8%, color-mix(in srgb, var(--ui-accent2) 26%, transparent), transparent 60%),
+    radial-gradient(800px 700px at 50% 115%, color-mix(in srgb, var(--sky) 20%, transparent), transparent 65%),
+    var(--bg);
+  background-attachment:fixed;
+}
+body[data-bg="sakura"]{
+  background:
+    radial-gradient(900px 520px at 85% -8%, color-mix(in srgb, var(--ui-accent2) 40%, transparent), transparent 60%),
+    radial-gradient(700px 520px at 0% 30%, color-mix(in srgb, var(--ui-accent) 16%, transparent), transparent 62%),
+    linear-gradient(160deg, #fff7fb, var(--bg) 55%, #fff1f6);
+}
+body[data-bg="grid"]{
+  background-color:var(--bg);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--ink) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--ink) 6%, transparent) 1px, transparent 1px),
+    radial-gradient(900px 600px at 80% -10%, color-mix(in srgb, var(--ui-accent) 14%, transparent), transparent 60%);
+  background-size:26px 26px, 26px 26px, auto;
+}
+body[data-bg="plain"]{background:var(--bg)}
+/* 飘落花瓣 / 星屑：纯 CSS，不占交互层 */
+body[data-effects="true"]::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.55;
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(255,255,255,.9) 0 1.6px, transparent 2px),
+    radial-gradient(circle at 78% 18%, color-mix(in srgb, var(--ui-accent) 45%, white) 0 2px, transparent 2.6px),
+    radial-gradient(circle at 42% 64%, rgba(255,255,255,.8) 0 1.4px, transparent 2px),
+    radial-gradient(circle at 88% 78%, color-mix(in srgb, var(--ui-accent2) 55%, white) 0 2.2px, transparent 2.8px),
+    radial-gradient(circle at 24% 88%, rgba(255,255,255,.7) 0 1.2px, transparent 1.8px);
+  background-size:320px 320px, 460px 460px, 380px 380px, 520px 520px, 280px 280px;
+  animation:drift 26s linear infinite;
+}
+@keyframes drift{from{background-position:0 0,0 0,0 0,0 0,0 0}to{background-position:0 320px,0 460px,0 380px,0 520px,0 280px}}
+#app{position:relative;z-index:1}
+
+/* 侧栏 */
+aside{
+  width:228px;
+  background:linear-gradient(180deg, color-mix(in srgb, var(--paper) 88%, white), color-mix(in srgb, var(--red-soft) 55%, white));
+  border-right:1px solid var(--glass-line);
+  box-shadow:8px 0 40px rgba(140,80,60,.08);
+  backdrop-filter:blur(18px);
+}
+.brand{padding:18px 14px 12px}
+.brand .charava{box-shadow:0 8px 22px color-mix(in srgb, var(--ui-accent) 35%, transparent), 0 0 0 4px rgba(255,255,255,.65)}
+.brand .bt{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:21px;letter-spacing:.5px}
+.brand .bs{font-size:10.5px;letter-spacing:2px;color:var(--ink-soft)}
+nav{gap:4px;padding:6px 10px}
+nav button{
+  border-radius:14px;padding:9px 11px;font-size:13px;color:var(--ink);
+  border:1px solid transparent;
+}
+nav button .t{font-weight:600}
+nav button:hover{background:rgba(255,255,255,.8);transform:translateX(2px)}
+nav button.on{
+  background:linear-gradient(135deg, var(--ui-accent), color-mix(in srgb, var(--ui-accent) 55%, var(--ui-accent2)));
+  color:#fff;box-shadow:0 8px 20px color-mix(in srgb, var(--ui-accent) 32%, transparent), 0 1px 0 rgba(255,255,255,.4) inset;
+  border-color:rgba(255,255,255,.35);
+}
+.sidefoot .peek{border-radius:18px;box-shadow:0 12px 28px rgba(120,60,40,.18)}
+
+/* 顶栏 */
+header#strip{
+  background:color-mix(in srgb, var(--paper) 62%, transparent);
+  backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--glass-line);
+}
+.pill{border-radius:999px;background:rgba(255,255,255,.72);border:1px solid var(--glass-line);box-shadow:0 4px 12px rgba(140,90,60,.06)}
+
+/* 内容与卡片 */
+.content{padding:20px 22px 26px;font-size:calc(13px * var(--ui-scale))}
+h2.page{
+  font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:30px;font-weight:400;letter-spacing:1px;
+  margin-bottom:4px;color:var(--ink);
+  text-shadow:0 2px 0 rgba(255,255,255,.7);
+}
+h2.page::after{content:"";display:block;width:54px;height:4px;border-radius:99px;margin-top:6px;
+  background:linear-gradient(90deg,var(--ui-accent),var(--ui-accent2))}
+.tip{color:var(--ink-soft);font-size:12px;line-height:1.7}
+.card{
+  background:var(--glass);
+  border:1px solid var(--glass-line);
+  border-radius:var(--ui-radius);
+  box-shadow:var(--comic-shadow);
+  backdrop-filter:blur(16px) saturate(120%);
+}
+body[data-card_style="solid"] .card{background:var(--paper);backdrop-filter:none}
+body[data-card_style="outline"] .card{background:transparent;box-shadow:none;border:2px dashed color-mix(in srgb, var(--ink) 22%, transparent)}
+.card h3{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:17px;letter-spacing:.5px}
+body[data-density="compact"] .card{padding:10px 12px}
+body[data-density="wide"] .card{padding:20px 24px}
+
+/* 按钮 */
+.btn{
+  border-radius:999px;border:1px solid var(--glass-line);
+  background:rgba(255,255,255,.82);
+  box-shadow:0 4px 12px rgba(140,90,60,.08), 0 1px 0 rgba(255,255,255,.8) inset;
+  transition:transform .14s ease, box-shadow .14s ease, background .14s ease;
+}
+.btn:hover{transform:translateY(-1px);box-shadow:0 9px 20px rgba(140,90,60,.14)}
+.btn.primary{
+  background:linear-gradient(135deg,var(--ui-accent),color-mix(in srgb,var(--ui-accent) 60%,var(--ui-accent2)));
+  border-color:transparent;color:#fff;font-weight:700;
+  box-shadow:0 10px 24px color-mix(in srgb,var(--ui-accent) 30%,transparent), 0 1px 0 rgba(255,255,255,.35) inset;
+}
+.btn.tabon{background:var(--ui-accent);color:#fff;border-color:transparent}
+.tag{border-radius:999px;border:1px solid color-mix(in srgb,var(--ink) 10%,transparent);background:rgba(255,255,255,.66)}
+
+/* 对话 */
+#chatWrap{display:flex;flex-direction:column;height:100%;min-height:520px;gap:10px}
+.chathero{
+  position:relative;border-radius:calc(var(--ui-radius) + 6px);overflow:hidden;
+  min-height:132px;display:flex;align-items:flex-end;padding:16px 18px;
+  border:1px solid var(--glass-line);box-shadow:var(--comic-shadow);
+  background:linear-gradient(110deg, color-mix(in srgb,var(--ui-accent) 26%,white), color-mix(in srgb,var(--ui-accent2) 30%,white));
+}
+.chathero img.bg{position:absolute;right:14px;top:50%;transform:translateY(-50%);
+  height:78%;width:auto;max-width:38%;object-fit:cover;object-position:50% 22%;
+  border-radius:18px;border:3px solid rgba(255,255,255,.82);
+  box-shadow:0 12px 28px rgba(80,40,30,.24);filter:saturate(1.04)}
+.chathero .scrim{position:absolute;inset:0;background:linear-gradient(90deg, rgba(255,255,255,.86), rgba(255,255,255,.35) 55%, transparent 78%)}
+.chathero .ch{position:relative;z-index:1;display:flex;flex-direction:column;gap:2px}
+.chathero .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:34px;line-height:1.05;color:var(--ink)}
+.chathero .tg{font-size:12px;color:var(--ink-soft);max-width:min(52vw,520px);line-height:1.6}
+.chathero .badges{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.chathero .badges .tag{background:rgba(255,255,255,.78);color:var(--ink);border-color:rgba(255,255,255,.9)}
+.chatbar{align-items:center}
+#msgs{gap:14px;padding:6px 2px 2px}
+.msg .bub{
+  border-radius:18px;border:1px solid var(--glass-line);
+  background:rgba(255,255,255,.86);
+  box-shadow:0 8px 22px rgba(120,70,50,.09);
+  padding:11px 14px;line-height:1.68;
+}
+body[data-bubble="round"] .msg .bub{border-radius:999px;padding:12px 18px}
+body[data-bubble="minimal"] .msg .bub{border-radius:10px;box-shadow:none;background:transparent;border:1px solid color-mix(in srgb,var(--ink) 16%,transparent)}
+.msg .bub::before{display:none}
+body[data-bubble="comic"] .msg .bub::after{
+  content:"";position:absolute;left:-6px;bottom:12px;width:12px;height:12px;
+  background:inherit;border-left:1px solid var(--glass-line);border-bottom:1px solid var(--glass-line);
+  transform:rotate(45deg);border-bottom-left-radius:3px;
+}
+/* 自己的气泡不要尾巴：渐变背景 inherit 到三角上会串色，而且会被「我」头像压住一半 */
+body[data-bubble="comic"] .msg.me .bub::after{display:none}
+.msg.me .bub{
+  background:linear-gradient(135deg,var(--ui-accent),color-mix(in srgb,var(--ui-accent) 55%,var(--ui-accent2)));
+  color:#fff;border-color:transparent;
+  box-shadow:0 10px 24px color-mix(in srgb,var(--ui-accent) 26%,transparent);
+}
+.msg.me .meta{color:rgba(255,255,255,.75)}
+.msg .ava{box-shadow:0 6px 16px rgba(120,70,50,.16)}
+.chips button{
+  background:rgba(255,255,255,.82);border:1px solid var(--glass-line);
+  border-radius:999px;padding:7px 13px;font-size:12px;color:var(--ink);
+  box-shadow:0 4px 12px rgba(140,90,60,.07);
+}
+.chips button:hover{border-color:var(--ui-accent);color:var(--ui-accent);transform:translateY(-1px)}
+.chips button::before{content:"✧ ";color:var(--ui-accent2)}
+#chatInput{background:rgba(255,255,255,.72);border:1px solid var(--glass-line);border-radius:calc(var(--ui-radius) + 4px);
+  box-shadow:var(--comic-shadow);backdrop-filter:blur(12px)}
+#chatBox{background:transparent;border:0;resize:none;max-height:132px;overflow-y:auto}
+
+/* 角色卡：立绘 + 渐变遮罩 */
+.chargrid{grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:16px}
+.charitem{
+  position:relative;overflow:hidden;padding:0;border-radius:calc(var(--ui-radius) + 4px);
+  border:1px solid var(--glass-line);background:var(--paper);min-height:316px;
+  display:flex;flex-direction:column;justify-content:flex-end;
+  box-shadow:var(--comic-shadow);transition:transform .16s ease, box-shadow .16s ease;
+}
+.charitem:hover{transform:translateY(-4px);box-shadow:0 18px 38px rgba(120,70,50,.18)}
+.charitem .artbg{position:absolute;inset:0;background:
+  radial-gradient(120% 80% at 50% 0%, color-mix(in srgb,var(--c2) 75%, white), transparent 70%),
+  linear-gradient(160deg,var(--c2),var(--c1));}
+.charitem .artbg img{width:100%;height:100%;object-fit:cover;object-position:50% 18%;opacity:.92;
+  mix-blend-mode:luminosity;filter:saturate(1.1) contrast(1.02)}
+.charitem .artveil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(16,8,8,.02) 12%,rgba(16,8,8,.18) 40%,rgba(16,8,8,.62) 68%,rgba(16,8,8,.88) 100%)}
+.charitem .artbody{position:relative;z-index:1;padding:14px 15px 15px;color:#fff;text-shadow:0 1px 8px rgba(0,0,0,.35)}
+.charitem .artbody .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:26px;margin:0;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.55)}
+.charitem .artbody .en{color:rgba(255,255,255,.72);font-size:10.5px;letter-spacing:2px}
+.charitem .artbody .tagline{color:rgba(255,255,255,.86);min-height:0;margin-top:3px}
+.charitem .artbody .meta2{color:rgba(255,255,255,.75);font-size:10.5px;gap:8px}
+.charitem .bigemoji{position:absolute;left:14px;top:12px;z-index:1;font-size:40px;filter:drop-shadow(0 6px 14px rgba(0,0,0,.28))}
+.charitem .stars{position:absolute;right:13px;top:14px;z-index:1;color:#ffe9a8;letter-spacing:2px;font-size:12px;text-shadow:0 1px 6px rgba(0,0,0,.35)}
+.charitem.active{box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-accent) 55%,white), 0 18px 38px rgba(120,70,50,.2)}
+.charitem .charbadge{position:absolute;z-index:2;left:12px;top:54px;background:linear-gradient(135deg,var(--ui-accent),var(--ui-accent2));color:#fff;
+  border-radius:999px;padding:2px 9px;font-size:10px;box-shadow:0 4px 12px rgba(0,0,0,.2)}
+
+/* 插件商店 */
+.plugkpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:8px 0 14px}
+.plugkpi .k{background:var(--glass);border:1px solid var(--glass-line);border-radius:calc(var(--ui-radius) - 2px);padding:11px 13px;box-shadow:var(--comic-shadow)}
+.plugkpi .k b{display:block;font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:26px;line-height:1.1;color:var(--ui-accent)}
+.plugkpi .k span{font-size:11px;color:var(--ink-soft)}
+.plugbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.plugbar input{flex:1;min-width:180px;border-radius:999px;border:1px solid var(--glass-line);background:rgba(255,255,255,.82);padding:8px 14px;font-size:13px}
+.plugbar .fbtn{border-radius:999px;padding:6px 12px;font-size:12px;border:1px solid var(--glass-line);background:rgba(255,255,255,.7);cursor:pointer}
+.plugbar .fbtn.on{background:var(--ui-accent);color:#fff;border-color:transparent;font-weight:700}
+.pluggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:12px;margin-bottom:16px}
+.plugcard{
+  position:relative;text-align:left;border:1px solid var(--glass-line);border-radius:calc(var(--ui-radius) + 2px);
+  background:linear-gradient(160deg,rgba(255,255,255,.9),color-mix(in srgb,var(--paper) 82%,white));
+  padding:13px 14px;box-shadow:var(--comic-shadow);cursor:pointer;
+  transition:transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+  display:flex;flex-direction:column;gap:6px;min-height:132px;
+}
+.plugcard:hover{transform:translateY(-2px);box-shadow:0 16px 32px rgba(120,70,50,.16);border-color:color-mix(in srgb,var(--ui-accent) 35%,white)}
+.plugcard.on{border-color:var(--ui-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-accent) 22%,transparent)}
+.plugcard .top{display:flex;align-items:center;gap:8px}
+.plugcard .ico{width:34px;height:34px;border-radius:12px;display:grid;place-items:center;font-size:18px;
+  background:linear-gradient(135deg,color-mix(in srgb,var(--ui-accent) 18%,white),color-mix(in srgb,var(--ui-accent2) 26%,white))}
+.plugcard .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:16px;line-height:1.15}
+.plugcard .sub{font-size:10px;color:var(--ink-soft);letter-spacing:.5px}
+.plugcard .desc{font-size:11.5px;color:var(--ink-soft);line-height:1.55;flex:1}
+.plugcard .foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--ink-soft)}
+.plugcard .st{position:absolute;right:11px;top:11px;width:9px;height:9px;border-radius:99px;background:#d9c9b8;box-shadow:0 0 0 3px rgba(255,255,255,.8)}
+.plugcard .st.on{background:#59b36b;box-shadow:0 0 0 3px rgba(89,179,107,.18)}
+.plugcard .st.err{background:#e05a4f}
+.plugcard .lock{font-size:10px;color:var(--ui-accent);border:1px solid color-mix(in srgb,var(--ui-accent) 30%,transparent);border-radius:999px;padding:1px 7px}
+body[data-card_style="outline"] .plugcard{background:transparent}
+
+details.card>summary{cursor:pointer;font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:17px;color:var(--red-deep);
+  display:flex;align-items:center;gap:8px;list-style:none;padding:2px 0}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"▸";color:var(--ui-accent);font-size:14px;transition:transform .15s}
+details.card[open]>summary::before{content:"▾"}
+details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
+
+#toast{position:fixed;left:50%;bottom:calc(26px + env(safe-area-inset-bottom));transform:translate(-50%,14px);
+  z-index:80;max-width:min(88vw,520px);background:rgba(30,20,18,.92);color:#fff;border-radius:999px;
+  padding:10px 18px;font-size:13px;line-height:1.5;box-shadow:0 14px 34px rgba(0,0,0,.28);
+  opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+
+#bar{position:fixed;left:0;top:0;height:2.5px;width:0;z-index:90;opacity:0;
+  background:linear-gradient(90deg,var(--ui-accent),var(--ui-accent2));
+  transition:width .25s ease,opacity .2s ease;pointer-events:none}
+#bar.on{opacity:1;width:82%}
+#bar.done{opacity:0;width:100%}
+
+.plugcard,.fitem,.charitem,.wcard{content-visibility:auto;contain-intrinsic-size:132px}
+.feed .fitem{contain-intrinsic-size:72px}
+@media(prefers-reduced-motion:reduce){.drawerbox{animation:none}}
+
+/* 命令面板 */
+.cmdk{position:fixed;inset:0;z-index:70;display:none;align-items:flex-start;justify-content:center;
+  padding-top:12vh;background:rgba(20,12,10,.42);backdrop-filter:blur(6px)}
+.cmdk.on{display:flex}
+.cmdkbox{width:min(620px,92vw);background:var(--paper);border:1px solid var(--glass-line);
+  border-radius:20px;box-shadow:0 30px 80px rgba(0,0,0,.35);overflow:hidden}
+.cmdkbox input{width:100%;border:0;border-bottom:1px solid var(--line);padding:16px 18px;font-size:15px;
+  background:transparent;color:var(--ink);outline:none}
+.cmdklist{max-height:52vh;overflow:auto;padding:6px}
+.cmdkitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;cursor:pointer;font-size:13px}
+.cmdkitem .ic{width:26px;text-align:center;font-size:16px}
+.cmdkitem .sub{margin-left:auto;font-size:10.5px;color:var(--ink-soft)}
+.cmdkitem.on,.cmdkitem:hover{background:color-mix(in srgb,var(--ui-accent) 12%,white)}
+.cmdkitem .hl{color:var(--ui-accent);font-weight:700}
+.cmdkempty{padding:18px;text-align:center;color:var(--ink-soft);font-size:12.5px}
+.cmdkfoot{display:flex;gap:10px;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--line);
+  font-size:10.5px;color:var(--ink-soft)}
+.cmdkfoot .touch{display:none}
+@media(max-width:760px){
+  .cmdk{padding-top:8vh}
+  .cmdkfoot .kb{display:none}
+  .cmdkfoot .touch{display:inline}
+  .cmdkbox input{font-size:16px}   /* 防 iOS 聚焦缩放 */
+}
+
+/* 插件详情抽屉 */
+.drawer{position:fixed;inset:0;z-index:65;display:none;background:rgba(20,12,10,.35);backdrop-filter:blur(4px)}
+.drawer.on{display:block}
+.drawerbox{position:absolute;right:0;top:0;bottom:0;width:min(460px,94vw);background:var(--paper);
+  box-shadow:-20px 0 60px rgba(0,0,0,.25);display:flex;flex-direction:column;
+  animation:slidein .18s ease}
+@keyframes slidein{from{transform:translateX(26px);opacity:.4}to{transform:none;opacity:1}}
+.drawerhead{display:flex;align-items:flex-start;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line)}
+.drawerhead .x{margin-left:auto;border:0;background:transparent;font-size:18px;color:var(--ink-soft);cursor:pointer}
+.drawerbody{padding:14px 18px;overflow:auto;font-size:12.5px;line-height:1.7}
+.drawerbody h4{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:15px;color:var(--red-deep);margin:14px 0 6px}
+.drawerbody .cmdrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 10px;
+  align-items:baseline;padding:6px 0;border-bottom:1px dashed var(--line)}
+.drawerbody .cmdrow .h{min-width:0}
+.drawerbody .cmdrow .alias{justify-self:end;text-align:right}
+@media(max-width:760px){
+  .drawerbody .cmdrow{grid-template-columns:auto minmax(0,1fr)}
+  .drawerbody .cmdrow .alias{grid-column:1/-1;justify-self:end}
+}
+.drawerbody .cmdrow code{font-size:12px;color:var(--ui-accent)}
+.drawerbody .cmdrow .h{color:var(--ink-soft);font-size:11.5px}
+.drawerfoot{padding:10px 18px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
+
+/* 更多面板 */
+.sheet{position:fixed;inset:0;z-index:60;background:rgba(20,12,10,.45);backdrop-filter:blur(6px);
+  display:none;align-items:flex-end;justify-content:center}
+.sheet.on{display:flex}
+.sheetbox{width:min(560px,100%);background:var(--paper);border-radius:24px 24px 0 0;padding:14px 16px calc(20px + env(safe-area-inset-bottom));
+  box-shadow:0 -20px 50px rgba(0,0,0,.3)}
+.sheethead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;
+  font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:20px}
+.sheethead .x{border:0;background:transparent;font-size:18px;color:var(--ink-soft);cursor:pointer}
+.sheetgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.sheetgrid button{border:1px solid var(--glass-line);background:rgba(255,255,255,.8);border-radius:16px;
+  padding:14px 6px;display:flex;flex-direction:column;align-items:center;gap:5px;font-size:11.5px;color:var(--ink);cursor:pointer}
+.sheetgrid button b{font-size:21px;line-height:1}
+
+/* 表单 / 自定义 */
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:6px}
+.fld label{font-size:11.5px;color:var(--ink-soft);letter-spacing:.5px}
+.fld input[type=text],.fld select,.fld input[type=number]{
+  border-radius:12px;border:1px solid var(--glass-line);background:rgba(255,255,255,.86);padding:8px 11px;font-size:13px;color:var(--ink)}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button{border-radius:999px;padding:6px 12px;font-size:12px;border:1px solid var(--glass-line);background:rgba(255,255,255,.8);cursor:pointer}
+.seg button.on{background:var(--ui-accent);color:#fff;border-color:transparent;font-weight:700}
+.swatches{display:flex;gap:7px;flex-wrap:wrap}
+.swatch{width:34px;height:34px;border-radius:11px;border:2px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,.12);cursor:pointer}
+.swatch{position:relative;display:grid;place-items:center}
+.swatch.on{outline:3px solid #fff;box-shadow:0 0 0 5px var(--ui-accent),0 6px 14px rgba(0,0,0,.18)}
+.swatch.on::after{content:"✓";color:#fff;font-size:15px;font-weight:800;text-shadow:0 1px 4px rgba(0,0,0,.45)}
+.previewbox{border-radius:calc(var(--ui-radius) + 4px);padding:16px;border:1px solid var(--glass-line);box-shadow:var(--comic-shadow);
+  background:linear-gradient(135deg,color-mix(in srgb,var(--ui-accent) 14%,white),color-mix(in srgb,var(--ui-accent2) 22%,white));}
+.previewbox .bub{max-width:320px}
+.modlist{display:flex;flex-direction:column;gap:7px}
+.modrow{display:flex;align-items:center;gap:9px;border:1px solid var(--glass-line);border-radius:12px;padding:8px 11px;background:rgba(255,255,255,.7)}
+.modrow .nm{flex:1;font-size:12.5px}
+.modrow .mv{border:0;background:rgba(255,255,255,.9);width:30px;height:28px;border-radius:9px;cursor:pointer;
+  font-size:14px;color:var(--ink-soft);padding:0;box-shadow:0 2px 6px rgba(120,70,50,.08)}
+.modrow .mv:hover{color:var(--ui-accent)}
+
+/* 看板模块 */
+.wgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+.wcard{position:relative;overflow:hidden;border-radius:calc(var(--ui-radius) + 2px);border:1px solid var(--glass-line);
+  background:linear-gradient(150deg,rgba(255,255,255,.9),color-mix(in srgb,var(--paper) 78%,white));
+  padding:13px 15px;box-shadow:var(--comic-shadow)}
+.wcard .wt{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:15px;color:var(--ink);display:flex;align-items:center;gap:7px}
+.wcard .wv{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:30px;line-height:1.15;color:var(--ui-accent);margin-top:4px}
+.wcard .ws{font-size:11px;color:var(--ink-soft)}
+.wcard .wl{display:block;margin-top:7px;font-size:11px;color:var(--ui-accent);text-decoration:none;font-weight:700}
+
+/* 移动端底部 dock */
+.dock{display:none}
+@media(max-width:760px){
+  aside{width:100%;border-right:0;box-shadow:none}
+  .brand .bt{font-size:16px}
+  .brand .charava{width:32px;height:32px;font-size:17px}
+  nav{padding-bottom:8px}
+  .content{padding:14px 12px calc(104px + env(safe-area-inset-bottom));min-height:0}
+  #app{height:100dvh;overflow:hidden}
+  main{min-height:0;overflow:hidden}
+  #chatWrap{min-height:0;padding-bottom:0}
+  h2.page{font-size:25px}
+  .chathero{min-height:108px;padding:12px 14px}
+  .chathero img.bg{height:80%;max-width:42%;right:10px;border-width:2px}
+  .chathero .nm{font-size:27px}
+  .chathero .tg{max-width:62vw;font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .msg{max-width:96%}
+  .dock{
+    display:flex;position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:40;
+    background:rgba(255,255,255,.86);backdrop-filter:blur(18px);
+    border:1px solid var(--glass-line);border-radius:22px;
+    box-shadow:0 18px 40px rgba(100,60,40,.22);
+    padding:6px;justify-content:space-around;
+  }
+  .dock button{border:0;background:transparent;display:flex;flex-direction:column;align-items:center;gap:2px;
+    font-size:10.5px;color:var(--ink-soft);padding:6px 10px;border-radius:14px}
+  .dock button b{font-size:17px;line-height:1}
+  .dock button.on{background:color-mix(in srgb,var(--ui-accent) 14%,white);color:var(--ui-accent)}
+}
+@media(prefers-reduced-motion:reduce){body[data-effects="true"]::after{animation:none}}
+
+/* ============ 消息内轻量富文本 ============ */
+.msg .bub code{background:rgba(0,0,0,.07);border-radius:6px;padding:1px 6px;
+  font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
+.msg .bub pre{background:rgba(0,0,0,.07);border-radius:10px;padding:8px 11px;margin:6px 0;
+  overflow:auto;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap}
+.msg .bub i{opacity:.82}
+.msg .bub a{color:var(--ui-accent);text-decoration:underline;word-break:break-all}
+.msg.me .bub code,.msg.me .bub pre{background:rgba(255,255,255,.22)}
+.msg.me .bub a{color:#fff}
+/* 回到底部 */
+#chatWrap{position:relative}
+#toBottom{position:absolute;right:14px;bottom:118px;width:36px;height:36px;border-radius:50%;
+  border:1px solid var(--glass-line);background:rgba(255,255,255,.94);color:var(--ui-accent);
+  font-size:17px;line-height:1;cursor:pointer;box-shadow:0 8px 20px rgba(100,60,40,.20);
+  opacity:0;transform:translateY(6px);pointer-events:none;transition:.18s;z-index:5}
+#toBottom.on{opacity:1;transform:none;pointer-events:auto}
+@media(max-width:760px){
+  #toBottom{right:12px;bottom:112px;width:34px;height:34px;font-size:16px}
+  .plugbar{gap:6px}
+  .plugbar input{flex:1 0 100%;min-width:0;padding:7px 13px;font-size:12.5px;order:-1}
+  .plugbar .fbtn{padding:5px 11px;font-size:11.5px;flex:none}
+  .plugbar .fbtn[style]{margin-left:auto!important}
+}
+/* ============ 手机端紧凑布局 ============ */
+@media(max-width:760px){
+  aside{padding:5px 10px;gap:4px}
+  .brand{padding:0;border-bottom:0;margin:0 4px 0 0}
+  .brand .charava{width:30px;height:30px;font-size:15px}
+  .brand .bt{font-size:13.5px;letter-spacing:.4px;max-width:none}
+  header{padding:4px 10px 5px}
+  .pill{font-size:10.5px;padding:1px 8px}
+  #pGw.ok{display:none}                 /* 正常态不必常驻“面板运行中” */
+  header > .btn.tiny{display:none}      /* 重载插件收进运维页 */
+  #chatWrap{gap:6px}
+  .chathero{min-height:0;padding:8px 11px;align-items:center;border-radius:16px}
+  .chathero img.bg{position:static;transform:none;order:-1;height:44px;width:44px;
+    max-width:none;border-radius:13px;border-width:2px;margin-right:10px;object-position:50% 18%}
+  .chathero .scrim{display:none}
+  .chathero .ch{gap:0 8px;min-width:0;flex:1;display:grid;
+    grid-template-columns:auto minmax(0,1fr);align-items:center}
+  .chathero .nm{grid-area:1/1;font-size:22px;line-height:1.15}
+  .chathero .tg{grid-area:2/1/3/3;display:block;font-size:10.5px;max-width:100%;line-height:1.35;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;-webkit-line-clamp:none}
+  .chathero .badges{grid-area:1/2;justify-content:flex-end;margin:0;gap:4px;flex-wrap:nowrap;overflow:hidden}
+  .chathero .badges .tag{font-size:9.5px;padding:1px 6px;white-space:nowrap}
+  .chatbar{gap:6px;margin-bottom:0;flex-wrap:nowrap}
+  .chatbar select{flex:1;min-width:0;height:26px;padding:0 9px;font-size:11.5px;text-overflow:ellipsis}
+  .chatbar .btn.tiny{height:26px;padding:0 9px;font-size:10.5px;white-space:nowrap}
+  #msgs{gap:11px;padding:10px 8px 2px;
+    -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 22px);
+            mask-image:linear-gradient(180deg,transparent 0,#000 22px)}
+  .meta{font-size:10px;color:#a8826a}
+  .msg.me .meta{color:var(--dim)}
+  #chatInput{gap:6px;padding:6px 6px 6px 12px}
+  #chatInput .btn.primary{padding:0;width:42px;min-width:42px;height:42px;border-radius:50%;
+    font-size:0;display:flex;align-items:center;justify-content:center}
+  #chatInput .btn.primary::before{content:"↑";font-size:22px;font-weight:700;line-height:1;margin-top:-1px}
+  .chips{flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain;
+    margin:2px -12px 0;padding:0 12px 2px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .chips::-webkit-scrollbar{display:none}
+  .chips button{flex:none;padding:6px 11px;font-size:11.5px}
+  .content{padding:10px 12px calc(96px + env(safe-area-inset-bottom))}
+  .dock{padding:4px}
+}
+/* ============ 深色主题 ============ */
+html[data-theme="dark"]{color-scheme:dark}
+html[data-theme="dark"],
+/* 角色主题（theme.css）把变量写在 body[data-theme] 上，这里必须同样落在 body 才盖得住 */
+html[data-theme="dark"] body{
+  --bg:#181210; --paper:#241c17;
+  --ink:#f5e9dc; --dim:#cdb5a0;
+  --line:#3c2d24;
+  --red:#ff6f61; --red-deep:#ff9a86; --red-soft:#3a211d;
+  --gold:#f2b23e; --gold-soft:#3a2e18;
+  --sky:#79c2e8; --sky-soft:#1d2b36;
+  --green:#93c477; --green-soft:#21301b;
+  --shadow:0 4px 14px rgba(0,0,0,.5);
+  --glass-line:rgba(255,255,255,.10);
+  --ink-soft:rgba(245,233,220,.66);
+  --comic-shadow:0 10px 30px rgba(0,0,0,.45), 0 1px 0 rgba(255,255,255,.05) inset;
+}
+html[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 10% 6%, rgba(255,140,110,.10), transparent 42%),
+    radial-gradient(circle at 90% 3%, rgba(120,190,235,.10), transparent 40%),
+    radial-gradient(#2a211c 1.2px, transparent 1.2px);
+  background-size:auto, auto, 26px 26px;
+  background-attachment:fixed;
+}
+html[data-theme="dark"] body[data-bg="aurora"]{
+  background-image:
+    radial-gradient(900px 520px at 85% -8%, color-mix(in srgb, var(--ui-accent2) 18%, transparent), transparent 60%),
+    radial-gradient(700px 520px at 0% 30%, color-mix(in srgb, var(--ui-accent) 12%, transparent), transparent 62%),
+    linear-gradient(160deg, #1e1713, var(--bg) 55%, #1b1410);
+}
+html[data-theme="dark"] body::after{background:radial-gradient(circle, rgba(255,150,110,.14) 0%, transparent 68%)}
+html[data-theme="dark"] aside{
+  background:linear-gradient(180deg, color-mix(in srgb,var(--paper) 94%, black), color-mix(in srgb,var(--red-soft) 45%, #1b1411));
+  box-shadow:8px 0 40px rgba(0,0,0,.45);
+}
+html[data-theme="dark"] nav button:hover{background:rgba(255,255,255,.07)}
+html[data-theme="dark"] .brand .charava{box-shadow:0 8px 22px color-mix(in srgb,var(--ui-accent) 30%, transparent), 0 0 0 3px rgba(255,255,255,.14)}
+html[data-theme="dark"] header#strip{background:color-mix(in srgb, var(--paper) 80%, transparent)}
+html[data-theme="dark"] .pill{background:rgba(255,255,255,.06);box-shadow:none}
+html[data-theme="dark"] .pill.ok{background:#1e2a19;border-color:#34502b}
+html[data-theme="dark"] .pill.bad{background:#331c1a;border-color:#5a2b26}
+html[data-theme="dark"] .pill.wait{background:#312713;border-color:#57431f}
+html[data-theme="dark"] h2.page{text-shadow:none}
+html[data-theme="dark"] .btn,html[data-theme="dark"] button.btn{background:#2b221d;border-color:var(--line);box-shadow:0 3px 0 rgba(0,0,0,.35)}
+html[data-theme="dark"] .btn:hover,html[data-theme="dark"] button.btn:hover{border-color:#5a4133;box-shadow:0 5px 0 rgba(0,0,0,.35)}
+html[data-theme="dark"] button.primary{background:linear-gradient(135deg,#ff7a5c,#e8484f);border-color:#d43c46}
+html[data-theme="dark"] .tag{background:rgba(255,255,255,.07)}
+html[data-theme="dark"] .chatbar select,html[data-theme="dark"] select{
+  background:#2b221d;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .msg .bub{background:rgba(255,255,255,.055);box-shadow:0 8px 22px rgba(0,0,0,.35)}
+html[data-theme="dark"] .msg .bub code,html[data-theme="dark"] .msg .bub pre{background:rgba(255,255,255,.10)}
+html[data-theme="dark"] .msg.me .bub{background:linear-gradient(135deg,var(--ui-accent),color-mix(in srgb,var(--ui-accent) 55%,var(--ui-accent2)))}
+html[data-theme="dark"] #chatInput{background:rgba(255,255,255,.055)}
+html[data-theme="dark"] #chatInput textarea{background:transparent;box-shadow:none;border-color:var(--line)}
+html[data-theme="dark"] .chathero{
+  background:linear-gradient(110deg,color-mix(in srgb,var(--ui-accent) 22%,#241c17),color-mix(in srgb,var(--ui-accent2) 16%,#241c17));
+  box-shadow:0 10px 30px rgba(0,0,0,.4)}
+html[data-theme="dark"] .chathero .scrim{background:linear-gradient(90deg,rgba(26,19,15,.94),rgba(26,19,15,.55) 55%,transparent 78%)}
+html[data-theme="dark"] .chathero .badges .tag{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.12)}
+html[data-theme="dark"] .chips button{background:rgba(255,255,255,.06);box-shadow:none}
+html[data-theme="dark"] .plugcard{background:linear-gradient(160deg,rgba(255,255,255,.06),var(--paper))}
+html[data-theme="dark"] .wcard{background:linear-gradient(150deg,rgba(255,255,255,.06),var(--paper))}
+html[data-theme="dark"] .plugbar input{background:rgba(255,255,255,.06)}
+html[data-theme="dark"] .plugcard .ico{background:linear-gradient(135deg,color-mix(in srgb,var(--ui-accent) 24%,#2a211c),color-mix(in srgb,var(--ui-accent2) 20%,#2a211c))}
+html[data-theme="dark"] .plugcard:hover{border-color:color-mix(in srgb,var(--ui-accent) 45%,transparent)}
+html[data-theme="dark"] .plugbar .fbtn{background:rgba(255,255,255,.05)}
+html[data-theme="dark"] .dock{background:rgba(36,28,23,.94);box-shadow:0 18px 40px rgba(0,0,0,.55)}
+html[data-theme="dark"] .dock button.on{background:color-mix(in srgb,var(--ui-accent) 24%,transparent)}
+html[data-theme="dark"] #toBottom{background:rgba(43,34,29,.96);box-shadow:0 8px 20px rgba(0,0,0,.5)}
+html[data-theme="dark"] .charitem{background:var(--paper)}
+html[data-theme="dark"] .charitem.active{background:linear-gradient(180deg,var(--paper),var(--red-soft))}
+html[data-theme="dark"] .cmdkbox,html[data-theme="dark"] .drawerbox,html[data-theme="dark"] .sheetbox{background:var(--paper)}
+html[data-theme="dark"] .msg .bub a{color:color-mix(in srgb,var(--ui-accent) 70%, white)}
+html[data-theme="dark"] .ava{background:#3a2b23;border-color:rgba(255,255,255,.16)}
+html[data-theme="dark"] .msg.me .ava{background:linear-gradient(135deg,#f09a7a,#d96a55)}
+html[data-theme="dark"] .msg .ava{box-shadow:0 6px 16px rgba(0,0,0,.45)}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border:2px solid transparent;background-clip:content-box}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.26);background-clip:content-box}
+html[data-theme="dark"] .meta{color:#c0a894}
+html[data-theme="dark"] .msg.me .meta{color:rgba(255,255,255,.8)}
+html[data-theme="dark"] #chatBox::placeholder{color:#a9917e}
+html[data-theme="dark"] .msg.me .bub{background:linear-gradient(135deg,#c9412f,#a8323a);color:#fff}
+html[data-theme="dark"] #msgs{padding-right:5px}
+html[data-theme="dark"] .chips button{color:#ecdccb}
+html[data-theme="dark"] .kv,html[data-theme="dark"] .tip{color:#bda48f}
+html[data-theme="dark"] h2.page{color:#f7ecdf}
+</style>
+
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="brand">
+      <div class="charava" id="brandAva" style="background:linear-gradient(135deg,#e4573d,#ffd9c9)">💥</div>
+      <div>
+        <div class="bt">Character Bot</div>
+        <div class="bs">角色聊天室</div>
+      </div>
+    </div>
+    <nav>
+      <div class="navgroup">
+        <div class="navlabel">核心</div>
+        <button data-v="chat" class="on" title="对话">💬 <span class="t">对话</span><kbd>1</kbd></button>
+        <button data-v="chars" title="角色">🎭 <span class="t">角色</span><kbd>2</kbd></button>
+        <button data-v="board" title="看板">📊 <span class="t">看板</span><kbd>3</kbd></button>
+      </div>
+      <div class="navgroup">
+        <div class="navlabel">角色内容</div>
+        <button data-v="persona" title="人格与知识库">🌸 <span class="t">人格 · 知识库</span></button>
+        <button data-v="plugins" title="插件">🧩 <span class="t">插件</span></button>
+        <button data-v="reminders" title="提醒">⏰ <span class="t">提醒</span></button>
+      </div>
+      <div class="navgroup">
+        <div class="navlabel">系统</div>
+        <button data-v="ops" title="运维与机器人">⚙️ <span class="t">运维 · 机器人</span></button>
+        <button data-v="custom" title="自定义">✨ <span class="t">自定义</span></button>
+      </div>
+      <button class="cmdkbtn" onclick="cmdkOpen()" title="搜索与跳转（Ctrl+K）">
+        <span>🔍 搜索</span><kbd>⌘K</kbd>
+      </button>
+    </nav>
+    <div class="sidefoot">
+      <img class="peek" src="/static/img/klee-hero.webp" alt="" loading="lazy" decoding="async">
+      <p id="sideTag">每个角色都有独立人格与知识库；<br>切换只在面板发生，QQ 里不会换人。</p>
+    </div>
+  </aside>
+  <main>
+    <header id="strip">
+      <span class="pill" id="pGw"><span class="dot"></span>面板 …</span>
+      <span class="pill" id="pQq" onclick="go('ops')" title="去运维 · 扫码登录" style="cursor:pointer"><span class="dot"></span>QQ …</span>
+      <span class="pill" id="pNap" onclick="go('ops')" title="去运维看 NapCat" style="cursor:pointer"><span class="dot"></span>NapCat …</span>
+      <span class="spacer"></span>
+      <button class="btn tiny" onclick="reloadFeatures()">⟳ 重载插件</button>
+    </header>
+    <div class="content" id="view"></div>
+  </main>
+</div>
+<div id="bar"></div>
+<div class="cmdk" id="cmdk" onclick="if(event.target===this)cmdkClose()">
+  <div class="cmdkbox">
+    <input id="cmdkInput" placeholder="搜索页面、角色、插件、命令…" autocomplete="off"
+           oninput="cmdkRender(this.value)" onkeydown="cmdkKey(event)">
+    <div class="cmdklist" id="cmdkList"></div>
+    <div class="cmdkfoot"><span class="kb">↑↓ 选择 · Enter 打开 · Esc 关闭</span><span class="kb">Ctrl/⌘ + K</span><span class="touch">点一条直接打开</span></div>
+  </div>
+</div>
+<div class="drawer" id="pdrawer" onclick="if(event.target===this)closePluginDrawer()">
+  <div class="drawerbox">
+    <div class="drawerhead">
+      <div><div id="pdTitle" style="font-family:'ZCOOL KuaiLe',var(--font-cute);font-size:20px">插件</div>
+        <div class="kv" id="pdSub"></div></div>
+      <button class="x" onclick="closePluginDrawer()">✕</button>
+    </div>
+    <div class="drawerbody" id="pdBody"></div>
+    <div class="drawerfoot"><span class="kv">只读展示；改代码请到仓库（保存后 8 秒内热重载）</span></div>
+  </div>
+</div>
+<input type="file" id="pluginZip" accept=".zip" style="display:none" onchange="installPluginPack(this)">
+<div class="dock" id="dock">
+  <button data-v="chat" onclick="go('chat')"><b>💬</b>对话</button>
+  <button data-v="chars" onclick="go('chars')"><b>🎭</b>角色</button>
+  <button data-v="persona" onclick="go('persona')"><b>🌸</b>人格</button>
+  <button data-v="plugins" onclick="go('plugins')"><b>🧩</b>插件</button>
+  <button onclick="moreSheet()"><b>⋯</b>更多</button>
+</div>
+<div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
+  <div class="sheetbox">
+    <div class="sheethead"><b>更多</b><button class="x" onclick="closeSheet()">✕</button></div>
+    <div class="sheetgrid">
+      <button onclick="go('board');closeSheet()"><b>📊</b>看板</button>
+      <button onclick="go('custom');closeSheet()"><b>✨</b>自定义</button>
+      <button onclick="go('reminders');closeSheet()"><b>⏰</b>提醒</button>
+      <button onclick="go('ops');closeSheet()"><b>⚙️</b>运维</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ================= 基础 ================= */
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const FACE = {"呲牙":"😁","微笑":"🙂","大哭":"😭","流泪":"😢","捂脸":"🤦","调皮":"😜","doge":"🐶","比心":"🫰","点赞":"👍",
+ "睡":"😴","抓狂":"😫","亲亲":"😘","委屈":"🥺","偷笑":"🤭","酷":"😎","可怜":"🥹","生气":"😠","疑问":"🤔","鼓掌":"👏",
+ "ok":"👌","爱心":"❤️","玫瑰":"🌹","吃瓜":"🍉","惊讶":"😮","汗":"😅","奋斗":"💪","大兵":"🫡","抱抱":"🤗","庆祝":"🎉"};
+function faces(text){
+  return esc(text).replace(/\[表情[:：]([^\[\]]{1,16})\]/g, (m, n) => {
+    const e = FACE[n.trim()];
+    return e ? `<span class="face">${e}</span>` : `<span class="face chip">${esc(n.trim())}</span>`;
+  });
+}
+function mdLite(h){
+  // 输入已是 esc() 过的纯文本；只认最常见的几种，避免误伤角色扮演里的符号
+  h = h.replace(/```([\s\S]*?)```/g, (m,c) => `<pre>${c.replace(/^\n+|\n+$/g,"")}</pre>`);
+  h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  h = h.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  h = h.replace(/(^|[\s（(])\*([^*\n]{1,80})\*(?=$|[\s，。！？、）」)])/g, "$1<i>$2</i>");
+  h = h.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  return h;
+}
+function fmt(t){ return mdLite(faces(t)); }
+function hhmm(ts){ const d = new Date(ts*1000); return d.toTimeString().slice(0,5); }
+function hhmmss(ts){ const d = new Date(ts*1000); return d.toTimeString().slice(0,8); }
+const _apiInflight = new Map();
+async function api(path){
+  // 同一 URL 并发只发一次（切页/轮询重叠时很常见）
+  const key = String(path);
+  if (_apiInflight.has(key)) return _apiInflight.get(key);
+  const p = (async () => {
+    // 面板读接口也带这个头：敏感 GET（二维码/日志/聊天/源码）在服务端要过同一道闸
+    const r = await fetch(key, {headers:{"X-Klee-Studio":"1"}});
+    return r.json();
+  })().finally(() => _apiInflight.delete(key));
+  _apiInflight.set(key, p);
+  return p;
+}
+async function post(path, body){
+  const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json","X-Klee-Studio":"1"}, body:JSON.stringify(body)});
+  return r.json();
+}
+let ACTIVE = {id:"klee", name:"可莉", emoji:"💥", color:"#e4573d", color2:"#ffd9c9"};
+const CHIPS = {
+  klee: ["讲个蒙德的故事","猜个谜语","夸夸我","你今天在干嘛呀"],
+  hutao: ["来一首打油诗","往生堂今天忙吗","你怎么看生死","陪我聊会儿"],
+  citlali: ["帮我看看今天的征兆","你又在睡觉吗","给我一句预言","烟里有什么"],
+  cyrene: ["听我讲个过去的故事","你会忘记我吗","陪我想想以前的事","说点什么吧"],
+  atri: ["你在算什么","心是什么","今天开心吗","陪我聊会儿"],
+};
+function charAva(extra=""){
+  return `<div class="ava charava ${extra}" style="background:linear-gradient(135deg,${ACTIVE.color},${ACTIVE.color2})">${ACTIVE.emoji}</div>`;
+}
+function setActiveChar(c){
+  if (!c) return;
+  ACTIVE = {...ACTIVE, ...c};
+  const themeId = ACTIVE.theme || ACTIVE.id;
+  document.body.dataset.char = ACTIVE.id;
+  document.body.dataset.theme = themeId;
+  const css = $("charThemeCss");
+  if (css){
+    const v = encodeURIComponent(ACTIVE.theme_version || Date.now());
+    css.href = `/api/theme.css?character=${encodeURIComponent(ACTIVE.id)}&v=${v}`;
+  }
+  const b = $("brandAva");
+  if (b){ b.textContent = ACTIVE.emoji; b.style.background = `linear-gradient(135deg,${ACTIVE.color},${ACTIVE.color2})`; }
+  document.title = `Character Bot · ${ACTIVE.name}`;
+  const tm = $("themeColor");
+  if (tm) tm.content = ACTIVE.color2 || "#fff3e2";
+  const peek = document.querySelector(".sidefoot .peek");
+  if (peek){ peek.src = charArt(ACTIVE.id); peek.style.display = "block"; }
+  loadUI(ACTIVE.id);
+}
+
+/* ================= UI 自定义（每角色一份，存服务端） ================= */
+let UI = {accent:"",accent2:"",radius:20,density:"comfy",font_scale:100,bg:"aurora",
+          bubble:"comic",effects:true,card_style:"glass",
+          modules:["status","quick","recent","char","plugins","kb"]};
+const MOD_LABEL = {status:"运行状态", quick:"快捷入口", recent:"最近消息", char:"当前角色",
+                   plugins:"插件概览", kb:"知识库", ops:"运维告警", requests:"好友/入群请求"};
+function applyUI(){
+  const r = document.documentElement;
+  r.style.setProperty("--ui-accent", UI.accent || ACTIVE.color || "#e8484f");
+  r.style.setProperty("--ui-accent2", UI.accent2 || ACTIVE.color2 || "#f2b23e");
+  r.style.setProperty("--ui-radius", (UI.radius || 20) + "px");
+  r.style.setProperty("--ui-scale", String((UI.font_scale || 100) / 100));
+  document.body.dataset.bg = UI.bg || "aurora";
+  document.body.dataset.bubble = UI.bubble || "comic";
+  document.body.dataset.density = UI.density || "comfy";
+  document.body.dataset.card_style = UI.card_style || "glass";
+  document.body.dataset.effects = UI.effects ? "true" : "false";
+}
+let uiReq = 0;
+function uiCacheGet(cid){
+  try{ const raw = localStorage.getItem("ks_ui_" + cid); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
+}
+async function loadUI(cid){
+  const id = cid || ACTIVE.id;
+  const cached = uiCacheGet(id);
+  if (cached){ UI = {...UI, ...cached}; applyUI(); }      // 本地先画，避免白等一次 RTT
+  const seq = ++uiReq;
+  try{
+    const d = await api("/api/ui?character=" + encodeURIComponent(id));
+    if (seq !== uiReq) return;                            // 切角色途中回来的旧请求丢掉
+    if (d && d.ok && d.prefs){
+      UI = {...UI, ...d.prefs}; applyUI();
+      try{ localStorage.setItem("ks_ui_" + id, JSON.stringify(d.prefs)); }catch(e){}
+    }
+  }catch(e){}
+}
+async function saveUI(patch){
+  const r = await post("/api/ui", {character: ACTIVE.id, prefs: patch});
+  if (r && r.ok){ UI = {...UI, ...r.prefs}; applyUI();
+    try{ localStorage.setItem("ks_ui_" + ACTIVE.id, JSON.stringify(r.prefs)); }catch(e){}
+    return true; }
+  return false;
+}
+let toastTimer = null;
+function flash(text){
+  let el = $("toast");
+  if (!el){ el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+  el.textContent = text;
+  el.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("on"), 4200);
+}
+function setTheme(mode){
+  localStorage.setItem("ks_theme", mode);
+  applyTheme();
+  syncThemeSeg();
+}
+function applyTheme(){
+  const mode = localStorage.getItem("ks_theme") || "auto";
+  const sysDark = !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme =
+    mode === "dark" || (mode !== "light" && sysDark) ? "dark" : "light";
+}
+function syncThemeSeg(){
+  const cur = localStorage.getItem("ks_theme") || "auto";
+  document.querySelectorAll("#themeSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === cur));
+}
+if (window.matchMedia){
+  try{
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      if ((localStorage.getItem("ks_theme") || "auto") === "auto") applyTheme();
+    });
+  }catch(e){}
+}
+function moreSheet(){ document.getElementById("sheet").classList.add("on"); }
+function closeSheet(){ document.getElementById("sheet").classList.remove("on"); }
+/* ================= 命令面板（Ctrl+K） ================= */
+const PAGES = [
+  ["chat", "💬", "对话", "和当前角色聊天"],
+  ["chars", "🎭", "角色", "切换出演 / 导入角色包"],
+  ["board", "📊", "看板", "消息、走势、好感度"],
+  ["persona", "🌸", "人格 · 知识库", "SOUL 与检索"],
+  ["plugins", "🧩", "插件", "当前角色专属 + 通用"],
+  ["reminders", "⏰", "提醒", "提醒与纪念日"],
+  ["ops", "⚙️", "运维 · 机器人", "连接、二维码、模型"],
+  ["custom", "✨", "自定义", "配色、气泡、模块"],
+];
+let cmdItems = [], cmdIdx = 0, cmdPluginCache = null, cmdPluginTs = 0;
+function cmdkOpen(){
+  const el = $("cmdk"); if (!el) return;
+  el.classList.add("on");
+  const inp = $("cmdkInput"); inp.value = ""; inp.focus();
+  cmdkRender("");
+  if (!cmdPluginCache || Date.now() - cmdPluginTs > 60000){
+    api("/api/plugins").then(d => {
+      cmdPluginCache = d.meta || {}; cmdPluginTs = Date.now();
+      if ($("cmdk") && $("cmdk").classList.contains("on")) cmdkRender($("cmdkInput").value);
+    }).catch(() => {});
+  }
+}
+function cmdkClose(){ const el = $("cmdk"); if (el) el.classList.remove("on"); }
+function cmdkBuild(q){
+  const needle = (q || "").trim().toLowerCase();
+  const out = [];
+  PAGES.forEach(([v, ic, title, sub]) => {
+    if (!needle || (title + sub + v).toLowerCase().includes(needle))
+      out.push({ic, title, sub, run: () => go(v)});
+  });
+  ((charData && charData.items) || []).forEach(c => {
+    if (!needle || (c.name + c.en + c.tagline).toLowerCase().includes(needle))
+      out.push({ic: c.emoji || "🎭", title: "切换到 " + c.name, sub: c.active ? "当前出演" : "角色",
+                run: async () => {
+                  if (c.active) return go("chars");
+                  const r = await post("/api/characters/switch", {id: c.id});
+                  if (r.ok){ setActiveChar(r.character); charSel = c.id; go("chars"); flash("已切换到 " + c.name); }
+                  else flash("切换失败：" + (r.error || ""));
+                }});
+  });
+  Object.entries(cmdPluginCache || {}).forEach(([name, m]) => {
+    if (m.characters && m.characters.length && !m.characters.includes(ACTIVE.id)) return;
+    const hay = "插件 " + (m.title || name) + " " + (m.description || "");
+    if (needle && !hay.toLowerCase().includes(needle)) return;
+    out.push({ic: m.characters && m.characters.length ? "🧩" : "⚙️", title: m.title || name,
+              sub: "插件 · " + (m.commands || 0) + " 命令", run: () => openPluginDrawer(name, m)});
+  });
+  return out.slice(0, 14);
+}
+function cmdkRender(q){
+  cmdItems = cmdkBuild(q); cmdIdx = 0;
+  const box = $("cmdkList"); if (!box) return;
+  box.innerHTML = cmdItems.length
+    ? cmdItems.map((it, i) => `<div class="cmdkitem ${i === 0 ? "on" : ""}" onclick="cmdkRun(${i})">
+        <span class="ic">${it.ic}</span><span>${esc(it.title)}</span><span class="sub">${esc(it.sub)}</span></div>`).join("")
+    : `<div class="cmdkempty">没有找到；试试「角色」「插件」「运维」</div>`;
+}
+function cmdkKey(e){
+  if (e.key === "ArrowDown" || e.key === "ArrowUp"){
+    e.preventDefault();
+    if (!cmdItems.length) return;
+    cmdIdx = (cmdIdx + (e.key === "ArrowDown" ? 1 : -1) + cmdItems.length) % cmdItems.length;
+    document.querySelectorAll("#cmdkList .cmdkitem").forEach((x, i) => x.classList.toggle("on", i === cmdIdx));
+    const on = document.querySelector("#cmdkList .cmdkitem.on"); if (on) on.scrollIntoView({block:"nearest"});
+  } else if (e.key === "Enter"){
+    e.preventDefault(); cmdkRun(cmdIdx);
+  } else if (e.key === "Escape"){
+    cmdkClose();
+  }
+}
+function cmdkRun(i){
+  const it = cmdItems[i]; if (!it) return;
+  cmdkClose();
+  Promise.resolve(it.run()).catch(e => flash(String(e)));
+}
+
+/* ================= 插件详情抽屉 ================= */
+function openPluginDrawer(name, meta){
+  const m = meta || (plMeta && plMeta[name]);
+  const el = $("pdrawer"); if (!el) return;
+  if (!m){ flash("插件信息还没加载好，稍后再试"); return; }
+  $("pdTitle").textContent = m.title || name;
+  $("pdSub").textContent = `${m.file || name + ".py"} · v${m.version || "1.0"}`
+    + (m.author ? " · " + m.author : "")
+    + (m.characters && m.characters.length ? " · 角色限定" : " · 通用");
+  const cmds = m.command_list || [];
+  $("pdBody").innerHTML = `
+    <div>${esc(m.description || "（没有说明）")}</div>
+    ${m.usage ? `<h4>用法</h4><div>${esc(m.usage)}</div>` : ""}
+    <h4>命令（${cmds.length}）</h4>
+    ${cmds.length ? cmds.map(c => `<div class="cmdrow"><code>.${esc(c.name)}</code>
+        <span class="h">${esc(cmdHelpText(c))}</span>
+        ${c.aliases && c.aliases.length ? `<span class="h alias">别名：${esc(c.aliases.join(" / "))}</span>` : ""}</div>`).join("")
+      : '<div class="kv">这个插件没有注册命令（可能只在消息钩子里工作）。</div>'}
+    <h4>状态</h4>
+    <div class="row" style="gap:6px;flex-wrap:wrap">
+      <span class="tag">${m.enabled ? "● 已启用" : "○ 已停用"}</span>
+      <span class="tag">命中 ${m.hits || 0}</span>
+      <span class="tag">错误 ${m.errors || 0}</span>
+      ${m.error ? `<span class="tag" style="color:#c0392b">${esc(String(m.error).slice(0, 80))}</span>` : ""}
+    </div>
+    ${Object.keys(m.schema || {}).length ? `<h4>配置项</h4>${Object.entries(m.schema).map(([k, f]) =>
+      `<div class="cmdrow"><code>${esc(k)}</code><span class="h">${esc(f.description || f.type || "")}</span></div>`).join("")}` : ""}`;
+  el.classList.add("on");
+}
+function cmdHelpText(c){
+  const h = String(c.help || "");
+  const i = h.indexOf("——");
+  if (i >= 0) return h.slice(i + 2).trim();
+  return h.replace(/^\.[^\s]+\s*/, "").trim();
+}
+function closePluginDrawer(){ const el = $("pdrawer"); if (el) el.classList.remove("on"); }
+
+/* ================= 插件包安装 ================= */
+function pickPluginZip(){ const el = $("pluginZip"); if (el){ el.value = ""; el.click(); } }
+async function installPluginPack(inp){
+  const f = inp && inp.files && inp.files[0]; if (!f) return;
+  if (f.size > 2 * 1024 * 1024){ flash("插件包超过 2MB"); return; }
+  const send = async (overwrite) => {
+    const r = await fetch("/api/plugins/import" + (overwrite ? "?overwrite=1" : ""),
+      {method:"POST", headers:{"X-Klee-Studio":"1", "Content-Type":"application/zip"}, body:f});
+    return r.json();
+  };
+  try{
+    let d = await send(false);
+    if (!d.ok && /已存在/.test(d.error || "")){
+      if (!confirm(d.error + "\n\n覆盖安装？")) return;
+      d = await send(true);
+    }
+    if (!d.ok){ flash("安装失败：" + (d.error || "")); return; }
+    flash("✓ 已安装 " + d.installed.join(", ") + "（8 秒内热重载）");
+    setTimeout(() => { if (V === "plugins") viewPlugins(); }, 1200);
+  }catch(e){ flash("安装失败：" + e); }
+}
+
+function charArt(id){ return "/static/img/chars/" + encodeURIComponent(id) + ".webp?v=3"; }
+function artFallback(img){
+  // 老浏览器不支持 WebP 时退回同目录 JPG
+  if (img.src.endsWith(".webp") || img.src.includes(".webp?")){
+    img.src = img.src.replace(".webp", ".jpg").replace("?v=3", "?v=2");
+  } else { img.remove(); }
+}
+function go(v){
+  V = v;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x.dataset.v === v));
+  const bar = $("bar");
+  if (bar){ bar.classList.add("on"); bar.classList.remove("done"); }
+  render();
+}
+let V = "chat";
+
+/* ================= 顶栏状态 ================= */
+async function strip(){
+  try{
+    const o = await api("/api/overview");
+    const a = o.adapter || {};
+    const n = o.napcat || {};
+    const set = (id, cls, html) => {              // 内容没变就不碰 DOM（8 秒一轮不再引人分心）
+      const el = $(id);
+      if (el.className !== cls) el.className = cls;
+      if (el.innerHTML !== html) el.innerHTML = html;
+    };
+    set("pGw", "pill " + (o.gateway.active ? "ok":"bad"),
+        `<span class="dot"></span>面板 <b>${o.gateway.active?"运行中":"停了"}</b>`);
+    set("pQq", "pill " + (a.connected ? "ok":"bad"),
+        `<span class="dot"></span><span style="font-family:var(--font-body)">QQ</span> <b>${a.connected?"在线":"离线"}</b>`);
+    set("pNap", "pill " + (n.ok && n.is_login ? "ok":"wait"),
+        `<span class="dot"></span>NapCat <b>${n.ok && n.is_login ? "已登录":"未就绪"}</b>`);
+  }catch(e){}
+}
+async function reloadFeatures(){ const r = await post("/api/action", {action:"reload_features"}); alert(r.msg || r.error || "ok"); }
+
+/* ================= 视图切换 ================= */
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  V = b.dataset.v;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  render();
+});
+function render(){
+  stopOpsTimers();
+  if (V !== "chat" && chat.timer){               // 离开对话页：连轮询一起停（原来只是空转）
+    clearInterval(chat.timer); chat.timer = null;
+    clearInterval(chat.tick); chat.tick = null;
+  }
+  $("view").className = "content";
+  const vw = $("view");
+  vw.classList.remove("fadein"); void vw.offsetWidth; vw.classList.add("fadein");   // 切页淡入
+  document.querySelectorAll("#dock button").forEach(x => x.classList.toggle("on", x.dataset.v === V));
+  const views = {chat: viewChat, chars: viewChars, custom: viewCustom,
+                 persona: viewPersona, kb: viewPersona, plugins: viewPlugins,
+                 reminders: viewReminders, board: viewBoard, ops: viewOpsBot};
+  const bar = $("bar");
+  if (bar){ bar.classList.remove("done"); bar.classList.add("on"); }
+  Promise.resolve((views[V] || viewFeed)()).catch(e => console.error(e)).finally(() => {
+    if (V === "custom") syncThemeSeg();
+    if (!bar) return;
+    bar.classList.add("done");
+    setTimeout(() => { bar.classList.remove("on", "done"); bar.style.width = "0"; }, 260);
+  });
+}
+
+/* ================= 对话 ================= */
+let chat = {session: localStorage.getItem("ks_session") || "studio-main", after: 0,
+            char: null, timer: null, tick: null, idle: 0};
+function armChatPoll(){
+  if (chat.timer) clearInterval(chat.timer);
+  const ms = lastRunning ? 2500 : (chat.idle > 6 ? 12000 : (chat.idle > 2 ? 6000 : 3500));
+  chat.timer = setInterval(() => { if (V === "chat") pollChat(); }, ms);
+}
+function sessLabel(s){
+  if (s === "studio-main") return "工作室主对话";
+  if (s === "studio-smoke") return "工作室试音";
+  const m = /^studio-(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(s);
+  return m ? `对话 ${m[1]}-${m[2]} ${m[3]}:${m[4]}` : s;
+}
+function heroHTML(){
+  return `
+  <div class="hero" id="emptyHero">
+    <div class="charart" style="position:relative;width:168px;height:196px;border-radius:26px;overflow:hidden;box-shadow:0 16px 36px rgba(120,70,50,.22)">
+      <img src="${charArt(ACTIVE.id)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:50% 16%" onerror="artFallback(this)">
+      <div style="position:absolute;left:10px;bottom:8px;font-size:28px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))">${ACTIVE.emoji}</div>
+    </div>
+    <div class="hbub">${esc(ACTIVE.greeting || (ACTIVE.name + "在这里哦～"))}<br>想聊点什么呀？
+      <small>${esc(ACTIVE.hero_note || ("人格与知识库都属于 " + ACTIVE.name + "；切换角色请到「角色」页。"))}</small>
+    </div>
+  </div>`;
+}
+async function viewChat(){
+  if (chat.char !== ACTIVE.id){ chat.char = ACTIVE.id; chat.after = 0; }
+  const sessions = (await api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id))).sessions || [];
+  $("view").innerHTML = `
+  <div id="chatWrap" data-char="${esc(ACTIVE.id)}">
+    <div class="chathero">
+      <img class="bg" src="${charArt(ACTIVE.id)}" alt="" onerror="artFallback(this)">
+      <div class="scrim"></div>
+      <div class="ch">
+        <span class="nm">${esc(ACTIVE.name)}</span>
+        <span class="tg">${esc(ACTIVE.tagline || ACTIVE.hero_note || "")}</span>
+        <span class="badges">
+          <span class="tag">${esc(ACTIVE.emoji)} ${esc(ACTIVE.en || ACTIVE.id)}</span>
+          <span class="tag">📚 ${(ACTIVE.kb && ACTIVE.kb.chunks) ? ACTIVE.kb.chunks + " 块记忆" : "知识库"}</span>
+          <span class="tag">🧩 ${(ACTIVE.plugins || []).length} 个专属插件</span>
+        </span>
+      </div>
+    </div>
+    <div class="chatbar">
+      <select id="sessSel" title="会话">${sessions.map(s=>`<option value="${esc(s)}" ${s===chat.session?"selected":""}>${esc(sessLabel(s))}</option>`).join("")}</select>
+      <button class="btn tiny" onclick="newConv()">＋ 新对话</button>
+      <button class="btn tiny" onclick="delConv()" title="删除当前会话" aria-label="删除当前会话">删</button>
+      <span class="kv" id="chatStat"></span>
+    </div>
+    <div id="msgs" onscroll="updateToBottom()"></div>
+    <button id="toBottom" onclick="jumpBottom()" aria-label="回到最新">↓</button>
+    <div id="chatInput">
+      <textarea id="chatBox" rows="1" placeholder="跟${esc(ACTIVE.name)}说点什么…"></textarea>
+      <button class="btn primary" id="sendBtn" onclick="sendMsg()">🎇 发送</button>
+    </div>
+    <div class="hintline">Enter 发送 · Shift+Enter 换行</div>
+    <div class="chips">
+      ${(ACTIVE.chips && ACTIVE.chips.length ? ACTIVE.chips : (CHIPS[ACTIVE.id] || CHIPS.klee)).map(t=>`<button onclick="quick('${esc(t)}')">${esc(t)}</button>`).join("")}
+    </div>
+  </div>`;
+  $("sessSel").onchange = () => { chat.session = $("sessSel").value; localStorage.setItem("ks_session", chat.session); chat.after = 0; $("msgs").innerHTML=""; pollChat(); };
+  $("chatBox").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendMsg(); } });
+  // 输入框自动长高（最多 5 行）+ 草稿保留
+  $("chatBox").addEventListener("input", e => {
+    const el = e.target;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 132) + "px";
+    const k = "ks_draft_" + ACTIVE.id;
+    if (el.value.trim()) localStorage.setItem(k, el.value); else localStorage.removeItem(k);
+  });
+  const _draft = localStorage.getItem("ks_draft_" + ACTIVE.id);
+  if (_draft){ const el = $("chatBox"); el.value = _draft; el.dispatchEvent(new Event("input")); }
+  chat.after = 0; $("msgs").innerHTML = "";
+  await pollChat();
+  chat.idle = 0;
+  armChatPoll();
+  clearInterval(chat.tick); chat.tick = setInterval(tickTyping, 1000);
+}
+async function delConv(){
+  const name = sessLabel(chat.session);
+  if (!confirm(`删除「${name}」的全部聊天记录？\n删掉就找不回来了。`)) return;
+  const r = await post("/api/chat/delete", {session: chat.session, character: ACTIVE.id});
+  if (!r || !r.ok){ alert((r && r.error) || "删除失败"); return; }
+  flash(`已删除 ${r.removed} 条`);
+  if (chat.session !== "studio-main"){
+    chat.session = "studio-main"; localStorage.setItem("ks_session", "studio-main");
+  }
+  chat.after = 0; viewChat();
+}
+function newConv(){
+  const name = "studio-" + new Date().toISOString().slice(5,16).replace(/[-:T]/g,"");
+  chat.session = name; localStorage.setItem("ks_session", name);
+  viewChat();
+}
+function quick(t){ $("chatBox").value = t; sendMsg(); }
+async function sendMsg(){
+  const box = $("chatBox"); const text = box.value.trim();
+  if (!text) return;
+  box.value = ""; box.style.height = "auto";
+  localStorage.removeItem("ks_draft_" + ACTIVE.id);
+  await post("/api/chat", {session: chat.session, text, character: ACTIVE.id});
+  await pollChat();
+}
+function bubble(m){
+  if (m.role === "user")
+    return `<div class="msg me"><div class="ava">我</div><div><div class="bub">${fmt(m.text)}</div>
+      <div class="meta">${hhmm(m.ts)}</div></div></div>`;
+  const err = m.error ? `<div class="meta">⚠ ${esc(m.error)}</div>` : "";
+  return `<div class="msg klee">${charAva()}<div><div class="bub">${fmt(m.text || "(没接上话……再试一次？)")}</div>
+    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 跑了 ${m.elapsed}s` : ""}</div>${err}</div></div>`;
+}
+let lastRunning = null;
+function updateToBottom(){
+  const box = $("msgs"), b = $("toBottom");
+  if (!box || !b) return;
+  b.classList.toggle("on", box.scrollHeight - box.scrollTop - box.clientHeight > 260);
+}
+function jumpBottom(){
+  const box = $("msgs"); if (!box) return;
+  box.scrollTo({top: box.scrollHeight, behavior: "smooth"});
+  updateToBottom();
+}
+async function pollChat(){
+  const j = await api(`/api/chat?session=${encodeURIComponent(chat.session)}&after=${chat.after}&character=${encodeURIComponent(ACTIVE.id)}`);
+  if (!j || j.session !== chat.session){ return; }
+  const box = $("msgs"); if (!box) return;
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 60;
+  const fresh = (j.messages || []);
+  fresh.forEach(m => box.insertAdjacentHTML("beforeend", bubble(m)));
+  chat.after = j.total;
+  if (fresh.length || j.running){ chat.idle = 0; } else { chat.idle += 1; }
+  if (chat.idle === 3 || chat.idle === 7) armChatPoll();   // 冷场后逐级降频
+  lastRunning = j.running;
+  $("chatStat").textContent = j.queue > 0 ? `队列里还有 ${j.queue} 条` : "";
+  const t = $("typingB");
+  if (j.running && !t){
+    box.insertAdjacentHTML("beforeend", `<div class="msg klee typing" id="typingB">${charAva()}
+      <div><div class="bub">${esc(ACTIVE.name)}正在想呀想<span class="dots"></span></div><div class="meta" id="tmeta">她正在赶过来（约 35 秒）</div></div></div>`);
+  } else if (!j.running && t){ t.remove(); }
+  const hero = $("emptyHero");
+  if (hero && (j.total > 0 || j.running)) hero.remove();
+  else if (!hero && j.total === 0 && !j.running)
+    box.insertAdjacentHTML("afterbegin", heroHTML());
+  if (stick) box.scrollTop = box.scrollHeight;
+  updateToBottom();
+}
+function tickTyping(){
+  const t = $("tmeta"); if (!t || !lastRunning) return;
+  const s = Math.round(Date.now()/1000 - lastRunning.started);
+  t.textContent = `已经跑了 ${s} 秒 —— ${ACTIVE.name}马上就到！`;
+}
+
+/* ================= 自定义 ================= */
+const PRESET_ACCENTS = ["#e8484f","#e0743c","#d69a2d","#5aa469","#4f8fd0","#7a6bd6","#c65fa6","#5b5b6b"];
+function uiPatchFromForm(){
+  const num = id => { const el = $(id); return el ? Number(el.value) : 0; };
+  return {
+    accent: ($("uiAccent") ? $("uiAccent").value : ""),
+    accent2: ($("uiAccent2") ? $("uiAccent2").value : ""),
+    radius: num("uiRadius"), font_scale: num("uiFont"),
+    density: ($("uiDensity") ? $("uiDensity").value : "comfy"),
+    bg: ($("uiBg") ? $("uiBg").value : "aurora"),
+    bubble: ($("uiBubble") ? $("uiBubble").value : "comic"),
+    card_style: ($("uiCard") ? $("uiCard").value : "glass"),
+    effects: !!($("uiEffects") && $("uiEffects").checked),
+    modules: uiModules.slice(),
+  };
+}
+let uiModules = [];
+function uiMove(i, d){
+  const j = i + d; if (j < 0 || j >= uiModules.length) return;
+  [uiModules[i], uiModules[j]] = [uiModules[j], uiModules[i]];
+  viewCustom(true);
+}
+function uiToggleMod(i){
+  uiModules[i] = uiModules[i].startsWith("!") ? uiModules[i].slice(1) : "!" + uiModules[i];
+  viewCustom(true);
+}
+function uiPreview(){
+  const p = uiPatchFromForm();
+  const r = document.documentElement;
+  r.style.setProperty("--ui-accent", p.accent || ACTIVE.color || "#e8484f");
+  r.style.setProperty("--ui-accent2", p.accent2 || ACTIVE.color2 || "#f2b23e");
+  r.style.setProperty("--ui-radius", (p.radius || 20) + "px");
+  r.style.setProperty("--ui-scale", String((p.font_scale || 100) / 100));
+  document.body.dataset.bg = p.bg; document.body.dataset.bubble = p.bubble;
+  document.body.dataset.density = p.density; document.body.dataset.card_style = p.card_style;
+  document.body.dataset.effects = p.effects ? "true" : "false";
+  const b = $("uiPreviewBub"); if (b) b.textContent = (ACTIVE.greeting || "像这样，和你说话。");
+  document.querySelectorAll(".swatch").forEach(x => x.classList.toggle("on", x.dataset.c === (p.accent || "")));
+}
+async function viewCustom(keep){
+  const d = await api("/api/ui?character=" + encodeURIComponent(ACTIVE.id));
+  if (d && d.ok && d.prefs && !keep){
+    UI = {...UI, ...d.prefs};
+    uiModules = (UI.modules || []).slice();
+  }
+  if (!uiModules.length) uiModules = (UI.modules || []).slice();
+  const seg = (id, val, opts) => `<div class="seg" id="${id}Seg">${opts.map(([k, t]) =>
+      `<button class="${val === k ? "on" : ""}" data-v="${k}" onclick="document.getElementById('${id}').value='${k}';this.parentNode.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b===this));uiPreview()">${t}</button>`).join("")}</div>
+    <input type="hidden" id="${id}" value="${val}">`;
+  $("view").innerHTML = `
+  <h2 class="page">✨ 自定义</h2>
+  <p class="tip">这一页只改 <b>${esc(ACTIVE.name)}</b> 的界面外观，保存后在这台设备上立即生效；换角色会换成她自己的配置。
+    内容不会影响 QQ 行为。</p>
+  <div class="fgrid">
+    <div class="card">
+      <h3>🌗 外观</h3>
+      <div class="fld"><label>颜色模式（只影响这台设备）</label>
+        <div class="seg" id="themeSeg">
+          <button data-v="auto" onclick="setTheme('auto')">跟随系统</button>
+          <button data-v="light" onclick="setTheme('light')">浅色</button>
+          <button data-v="dark" onclick="setTheme('dark')">深色</button>
+        </div>
+      </div>
+      <p class="hint" style="margin-top:8px">QQ 里的回复和别的设备都不受影响。</p>
+    </div>
+    <div class="card">
+      <h3>🎨 颜色</h3>
+      <div class="fld"><label>主色（按钮 / 高亮 / 自己的气泡）</label>
+        <div class="swatches">${PRESET_ACCENTS.map(c => `<span class="swatch ${c === UI.accent ? "on" : ""}" data-c="${c}" style="background:${c}" onclick="document.getElementById('uiAccent').value='${c}';uiPreview()"></span>`).join("")}</div>
+        <input type="text" id="uiAccent" value="${esc(UI.accent || "")}" placeholder="留空 = 用角色主题的 --red" oninput="uiPreview()">
+      </div>
+      <div class="fld" style="margin-top:10px"><label>辅色（渐变第二色）</label>
+        <input type="text" id="uiAccent2" value="${esc(UI.accent2 || "")}" placeholder="留空 = 用角色主题的 --gold" oninput="uiPreview()">
+      </div>
+      <div class="fld" style="margin-top:10px"><label>背景花纹</label>
+        ${seg("uiBg", UI.bg, [["aurora","极光"],["sakura","樱色"],["grid","网格"],["plain","纯色"]])}
+      </div>
+    </div>
+    <div class="card">
+      <h3>📐 形状与密度</h3>
+      <div class="fld"><label>圆角 <b id="uiRadiusV">${UI.radius}</b>px</label>
+        <input type="range" id="uiRadius" min="8" max="32" value="${UI.radius}" oninput="document.getElementById('uiRadiusV').textContent=this.value;uiPreview()"></div>
+      <div class="fld" style="margin-top:8px"><label>字号 <b id="uiFontV">${UI.font_scale}</b>%</label>
+        <input type="range" id="uiFont" min="88" max="118" value="${UI.font_scale}" oninput="document.getElementById('uiFontV').textContent=this.value;uiPreview()"></div>
+      <div class="fld" style="margin-top:8px"><label>卡片密度</label>
+        ${seg("uiDensity", UI.density, [["compact","紧凑"],["comfy","舒适"],["wide","宽松"]])}
+      </div>
+      <div class="fld" style="margin-top:8px"><label>卡片质感</label>
+        ${seg("uiCard", UI.card_style, [["glass","玻璃"],["solid","实色"],["outline","线框"]])}
+      </div>
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="uiEffects" ${UI.effects ? "checked" : ""} onchange="uiPreview()"> 飘落花瓣 / 星屑</label>
+    </div>
+    <div class="card">
+      <h3>💬 气泡</h3>
+      <div class="fld"><label>气泡样式</label>
+        ${seg("uiBubble", UI.bubble, [["comic","漫画"],["round","圆润"],["minimal","极简"]])}
+      </div>
+      <div class="previewbox" style="margin-top:12px">
+        <div class="msg klee" style="max-width:100%">
+          <div class="ava" style="background:linear-gradient(135deg,${esc(ACTIVE.color)},${esc(ACTIVE.color2)})">${esc(ACTIVE.emoji)}</div>
+          <div><div class="bub" id="uiPreviewBub">${esc(ACTIVE.greeting || "像这样，和你说话。")}</div>
+            <div class="meta">${esc(ACTIVE.name)} · 预览</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3>🧱 工作台模块 <span class="kv" style="font-family:var(--font-body)">在「看板」顶部按这个顺序显示；点 ✕ 隐藏</span></h3>
+    <div class="modlist">
+      ${uiModules.map((m, i) => {
+        const off = m.startsWith("!"); const key = off ? m.slice(1) : m;
+        return `<div class="modrow"><span class="nm">${esc(MOD_LABEL[key] || key)}</span>
+          <button class="mv" title="上移" onclick="uiMove(${i},-1)">↑</button>
+          <button class="mv" title="下移" onclick="uiMove(${i},1)">↓</button>
+          <button class="mv" title="${off ? "显示" : "隐藏"}" onclick="uiToggleMod(${i})">${off ? "＋" : "✕"}</button></div>`;
+      }).join("")}
+    </div>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <button class="btn primary" onclick="saveCustom()">保存这套外观</button>
+    <button class="btn tiny" onclick="resetCustom()">恢复默认</button>
+    <span class="kv" id="uiMsg"></span>
+  </div>`;
+  uiPreview();
+}
+async function saveCustom(){
+  const p = uiPatchFromForm();
+  const ok = await saveUI(p);
+  $("uiMsg").textContent = ok ? "✓ 已保存（只对 " + ACTIVE.name + " 生效）" : "✗ 保存失败";
+}
+async function resetCustom(){
+  const d = await api("/api/ui?character=" + encodeURIComponent(ACTIVE.id));
+  const def = (d && d.defaults) || {accent:"",accent2:"",radius:20,density:"comfy",font_scale:100,bg:"aurora",bubble:"comic",effects:true,card_style:"glass",
+    modules:["status","quick","recent","char","plugins","kb"]};
+  if (await saveUI(def)){ uiModules = def.modules.slice(); viewCustom(); $("uiMsg").textContent = "已恢复默认"; }
+}
+
+/* ================= 人格 ================= */
+async function viewPersona(){
+  const cid = ACTIVE.id;
+  const [p, d, rec] = await Promise.all([
+    api("/api/persona?character=" + encodeURIComponent(cid)),
+    api("/api/kb?character=" + encodeURIComponent(cid)),
+    api("/api/kb/recent?n=20&character=" + encodeURIComponent(cid)).catch(() => ({})),
+  ]);
+  let src = {};
+  try { src = JSON.parse(d.sources || "{}"); } catch(e){}
+  const cache = d.cache || {};
+  const ch = cache.hits ?? 0, cm = cache.misses ?? 0;
+  const cr = (ch + cm) > 0 ? Math.round(100 * ch / (ch + cm)) : null;
+  const meta = (charData && (charData.items.find(c => c.id === cid) || {})) || {};
+  $("view").innerHTML = `
+  <h2 class="page">🌸 人格 · 知识库</h2>
+  <p class="tip">当前角色：<b>${esc(ACTIVE.name)}</b>。一个角色 = 一套 SOUL + 一套知识库，跟着角色自动切换、不能拆开改；
+    改 SOUL 保存后下一轮生效；不留旧版，改之前想清楚。</p>
+  <div class="card posterRow">
+    <img class="personaArt" src="${charArt(cid)}" alt="" loading="lazy">
+    <div class="pcopy">
+      <b>${esc(ACTIVE.name)}</b><br>
+      ${esc(meta.tagline || "独立人格与知识库")}<br>
+      <span class="hint">📚 ${d.chunks ?? "—"} 块知识 · 🧩 ${(meta.plugins || []).length} 个专属插件</span>
+    </div>
+  </div>
+  <div class="seg" style="margin:2px 0 12px">
+    <button id="ptSoul" class="on" onclick="ptab('soul')">📝 人格</button>
+    <button id="ptKb" onclick="ptab('kb')">📚 知识库</button>
+  </div>
+  <div id="paneSoul">
+  <div class="card">
+    <h3>📝 人格（SOUL.md）</h3>
+    <div class="statgrid">
+      <div class="stat"><b id="pChars">—</b><span>字符数</span></div>
+      <div class="stat"><b id="pTok">—</b><span>预估 token</span></div>
+      <div class="stat"><b id="pAge">—</b><span>上次修改</span></div>
+    </div>
+    <textarea class="code" id="soul" spellcheck="false">${esc(p.soul || "")}</textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="btn primary" onclick="savePersona()">保存</button>
+      <span class="kv" id="pMsg"></span>
+    </div>
+  </div>
+  </div>
+  <div id="paneKb" style="display:none">
+  <div class="card">
+    <div class="kv" style="margin:0 0 10px">命中相似度 ≥ ${(d.threshold ?? 0.4)} 时作为背景注入，不会说「资料」</div>
+    <div class="statgrid">
+      <div class="stat"><b>${d.chunks ?? "—"}</b><span>知识块</span></div>
+      <div class="stat"><b>${d.dim ?? "—"}</b><span>向量维度</span></div>
+      <div class="stat"><b style="font-size:13px;font-family:var(--font-body)">${esc(d.model || "—")}</b><span>嵌入模型</span></div>
+      <div class="stat"><b style="font-size:11.5px;font-family:var(--font-body);word-break:break-all">${esc(d.built_at || "—")}</b><span>构建时间</span></div>
+      <div class="stat"><b>${cr === null ? "—" : cr + "%"}</b><span>检索缓存命中率</span></div>
+    </div>
+    <div class="row" style="margin-top:10px;font-size:12px">
+      ${(() => {
+        const rows = Object.entries(src).sort((a,b)=>b[1]-a[1]);
+        if (!rows.length) return '<span class="kv">没有来源统计</span>';
+        const head = rows.slice(0, 12).map(([k,v])=>`<span class="tag">${esc(k)} ×${v}</span>`).join("");
+        const rest = rows.slice(12);
+        const more = rest.length ? `<span class="tag" title="${esc(rest.map(([k,v])=>k+" ×"+v).join("、"))}">其他 ${rest.length} 项</span>` : "";
+        return head + more;
+      })()}
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="kbQ" placeholder="检索试验：比如「她最在意什么」" style="flex:1;min-width:220px">
+      <button class="btn primary" onclick="kbSearch()">检索</button>
+    </div>
+    <div id="kbOut" style="margin-top:10px"></div>
+  </div>
+  <div class="card">
+    <h3>🕒 最近命中 <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
+    <div id="kbRecent" style="margin-top:6px"></div>
+  </div>
+  </div>`;
+  $("pChars").textContent = p.chars ?? "—";
+  $("pTok").textContent = p.est_tokens ?? "—";
+  $("pAge").textContent = p.mtime ? new Date(p.mtime*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
+  $("kbQ").addEventListener("keydown", e => { if (e.key === "Enter") kbSearch(); });
+  renderKbRecent((rec && rec.hits) || []);
+  ptab(personaTab);
+}
+let personaTab = "soul";
+function ptab(name){
+  personaTab = name;
+  const soul = $("paneSoul"), kb = $("paneKb");
+  if (!soul || !kb) return;
+  soul.style.display = name === "soul" ? "" : "none";
+  kb.style.display = name === "kb" ? "" : "none";
+  $("ptSoul").classList.toggle("on", name === "soul");
+  $("ptKb").classList.toggle("on", name === "kb");
+}
+async function savePersona(){
+  const soul = $("soul").value;
+  $("pMsg").textContent = "保存中…";
+  const r = await post("/api/persona", {soul, character: ACTIVE.id});
+  $("pMsg").textContent = r.ok ? "✓ 已保存" : `✗ ${r.error}`;
+}
+function renderKbRecent(rows){
+  const box = $("kbRecent"); if (!box) return;
+  if (!rows.length){
+    box.innerHTML = `<div class="kv">还没有命中记录。聊天时真的用到知识，这里才会出现。</div>`;
+    return;
+  }
+  box.innerHTML = rows.map(r => {
+    const when = r.ts ? new Date(r.ts*1000).toLocaleString("zh-CN",{hour12:false}) : "—";
+    const hits = (r.hits || []).map(h =>
+      `<span class="tag">${esc(h.source || "?")}${h.title ? " · " + esc(h.title) : ""} <b>${(h.dense ?? 0).toFixed(3)}</b></span>`).join(" ");
+    return `<div class="kbhit"><div class="kbh-h"><span class="kbh-t">「${esc(r.query || "")}」</span>
+      <span class="kbh-s">${esc(when)} · 注入 ${r.chars || 0} 字</span></div>
+      <div class="kbh-h" style="margin:0">${hits}</div></div>`;
+  }).join("");
+}
+async function loadKbRecent(){
+  const d = await api("/api/kb/recent?n=20&character=" + encodeURIComponent(ACTIVE.id));
+  renderKbRecent((d && d.hits) || []);
+}
+async function kbSearch(){
+  const q = $("kbQ").value.trim(); if (!q) return;
+  $("kbOut").innerHTML = '<div class="kv">检索中…</div>';
+  const d = await api(`/api/kb/search?q=${encodeURIComponent(q)}&k=6&character=${encodeURIComponent(ACTIVE.id)}`);
+  if (!d.ok){ $("kbOut").innerHTML = `<div class="kv">✗ ${esc(d.error || "失败")}</div>`; return; }
+  const hits = d.hits || [];
+  $("kbOut").innerHTML = `
+    <div class="kv">best_dense = <b>${(d.best_dense ?? 0).toFixed(3)}</b> · 阈值 ${(d.threshold ?? 0.4)} · 这里展示原始排名</div>
+    ${hits.map(h => `<div class="kbhit">
+      <div class="kbh-h"><span class="kbh-t">${esc(h.title || "(无标题)")}</span>
+        <span class="kbh-s">${esc(h.source || "")} · dense ${(h.dense ?? 0).toFixed(3)}${h.sparse != null ? " · sparse " + Number(h.sparse).toFixed(3) : ""}</span></div>
+      <div class="kbt">${esc((h.text || "").slice(0, 260))}</div></div>`).join("") || '<div class="kv">没有命中</div>'}`;
+}
+
+/* ================= 插件工坊 ================= */
+let plFiles = [], plSel = null, plCfg = null, plTab = "file", plMeta = {};
+async function viewPlugins(readonly){
+  const d = await api("/api/plugins");
+  plFiles = d.files || []; plCfg = d.config || {}; plMeta = d.meta || {};
+  $("view").innerHTML = `
+  <h2 class="page">🧩 插件</h2>
+  <p class="tip">插件是随角色锁定的：切到谁，就只加载谁的专属插件 + 通用插件。
+    这里只读展示，改动请改仓库文件（保存后 8 秒内自动重载）。</p>
+  <div class="plugbar">
+    <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
+    <button class="fbtn on" data-pf="all" onclick="plugFilter('all')">全部</button>
+    <button class="fbtn" data-pf="general" onclick="plugFilter('general')">通用</button>
+    <button class="fbtn" data-pf="on" onclick="plugFilter('on')">已启用</button>
+    <button class="fbtn" data-pf="err" onclick="plugFilter('err')">报错</button>
+    <button class="fbtn" style="margin-left:auto" onclick="pickPluginZip()">📦 安装插件包</button>
+  </div>
+  <div class="pluggrid" id="plugGrid"></div>`;
+  renderPlugGrid();
+}
+
+let plugMode = "all";
+const PLUG_ICON = {klee:"💥",hutao:"🦋",citlali:"🔮",cyrene:"🪶",atri:"⚙️"};
+let plugSearchTimer = null;
+function plugSearchSoon(){
+  clearTimeout(plugSearchTimer);
+  plugSearchTimer = setTimeout(renderPlugGrid, 140);
+}
+function plugFilter(m){
+  plugMode = m;
+  document.querySelectorAll("[data-pf]").forEach(b => b.classList.toggle("on", b.dataset.pf === m));
+  renderPlugGrid();
+}
+function plugIsMine(p){
+  return !(p.characters || []).length || (p.characters || []).includes(ACTIVE.id);
+}
+function renderPlugGrid(){
+  const box = $("plugGrid"); if (!box) return;
+  const q = ($("plugSearch") ? $("plugSearch").value : "").trim().toLowerCase();
+  const rows = plFiles.map(f => {
+    const name = f.name.replace(/\.py$/, "");
+    const m = plMeta[name] || {};
+    return {file: f.name, name, title: m.title || name, description: m.description || "",
+            chars: m.characters || [], locked: !!m.locked, enabled: !!m.enabled,
+            error: m.error || "", commands: m.commands || 0, hits: m.hits || 0,
+            usage: m.usage || ""};
+  }).filter(p => {
+    // 角色限定插件与角色绑定：不是当前角色的，直接不显示
+    if (p.chars.length && !p.chars.includes(ACTIVE.id)) return false;
+    if (plugMode === "mine" && !(p.chars.includes(ACTIVE.id))) return false;
+    if (plugMode === "general" && p.chars.length) return false;
+    if (plugMode === "on" && !p.enabled) return false;
+    if (plugMode === "err" && !p.error) return false;
+    if (q){
+      const hay = (p.name + p.title + p.description + p.usage).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  if (!rows.length){ box.innerHTML = `<div class="kv">没有匹配的插件。</div>`; return; }
+  box.innerHTML = rows.map(p => {
+    const owner = !p.chars.length
+      ? "通用"
+      : (p.chars.includes(ACTIVE.id)
+          ? `${PLUG_ICON[ACTIVE.id] || "🎭"} ${esc(ACTIVE.name)}${p.chars.length > 1 ? " · 共享" : ""}`
+          : `${PLUG_ICON[p.chars[0]] || "🎭"} ${esc(p.chars[0])}`);
+    return `<div class="plugcard ${p.file === plSel ? "on" : ""}" onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
+      <span class="st ${p.error ? "err" : (p.enabled ? "on" : "")}"></span>
+      <div class="top"><span class="ico">${p.chars.length ? (PLUG_ICON[p.chars[0]] || "🎭") : "🧩"}</span>
+        <div><div class="nm">${esc(p.title)}</div><div class="sub">${esc(p.name)}.py · v${esc((plMeta[p.name] || {}).version || "1.0")}</div></div></div>
+      <div class="desc">${esc(p.description || "（没有说明）")}</div>
+      <div class="foot"><span class="lock" style="${p.chars.length ? "" : "color:var(--ink-soft);border-color:var(--line)"}">${owner}</span>
+        <span>${p.error ? "⚠ 加载失败" : (p.enabled ? "● 已启用" : "○ 已停用")}</span>
+        <span>⌘ ${p.commands}</span><span>· 命中 ${p.hits}</span>
+        ${p.error ? `<span style="color:#c0392b">· 加载失败</span>` : ""}</div>
+    </div>`;
+  }).join("");
+}
+function openPlug(file){ plSel = file; plTab = "file"; viewPlugins(); }
+
+function plField(key, f, v){
+  const id = "pls_" + key;
+  const label = esc(f.description || key);
+  const t = f.type || "str";
+  if (t === "bool")
+    return `<label class="check" style="display:block;margin:8px 0"><input type="checkbox" id="${id}" ${v ? "checked" : ""}> ${label}</label>`;
+  let input;
+  if (t === "int" || t === "float")
+    input = `<input type="number" id="${id}" value="${v ?? ""}" step="${t === "float" ? "0.1" : "1"}"
+      ${f.min !== undefined ? `min="${f.min}"` : ""} ${f.max !== undefined ? `max="${f.max}"` : ""} style="width:140px">`;
+  else if (t === "select")
+    input = `<select id="${id}">${(f.options || []).map(o => `<option ${String(o) === String(v) ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+  else if (t === "list")
+    input = `<textarea id="${id}" rows="4" style="width:100%;font-family:var(--font-body)" placeholder="一行一个">${esc((v || []).join("\n"))}</textarea>`;
+  else if (t === "text" || t === "json")
+    input = `<textarea id="${id}" rows="5" style="width:100%;font-family:var(--font-body)">${esc(t === "json" ? JSON.stringify(v ?? null, null, 2) : (v ?? ""))}</textarea>`;
+  else
+    input = `<input type="text" id="${id}" value="${esc(v ?? "")}" style="width:100%">`;
+  return `<label class="f">${label} <span class="kv" style="font-family:var(--font-body)">${esc(key)}</span></label>${input}`;
+}
+async function loadPluginSettings(){
+  const box = $("plSetBox"); if (!box) return;
+  if (!plSel){ box.innerHTML = "先选一个插件"; return; }
+  const d = await api(`/api/plugins/schema?name=${encodeURIComponent(plSel.replace(/\.py$/, ""))}`);
+  if (!d || !d.ok){ box.innerHTML = "✗ 读取失败"; return; }
+  if (!d.has_schema){
+    box.innerHTML = `<div class="kv">这个插件还没声明 <code>CONFIG_SCHEMA</code>。<br>
+      在插件文件里加一段（AstrBot 的 <code>_conf_schema</code> 风格）就能自动出表单：<br>
+      <code>CONFIG_SCHEMA = {"key": {"type": "int", "default": 3, "description": "..."}}</code></div>`;
+    return;
+  }
+  const fields = Object.entries(d.schema || {}).map(([k, f]) => plField(k, f, (d.values || {})[k])).join("");
+  box.innerHTML = `
+    <div class="kv" style="margin-bottom:6px">${esc(d.title || d.name)}${d.usage ? " · " + esc(d.usage) : ""}${d.author ? " · by " + esc(d.author) : ""}</div>
+    ${fields}`;
+}
+async function savePluginSettings(){
+  if (!plSel) return;
+  const d0 = await api(`/api/plugins/schema?name=${encodeURIComponent(plSel.replace(/\.py$/, ""))}`);
+  if (!d0 || !d0.ok) return;
+  const values = {};
+  for (const [key, f] of Object.entries(d0.schema || {})){
+    const el = $("pls_" + key); if (!el) continue;
+    if (f.type === "bool") values[key] = el.checked;
+    else if (f.type === "int" || f.type === "float") values[key] = el.value === "" ? null : Number(el.value);
+    else if (f.type === "list") values[key] = el.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+    else if (f.type === "json") { try { values[key] = JSON.parse(el.value || "null"); } catch(e){ values[key] = el.value; } }
+    else values[key] = el.value;
+  }
+  const r = await post("/api/plugins/settings", {name: plSel.replace(/\.py$/, ""), values});
+  $("plSetMsg").textContent = r.ok
+    ? "✓ 已保存并重载" + (r.errors && r.errors.length ? "（" + r.errors.join("；") + "）" : "")
+    : "✗ " + (r.error || "保存失败");
+}
+
+async function openFile(name){
+  plSel = name;
+  document.querySelectorAll("#plList button").forEach(b => b.classList.toggle("on", b.textContent.startsWith(name.replace(/\.py$/,""))));
+  const f = await api(`/api/plugins/file?name=${encodeURIComponent(name)}`);
+  if ($("plCode") && f.ok){ $("plCode").value = f.content; $("plName").textContent = name; }
+}
+async function saveFile(){
+  const r = await post("/api/plugins/file", {name: plSel, content: $("plCode").value});
+  $("plMsg").textContent = r.ok ? `✓ ${r.note}` : `✗ ${r.error}`;
+}
+async function saveCfg(){
+  let cfg; try { cfg = JSON.parse($("plCfgBox").value); }
+  catch(e){ $("plMsg").textContent = "✗ JSON 格式错误：" + e.message; return; }
+  const r = await post("/api/plugins/config", {config: cfg});
+  $("plMsg").textContent = r.ok ? `✓ ${r.note}` : `✗ ${r.error}`;
+}
+async function newPlugin(){
+  const name = prompt("新插件文件名（小写字母/下划线，不带 .py）：");
+  if (!name) return;
+  const tpl = `"""${name}：新插件（干跑测试台可以立刻试）"""\n\nNAME = "${name}"\nDESCRIPTION = "……"\nVERSION = "0.1"\n\n\ndef register(api):\n    async def hello(ctx):\n        await ctx.reply("你好呀，这是 ${name} 插件！")\n    api.on_command("${name}", hello, help=".${name} —— 打个招呼")\n`;
+  const r = await post("/api/plugins/file", {name: name + ".py", content: tpl});
+  if (r.ok){ plSel = name + ".py"; await viewPlugins(); }
+  else alert(r.error || "失败");
+}
+async function plStatus(){
+  const box = $("plStat"); if (!box) return;
+  const all = Object.keys(plMeta || {});
+  if (!all.length){ box.innerHTML = `<h3>📊 运行状态</h3><div class="kv">读不到插件状态（bot 可能没在跑）</div>`; return; }
+
+  const row = (n) => {
+    const f = plMeta[n] || {};
+    const bits = [];
+    if (f.hits) bits.push(`命中 ${f.hits}`);
+    if (f.errors) bits.push(`错误 ${f.errors}`);
+    if (f.error) bits.push(`<b style="color:var(--red)">${esc(String(f.error).slice(0,50))}</b>`);
+    const action = f.locked
+      ? `<span class="kv" title="角色限定插件随角色自动启用，不能手动关闭">锁定</span>`
+      : `<button class="btn tiny" onclick="togglePlugin('${esc(n)}')">${f.enabled ? "停用" : "启用"}</button>`;
+    return `<div class="plsrow">
+      <span class="dot ${f.enabled ? "yes" : "no"}"></span>
+      <span class="nm">${esc(f.title || n)}</span>
+      <span class="cnt">${f.enabled ? "运行中" : "已停"}${bits.length ? " · " + bits.join(" · ") : ""}</span>
+      ${action}
+    </div>`;
+  };
+  const isMine = (n) => {
+    const f = plMeta[n] || {};
+    return !f.locked || (f.characters || []).includes(ACTIVE.id);
+  };
+  const common = all.filter(n => !(plMeta[n] || {}).locked);
+  const mine = all.filter(n => (plMeta[n] || {}).locked && isMine(n));
+  const count = (list) => `${list.filter(n => (plMeta[n]||{}).enabled).length}/${list.length} 开`;
+  const sect = (title, list) => list.length
+    ? `<div class="kv" style="margin:10px 0 2px;font-weight:600">${title}
+         <span class="kv" style="font-weight:400">${count(list)}</span></div>
+       <div class="plsgrid">${list.sort().map(row).join("")}</div>`
+    : "";
+  box.innerHTML = `<h3>📊 运行状态 <span class="kv" style="font-family:var(--font-body)">${esc(ACTIVE.emoji + " " + ACTIVE.name)} · 角色限定只列本角色可用的；改完 ≤20 秒热重载</span></h3>`
+    + sect("通用插件（可关闭）", common)
+    + sect(`角色限定 · ${esc(ACTIVE.name)}（不可关闭）`, mine);
+  renderPlugGrid();
+}
+
+function plListHTML(){
+  const badge = (name) => {
+    const m = plMeta[name] || {};
+    if (m.locked) return `<span class="badge on" title="角色限定">锁定</span>`;
+    const on = plCfg.enabled === null || !plCfg.enabled || plCfg.enabled.includes(name);
+    return `<span class="badge ${on ? "on" : "off"}">${on ? "开" : "停"}</span>`;
+  };
+  const group = (locked) => plFiles.filter(f => {
+    const m = plMeta[f.name.replace(/\.py$/, "")] || {};
+    if (Boolean(m.locked) !== locked) return false;
+    // 角色限定只列「当前角色」可用的；别的角色的留给各自角色页
+    if (locked) return (m.characters || []).includes(ACTIVE.id);
+    return true;
+  });
+  const sect = (title, hint, locked) => {
+    const items = group(locked);
+    if (!items.length) return locked
+      ? `<div class="kv" style="margin:8px 0 4px;font-weight:600">${title} <span class="kv" style="font-weight:400">${hint}</span></div>
+         <div class="kv" style="margin-bottom:6px">${esc(ACTIVE.name)}暂时没有专属插件（通用插件照常可用）</div>`
+      : "";
+    return `<div class="kv" style="margin:8px 0 4px;font-weight:600">${title} <span class="kv" style="font-weight:400">${hint}</span></div>` +
+      items.map(f => {
+        const name = f.name.replace(/\.py$/, "");
+        const m = plMeta[name] || {};
+        const sub = m.locked ? ` · ${(m.characters || []).join("/")}` : "";
+        return `<button class="${f.name === plSel ? "on" : ""}" onclick="openFile('${esc(f.name)}')">${esc(m.title || name)}${sub}${badge(name)}</button>`;
+      }).join("");
+  };
+  return sect("通用插件", "可关闭", false)
+    + sect(`角色限定 · ${esc(ACTIVE.name)}`, "随角色自动启用 · 不可关闭", true);
+}
+async function togglePlugin(name){
+  const m = plMeta[name] || {};
+  if (m.locked){ alert("角色限定插件不能关闭，它会随角色自动启用/停用。"); return; }
+  const names = plFiles.map(f => f.name.replace(/\.py$/, ""));
+  const cur = Array.isArray(plCfg.enabled) ? plCfg.enabled.map(String) : names.slice();
+  const set = new Set(cur);
+  set.has(name) ? set.delete(name) : set.add(name);
+  plCfg.enabled = names.filter(n => set.has(n));
+  const r = await post("/api/plugins/config", {config: plCfg});
+  if (!r.ok){ alert(r.error || "失败"); return; }
+  const msg = $("plMsg");
+  if (msg) msg.textContent = `✓ 已${set.has(name) ? "启用" : "停用"} ${name}（≤20 秒生效）`;
+  plStatus();
+}
+async function dryRun(){
+  const spec = {
+    text: $("dryText").value, is_group: $("dryWhere").value === "group",
+    mentioned: $("dryMention").checked, role: $("dryRole").value,
+    as_owner: $("dryOwner").checked, user_name: "干跑访客",
+  };
+  $("dryResult").innerHTML = `<div class="result">正在推演…</div>`;
+  const r = await post("/api/plugins/dryrun", spec);
+  if (!r.ok){ $("dryResult").innerHTML = `<div class="result">✗ ${esc(r.error || "跑不动")}</div>`; return; }
+  const d = r.result;
+  const stop = d.consumed || d.blocked;
+  $("dryResult").innerHTML = `
+    <div class="result">
+      <div class="route ${stop ? "stop" : "agent"}">${esc(d.route)}</div>
+      ${d.config_warning ? `<div class="kv" style="color:var(--red)">⚠ ${esc(d.config_warning)}</div>` : ""}
+      ${d.command ? `<div class="kv">命中命令：<b>.${esc(d.command)}</b></div>` : ""}
+      ${d.hits && d.hits.length ? `<div class="kv">触发的插件：${d.hits.map(h=>`<span class="tag">${esc(h.plugin)}</span>`).join("")}</div>` : ""}
+      ${d.silent ? `<div class="kv">（被静默吞掉：权限不足或冷却中）</div>` : ""}
+      ${d.text !== spec.text ? `<div class="kv">钩子改写后的文本：<div class="bub" style="margin-top:5px">${faces(d.text)}</div></div>` : ""}
+      ${d.state_dir ? `<div class="kv">🔒 状态隔离：这次干跑的状态写在临时目录 <code style="font-size:11px">${esc(d.state_dir)}</code>${(d.isolated_state && d.isolated_state.length) ? `（另有 ${d.isolated_state.length} 个插件常量被强制改写：<code style="font-size:11px">${esc(d.isolated_state.join("、"))}</code>）` : ""} —— <b>不会</b>写生产 <code>onebot_features/state/</code>。</div>` : ""}
+      ${d.replies && d.replies.length ? `<div class="kv">会发出的回复：${d.replies.map(t=>`<div class="say"><div class="ava sm"><img src="/static/img/klee-ava.png" alt=""></div><div class="bub">${faces(t)}</div></div>`).join("")}</div>` : ""}
+    </div>`;
+}
+
+/* ================= 运维 · 机器人（合并页） ================= */
+let opsBotTab = "ops";
+async function viewOpsBot(tab){
+  if (tab && tab !== opsBotTab) stopOpsTimers();   // 换子页先把旧二维码/日志定时器停掉
+  if (tab) opsBotTab = tab;
+  const t = opsBotTab;
+  $("view").innerHTML = `
+  <h2 class="page">⚙️ 运维 · 机器人</h2>
+  <p class="tip">连接状态、日志、账号与模型都在这一页；左边运维、右边机器人。</p>
+  <div class="seg" style="margin:2px 0 12px">
+    <button class="${t === "ops" ? "on" : ""}" onclick="viewOpsBot('ops')">⚙️ 运维</button>
+    <button class="${t === "bot" ? "on" : ""}" onclick="viewOpsBot('bot')">🤖 机器人</button>
+  </div>
+  <div id="opsBotPane"><div class="kv">加载中…</div></div>`;
+  if (t === "bot") await viewBot("opsBotPane");
+  else await viewOps("opsBotPane");
+}
+
+/* ================= 机器人（面板自持） ================= */
+async function viewBot(target){
+  const T = target || "view";
+  const [st, md, ag, sk] = await Promise.all([
+    api("/api/bot"), api("/api/models"), api("/api/agent"), api("/api/skills")]);
+  const skills = (sk && sk.ok && sk.skills) || [];
+  const act = (md && md.active) || {};
+  const provs = (md && md.providers) || [];
+  window.__provs = provs;
+  const cur = provs.find(p => p.id === act.provider) || provs[0] || {models: []};
+  const vis = (md && md.vision) || {};
+  const agentCfg = (ag && ag.ok) ? ag : {enabled:false, owner_only:true, max_steps:3,
+    timeout:120, tools:[], available_tools:[], model:{}};
+  const agModel = agentCfg.model || {};
+  const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || cur;
+  const visProv = provs.find(p => p.id === (vis.provider || act.provider)) || cur;
+  const visModels = visProv.models || [];
+  const feat = (st && st.features) || {};
+  const stats = (st && st.stats) || {};
+  $(T).innerHTML = `
+  ${T === "view" ? '<h2 class="page">🤖 机器人</h2>' : ''}
+  <p class="tip">QQ 消息由面板自己收发（OneBot HTTP）。当前角色的人格、知识库和角色插件都跟着她走；切换去「🎭 角色」页。</p>
+  <div class="card">
+    <div class="row">
+      ${charAva("sm")}
+      <div style="flex:1">
+        <div style="font-family:var(--font-cute);font-size:17px">${esc(ACTIVE.name)} <span class="kv">${esc(ACTIVE.en)}</span></div>
+        <div class="kv">${esc(ACTIVE.tagline || "")} · 知识库 ${(charData && (charData.items.find(c=>c.id===ACTIVE.id)||{}).kb || {}).chunks || "—"} 块</div>
+      </div>
+      <button class="btn tiny" onclick="go('chars')">切换角色</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="statgrid">
+      <div class="stat"><b>${st.ok ? (st.online ? "在线" : "待机") : "异常"}</b><span>运行状态</span></div>
+      <div class="stat"><b>${feat.plugins ?? "—"}</b><span>插件</span></div>
+      <div class="stat"><b>${feat.commands ?? "—"}</b><span>命令</span></div>
+      <div class="stat"><b>${stats.events ?? "—"}</b><span>收到消息</span></div>
+      <div class="stat"><b>${stats.chats ?? "—"}</b><span>聊天回合</span></div>
+    </div>
+    <div class="row" style="margin-top:10px;font-size:12px">
+      <span class="tag">模型 ${esc((act.provider||"—")+" / "+(act.model||"—"))}</span>
+      <span class="tag">${st.last_event_age_s == null ? "还没收到事件" : "上次事件 "+st.last_event_age_s+"s 前"}</span>
+      ${st.error ? `<span class="tag">${esc(st.error)}</span>` : ""}
+      ${feat.errors && feat.errors.length ? `<span class="tag">插件报错 ${esc(feat.errors.join(","))}</span>` : ""}
+    </div>
+  </div>
+  ${(st.metrics) ? `
+  <div class="card">
+    <h3>📈 运行时指标 <span class="kv" style="font-family:var(--font-body)">最近 60 秒 / 5 分钟</span></h3>
+    <div class="statgrid">
+      <div class="stat"><b>${st.metrics.events_60s ?? 0}</b><span>近 60s 消息</span></div>
+      <div class="stat"><b>${st.metrics.events_5m ?? 0}</b><span>近 5 分钟</span></div>
+      <div class="stat"><b>${st.metrics.commands ?? 0}</b><span>命令</span></div>
+      <div class="stat"><b>${st.metrics.errors ?? 0}</b><span>错误</span></div>
+      <div class="stat"><b>${st.metrics.rate_limited ?? 0}</b><span>限流</span></div>
+      <div class="stat"><b>${st.metrics.tts_out ?? 0}</b><span>语音发出</span></div>
+      <div class="stat"><b>${st.metrics.vision ?? 0}</b><span>识图</span></div>
+      <div class="stat"><b>${st.metrics.agent_runs ?? 0}</b><span>Agent 轮次</span></div>
+      <div class="stat"><b>${st.metrics.agent_tool_calls ?? 0}</b><span>工具调用</span></div>
+      <div class="stat"><b>${st.inflight ?? 0}</b><span>队列中</span></div>
+    </div>
+    <div class="row" style="margin-top:10px;font-size:12px">
+      ${(st.metrics.plugins || []).slice(0, 8).map(p => `<span class="tag">${esc(p.name)} ×${p.hits}${p.errors ? " ⚠" + p.errors : ""}</span>`).join("")}
+    </div>
+  </div>` : ""}
+  <div class="card">
+    <h3>🧠 模型选择 <span class="kv" style="font-family:var(--font-body)">改完点保存，下一句消息就用新模型</span></h3>
+    <div class="row">
+      <select id="mpProv" onchange="botFillModels()" style="min-width:190px">
+        ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===act.provider?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
+      </select>
+      <select id="mpModel" style="min-width:240px">
+        ${(cur.models||[]).map(m=>`<option ${m===act.model?"selected":""}>${esc(m)}</option>`).join("")}
+      </select>
+      <button class="btn primary" onclick="botSaveModel()">保存</button>
+      <button class="btn" onclick="botTestModel()">测试</button>
+    </div>
+    <div id="mpOut" class="kv" style="margin-top:8px"></div>
+  </div>
+  <div class="card">
+    <h3>👀 看图模型 <span class="kv" style="font-family:var(--font-body)">收到图片时交给它理解；留空 = 只回一句「看不懂」而不报错</span></h3>
+    <div class="row">
+      <select id="mvProv" onchange="botFillVisionModels()" style="min-width:190px">
+        <option value="">跟聊天同一个</option>
+        ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===vis.provider&&vis.configured?"selected":""}>${esc(p.name||p.id)}</option>`).join("")}
+      </select>
+      <select id="mvModel" style="min-width:240px">
+        <option value="">（不启用图片理解）</option>
+        ${(visModels||[]).map(m=>`<option ${m===(vis.configured?vis.model:"")?"selected":""}>${esc(m)}</option>`).join("")}
+      </select>
+      <button class="btn primary" onclick="botSaveVision()">保存看图模型</button>
+    </div>
+    <div id="mvOut" class="kv" style="margin-top:8px">${vis.configured
+      ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
+      : "当前没配看图模型 —— 有人发图时她会撒个娇让你描述一下，不会瞎编图里有什么。"}</div>
+  </div>
+  <div class="card">
+    <h3>🛠️ Agent 能力 <span class="kv" style="font-family:var(--font-body)">开着她就会自己查资料：搜网页 / 读页面 / 翻知识库 / 算数 / 记事</span></h3>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="agEnabled" ${agentCfg.enabled?"checked":""}> 启用工具循环</label>
+      <label class="check"><input type="checkbox" id="agOwner" ${agentCfg.owner_only?"checked":""}> 只有主人能用</label>
+      <label class="check"><input type="checkbox" id="agSkills" ${agentCfg.skills!==false?"checked":""}> 允许调用技能（插件）</label>
+      <span class="kv">最大步数</span><input id="agSteps" type="number" min="0" max="6" value="${agentCfg.max_steps}" style="width:70px">
+      <span class="kv">超时（秒）</span><input id="agTimeout" type="number" min="10" max="600" value="${agentCfg.timeout}" style="width:90px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span class="kv">Agent 模型</span>
+      <select id="agProv" onchange="botFillAgentModels()" style="min-width:190px">
+        ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===(agModel.provider||act.provider)?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
+      </select>
+      <select id="agModel" style="min-width:240px">
+        <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
+        ${((agProv.models||[]).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join(""))}
+      </select>
+    </div>
+    <div class="kv" style="margin-top:10px">可用工具（取消勾选 = 不给模型这个能力）</div>
+    <div class="row" id="agTools" style="margin-top:4px">
+      ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.name)}</label>`).join("")}
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn primary" onclick="botSaveAgent()">保存 Agent 设置</button>
+      <span class="kv">主人也可以用 <code>.agent 问题</code> 强制走一次工具循环</span>
+    </div>
+    <div id="agOut" class="kv" style="margin-top:8px"></div>
+  </div>
+  <div class="card">
+    <h3>🧩 技能目录 <span class="kv" style="font-family:var(--font-body)">插件即技能：agent 先读用法，再按命令调用；权限/作用域与手动敲命令一致</span></h3>
+    ${skills.length ? skills.map(sk => `
+      <details style="margin:6px 0">
+        <summary style="cursor:pointer"><b>${esc(sk.title)}</b>
+          <span class="kv">${esc(sk.name)} · ${sk.commands.length} 个命令</span></summary>
+        <div class="kv" style="margin:6px 0 4px">${esc(sk.description || "（没有描述）")}</div>
+        <div class="row">${sk.commands.map(c => `<span class="tag" title="${esc(c.help || "")}">.${esc(c.name)}${c.permission !== "all" ? " 🔒" : ""}</span>`).join("")}</div>
+      </details>`).join("")
+      : `<div class="kv">还没读到技能目录（bot 未启动或插件未加载）。</div>`}
+  </div>
+  <div class="card">
+    <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">OpenAI 兼容接口；Key 只从环境变量读，不写进配置文件</span></h3>
+    <div class="row" style="font-size:12px">
+      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${esc(p.api||"")} ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
+      <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="pvId" placeholder="id（字母/数字/_-）" style="width:150px">
+      <input id="pvName" placeholder="显示名" style="width:150px">
+      <input id="pvApi" placeholder="https://api.example.com/v1" style="min-width:260px">
+      <input id="pvKeyEnv" placeholder="KEY_ENV（环境变量名）" style="width:180px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <textarea id="pvModels" rows="3" placeholder="模型名，一行一个" style="flex:1;min-width:260px;font-family:var(--font-body)"></textarea>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" onclick="botProvSave()">保存供应商</button>
+      <span class="kv" id="pvOut"></span>
+    </div>
+  </div>`;
+}
+function botFillModels(){
+  const p = (window.__provs || []).find(x => x.id === $("mpProv").value) || {models: []};
+  $("mpModel").innerHTML = (p.models || []).map(m=>`<option>${esc(m)}</option>`).join("");
+}
+async function botSaveModel(){
+  const d = await post("/api/models", {active: {provider: $("mpProv").value, model: $("mpModel").value}});
+  $("mpOut").textContent = d.ok ? "✓ 已保存：" + d.active.provider + " / " + d.active.model
+                                : "✗ " + (d.error || "保存失败");
+}
+async function botTestModel(){
+  $("mpOut").textContent = "测试中…（最长 90 秒）";
+  const d = await post("/api/models/test", {model: $("mpModel").value});
+  $("mpOut").textContent = d.ok ? `✓ ${d.ms}ms —— ${d.reply}` : `✗ ${d.error}`;
+}
+function botFillVisionModels(){
+  const p = (window.__provs || []).find(x => x.id === $("mvProv").value);
+  const ms = p ? (p.models || []) : (((window.__provs || [])[0] || {}).models || []);
+  $("mvModel").innerHTML = "<option value=\"\">（不启用图片理解）</option>" +
+    ms.map(m=>`<option>${esc(m)}</option>`).join("");
+}
+async function botSaveVision(){
+  const d = await post("/api/models", {vision: {provider: $("mvProv").value, model: $("mvModel").value}});
+  const v = (d && d.vision) || {};
+  $("mvOut").textContent = d.ok
+    ? (v.configured ? `✓ 看图模型：${v.provider} / ${v.model}` : "✓ 已关闭图片理解（发图时会友好说明看不懂）")
+    : "✗ " + (d.error || "保存失败");
+}
+
+function botFillAgentModels(){
+  const p = (window.__provs || []).find(x => x.id === $("agProv").value);
+  const ms = p ? (p.models || []) : [];
+  $("agModel").innerHTML = '<option value="">跟聊天同一个模型</option>' +
+    ms.map(m=>`<option>${esc(m)}</option>`).join("");
+}
+async function botSaveAgent(){
+  const tools = [...document.querySelectorAll("#agTools input:checked")].map(x=>x.value);
+  const d = await post("/api/agent", {
+    enabled: $("agEnabled").checked,
+    owner_only: $("agOwner").checked,
+    max_steps: Number($("agSteps").value || 3),
+    timeout: Number($("agTimeout").value || 120),
+    skills: $("agSkills").checked,
+    tools,
+    model: {provider: $("agProv").value, model: $("agModel").value},
+  });
+  $("agOut").textContent = d.ok
+    ? `✓ 已保存：${d.enabled ? "启用" : "关闭"} · ${d.owner_only ? "仅主人" : "所有人"} · 最多 ${d.max_steps} 步 · 工具 ${d.tools.length} 个 · 技能${d.skills ? "开" : "关"} · 模型 ${d.model.provider} / ${d.model.model}`
+    : "✗ " + (d.error || "保存失败");
+}
+function botProvNew(){
+  $("pvId").value = ""; $("pvName").value = ""; $("pvApi").value = "";
+  $("pvKeyEnv").value = ""; $("pvModels").value = ""; $("pvOut").textContent = "";
+  $("pvId").focus();
+}
+function botProvEdit(id){
+  const p = (window.__provs || []).find(x => x.id === id);
+  if (!p) return;
+  $("pvId").value = p.id; $("pvName").value = p.name || "";
+  $("pvApi").value = p.api || ""; $("pvKeyEnv").value = p.key_env || "";
+  $("pvModels").value = (p.models || []).join("\n");
+  $("pvOut").textContent = "正在编辑 " + p.id;
+}
+async function botProvSave(){
+  const models = $("pvModels").value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  const d = await post("/api/models", {provider: {
+    id: $("pvId").value.trim(), name: $("pvName").value.trim(),
+    api: $("pvApi").value.trim(), key_env: $("pvKeyEnv").value.trim(),
+    models,
+  }});
+  if (!d.ok){ $("pvOut").textContent = "✗ " + (d.error || "保存失败"); return; }
+  $("pvOut").textContent = "✓ 已保存，正在刷新…";
+  await viewBot();
+}
+async function botProvDelete(id){
+  if (!confirm("确定删除供应商 " + id + "？")) return;
+  const d = await post("/api/models", {delete_provider: id});
+  if (!d.ok){ alert("✗ " + (d.error || "删除失败")); return; }
+  await viewBot();
+}
+
+/* ================= 角色 ================= */
+let charSel = null, charData = null;
+
+let importOpen = false;
+function toggleImport(){
+  importOpen = !importOpen;
+  const box = $("importBox");
+  if (box) box.style.display = importOpen ? "block" : "none";
+}
+async function importZip(){
+  const inp = $("zipFile");
+  const msg = $("zipMsg");
+  if (!inp || !inp.files || !inp.files[0]){ msg.textContent = "先选一个 .zip 文件"; return; }
+  const file = inp.files[0];
+  if (file.size > 64 * 1024 * 1024){ msg.textContent = "✗ 超过 64MB"; return; }
+  msg.textContent = "上传并安装中…（主题 / 插件 / 语料）";
+  try{
+    const r = await fetch("/api/characters/import", {
+      method:"POST", headers:{"X-Klee-Studio":"1", "Content-Type":"application/zip"}, body:file});
+    const d = await r.json();
+    if (!d.ok){ msg.innerHTML = `✗ ${esc(d.error || "导入失败")}`; return; }
+    msg.innerHTML = `✓ 已导入 <b>${esc(d.character.name)}</b>（${d.plugins.length} 个插件 / ${d.kb_entries} 条语料）<br>
+      <span class="kv">知识库正在后台建索引（约 1-3 分钟），完成后会自动出现。</span>`;
+    const cid = d.character.id;
+    for (let i = 0; i < 60; i++){
+      await new Promise(res => setTimeout(res, 3000));
+      const list = await api("/api/characters");
+      const c = (list.items || []).find(x => x.id === cid);
+      if (c && c.kb && (c.kb.chunks || 0) > 0){
+        flash(`✓ ${c.name} 就绪：${c.kb.chunks} 块知识 · ${c.plugins.length} 个专属插件`);
+        charData = list; viewChars(); return;
+      }
+    }
+    msg.innerHTML += "<br><span class=\"kv\">索引还在跑，稍后刷新角色页即可。</span>";
+  }catch(e){
+    msg.textContent = "✗ " + e;
+  }
+}
+
+async function viewChars(){
+  const d = await api("/api/characters");
+  if (!d || !d.ok){ $("view").innerHTML = `<h2 class="page">🎭 角色</h2><div class="kv">✗ 读不到角色列表</div>`; return; }
+  charData = d;
+  if (!charSel) charSel = d.active;
+  if (!d.items.some(c => c.id === charSel)) charSel = d.active;
+  const items = d.items.slice().sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+  const cur = items.find(c => c.id === charSel) || items[0];
+  $("view").innerHTML = `
+  <h2 class="page">🎭 角色</h2>
+  <p class="tip">一个角色 = 一套 SOUL + 一套知识库 + 一套界面主题 + 一组专属插件，全部随角色锁定；
+    <b>切换只在面板发生</b>，QQ 里不会换人。</p>
+  <div class="row" style="margin-bottom:10px">
+    <button class="btn primary" onclick="toggleImport()">📦 导入角色 ZIP</button>
+    <span class="kv">一个 zip 装齐：主题 / 限定插件 / 知识库 / SOUL</span>
+  </div>
+  <div class="card" id="importBox" style="display:none;margin-bottom:14px">
+    <h3>📦 导入角色包</h3>
+    <div class="kv" style="line-height:1.9">zip 结构（可全部放在一个顶层目录里）：<br>
+      <code>character.json</code> · 名字 / id / emoji / 配色 / 问候语<br>
+      <code>SOUL.md</code> · 人格全文<br>
+      <code>theme/theme.json + theme.css</code> · 界面主题<br>
+      <code>plugins/*.py</code> · 角色限定插件（没写 CHARACTERS 会自动补）<br>
+      <code>kb/*.jsonl</code> · 知识库语料（每行 <code>{"text": "...", "title": "...", "source": "..."}</code>）</div>
+    <div class="row" style="margin-top:12px">
+      <input type="file" id="zipFile" accept=".zip,application/zip">
+      <button class="btn primary" onclick="importZip()">上传并安装</button>
+      <button class="btn tiny" onclick="toggleImport()">取消</button>
+    </div>
+    <div class="kv" id="zipMsg" style="margin-top:8px"></div>
+  </div>
+  <div class="chargrid">
+    ${items.map(c => `
+      <div class="charitem ${c.id===charSel?"on":""} ${c.active?"active":""}" data-id="${esc(c.id)}"
+           style="--c1:${esc(c.color)};--c2:${esc(c.color2)}" onclick="pickChar('${esc(c.id)}')">
+        <div class="artbg"><img src="${charArt(c.id)}" alt="" loading="lazy" decoding="async" onerror="artFallback(this)"></div>
+        <div class="artveil"></div>
+        <span class="bigemoji">${esc(c.emoji)}</span>
+        <span class="stars">${"★".repeat(5)}</span>
+        ${c.active ? `<span class="charbadge">✦ 当前出演</span>` : ""}
+        <div class="artbody">
+          <div class="nm">${esc(c.name)}</div>
+          <div class="en">${esc(c.en || c.id)}</div>
+          <div class="tagline">${esc(c.tagline)}</div>
+          <div class="meta2">
+            <span>🧩 ${c.plugins.length} 专属</span>
+            <span>📚 ${c.kb && c.kb.chunks != null ? c.kb.chunks : "—"} 块</span>
+          </div>
+          ${c.active ? `<div class="row" style="margin-top:9px;gap:6px">
+              <button class="btn tiny" onclick="event.stopPropagation();go('custom')">✨ 自定义</button>
+              <button class="btn tiny" onclick="event.stopPropagation();go('persona')">🌸 人格·库</button>
+            </div>` : `<div class="row" style="margin-top:9px;gap:6px">
+              <button class="btn primary tiny" onclick="event.stopPropagation();switchChar('${esc(c.id)}')">切换出演</button>
+              <button class="btn tiny" onclick="event.stopPropagation();pickChar('${esc(c.id)}')">看人格</button>
+            </div>`}
+        </div>
+      </div>`).join("")}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3>🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">随角色自动启用 · 不可关闭</span></h3>
+    <div class="kv" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
+    <div class="kv" style="margin-top:10px">人格在「🌸 人格 · 知识库」页编辑。</div>
+  </div>`;
+}
+
+/* ================= 开发规范 ================= */
+let docTab = "characters";
+/* ================= 知识库（已并入「人格 · 知识库」） ================= */
+async function viewKb(){ return viewPersona(); }
+
+/* ================= 提醒·日历 ================= */
+let remindTimer = null;
+function _cd(due, now){
+  const s = Math.max(0, due - now);
+  if (s < 60) return "马上";
+  const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d >= 1) return `${d} 天 ${h % 24} 小时`;
+  if (h >= 1) return `${h} 小时 ${m % 60} 分`;
+  return `${m} 分钟`;
+}
+let remindHash = null;
+async function viewReminders(manual){
+  const d = await api("/api/reminders");
+  let ann = {items: [], total: 0};
+  try { ann = await api("/api/anniversaries"); }
+  catch (e) { ann = {items: [], total: 0, error: String(e && e.message || e)}; }
+  const items = d.items || [];
+  const now = d.now || (Date.now() / 1000);
+  const rows = items.map(it => {
+    const due = Number(it.due || 0);
+    const when = new Date(due * 1000).toLocaleString("zh-CN",
+      {hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"});
+    const scope = String(it.chat_id || "").startsWith("group:") ? "群" : "私聊";
+    const rep = it.repeat
+      ? `<span class="tag">🔁 ${it.repeat.kind === "daily" ? "每天 " + esc(it.repeat.at) : "每周 " + esc(it.repeat.at)}</span>` : "";
+    return `<div class="kbhit" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="tag" style="flex:none">⏰ ${esc(when)}</span>
+      <span style="flex:1;min-width:140px">${esc(it.text || "")}</span>
+      <span style="flex:none;min-width:92px;text-align:right">${rep}</span>
+      <span class="kv" style="flex:none;margin:0;min-width:118px;text-align:right">还有 <b>${_cd(due, now)}</b></span>
+      <span class="kv" style="flex:none;margin:0;min-width:110px;text-align:right">${esc(it.user_name || it.user_id || "")} · ${scope}</span>
+    </div>`;
+  }).join("");
+  const annRows = (ann.items || []).map(it => {
+    const icon = {today: "🎉", upcoming: "⏳", past: "🗓️"}[it.kind] || "📅";
+    const scope = String(it.chat_id || "").startsWith("group:") ? "群" : "私聊";
+    return `<div class="kbhit" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="tag" style="flex:none">${icon} ${esc(it.label)}${it.yearly ? " · 每年" : ""}</span>
+      <span style="flex:1;min-width:140px">${esc(it.name)}</span>
+      <span class="kv" style="flex:none;margin:0;min-width:118px;text-align:right">${esc(it.desc)}</span>
+      <span class="kv" style="flex:none;margin:0;min-width:110px;text-align:right">${esc(it.user_name || "")} · ${scope}</span>
+    </div>`;
+  }).join("");
+  const annTotal = (ann && (ann.total ?? (ann.items || []).length)) || 0;
+  const rhash = JSON.stringify([items, ann.items || [], annTotal]);
+  if ($("remindList") && !manual && rhash === remindHash){
+    return;                                    // 每 30 秒自动刷新：没变化就一个字节都不碰（不再闪）
+  }
+  remindHash = rhash;
+  if ($("remindList")){                        // 有变化：只更新两栏列表和计数，页面框架/滚动原样保留
+    $("remindCount").textContent = items.length;
+    $("remindList").innerHTML = rows || '<div class="kv">还没有待提醒的事～去 QQ 里说「.提醒 10m 喝水」试试</div>';
+    $("annCount").textContent = annTotal;
+    $("annList").innerHTML = annRows || '<div class="kv">还没有记着的日子～去 QQ 里说「.纪念日 12-25 圣诞节」试试</div>';
+    if (manual && $("remindMsg")) $("remindMsg").textContent = "更新于 " + hhmmss(Date.now() / 1000);
+    return;
+  }
+  $("view").innerHTML = `
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <h2 class="page" style="margin:0">⏰ 提醒·日历</h2>
+    <span class="kv" style="margin:0"><span id="remindMsg"></span><button class="btn tiny" style="margin-left:8px" onclick="viewReminders(true)">⟳ 刷新</button></span>
+  </div>
+  <p class="tip">她小本本上所有还没响的提醒（数据读自 <code>onebot_features/state/reminders.json</code>）。到点她会在原群/私聊里喊人；要撤销去 QQ 发 <code>.取消提醒 编号</code>。</p>
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <span class="kv" style="margin:0">共 <b id="remindCount">${items.length}</b> 条待提醒 · 每 30 秒自动刷新</span>
+    </div>
+    <div style="margin-top:10px" id="remindList">${rows || '<div class="kv">还没有待提醒的事～去 QQ 里说「.提醒 10m 喝水」试试</div>'}</div>
+  </div>
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <span class="kv" style="margin:0">📅 纪念日小本本 · 共 <b id="annCount">${annTotal}</b> 个日子 · 每 30 秒自动刷新</span>
+    </div>
+    <p class="tip" style="margin:8px 0 0">她帮大家记的倒数日（数据读自 <code>onebot_features/state/anniversary.json</code>）；
+      去 QQ 发 <code>.纪念日 12-25 圣诞节</code> 添加、<code>.纪念日</code> 看全部。</p>
+    <div style="margin-top:10px" id="annList">${annRows || '<div class="kv">还没有记着的日子～去 QQ 里说「.纪念日 12-25 圣诞节」试试</div>'}</div>
+  </div>`;
+  if (remindTimer){ clearInterval(remindTimer); remindTimer = null; }
+  remindTimer = setInterval(() => {
+    if (V === "reminders") viewReminders(false);
+    else { clearInterval(remindTimer); remindTimer = null; }
+  }, 30000);
+}
+
+/* ================= 消息流 ================= */
+let feedSrc = localStorage.getItem("ks_feed_src") || "";
+let feedAuto = localStorage.getItem("ks_feed_auto") !== "0";
+let feedTimer = null;
+function scheduleFeedRefresh(){
+  if (feedTimer) { clearInterval(feedTimer); feedTimer = null; }
+  if (feedAuto) feedTimer = setInterval(() => {
+    if (V === "feed") viewFeed();
+    else if (V === "board") viewFeed("feedSlot");
+  }, 20000);
+}
+let feedHash = null, feedCache = [], feedShown = 30;
+function feedListHTML(items, shown){
+  if (!items.length) return '<div class="fitem">这里还没有消息——去跟她说句话吧</div>';
+  const head = items.slice(0, shown).map(m => m.error ? `<div class="fitem">⚠ ${esc(m.error)}</div>` :
+    `<div class="fitem ${m.role}"><div class="who">${hhmmss(m.ts)}<br><span class="tag">${esc(m.where)}</span></div>
+     <div class="txt">${faces(m.text)}</div></div>`).join("");
+  const more = items.length > shown
+    ? `<div style="text-align:center;padding:10px"><button class="btn tiny" onclick="feedMore()">加载更多（还有 ${items.length - shown} 条）</button></div>`
+    : "";
+  return head + more;
+}
+function feedMore(){
+  feedShown += 30;
+  const box = $("feedList");
+  if (box) box.innerHTML = feedListHTML(feedCache, feedShown);
+}
+async function viewFeed(target){
+  const T = target || "view";
+  const embed = T !== "view";
+  const srcs = (await api("/api/feed/sources")).sources || [];
+  if (!srcs.some(s => s.value === feedSrc)) feedSrc = "";
+  const d = await api(`/api/feed?limit=100&src=${encodeURIComponent(feedSrc)}`);
+  const items = (d.messages || []);
+  const fhash = JSON.stringify([feedSrc, srcs.map(s => s.value), items]);
+  if ($("feedList") && fhash === feedHash){
+    return;                                    // 20 秒一轮的自动刷新：没新消息就不重绘（不再闪）
+  }
+  feedHash = fhash;
+  feedCache = items;
+  feedShown = Math.max(30, Math.min(feedShown, items.length));
+  const st = $(T).scrollTop;
+  $(T).innerHTML = `
+  ${embed ? '<h3 style="margin:16px 0 8px">📜 消息</h3><p class="tip">她最近在各处的言行（最新在上）。</p>'
+          : '<h2 class="page">📜 消息</h2><p class="tip">她最近在各处的言行（<b>最新在上</b>）。数据直读她的会话库，可以按来源筛选。</p>'}
+  <div class="row feedbar" style="margin-bottom:10px">
+    <select id="feedSel" title="按来源筛选">${(srcs.length ? srcs : [{value:"",label:"全部来源"}]).map(s=>`<option value="${esc(s.value)}" ${s.value===feedSrc?"selected":""}>${esc(s.label)}</option>`).join("")}</select>
+    <button class="btn" onclick="viewFeed()">⟳ 刷新</button>
+    <label class="check" style="font-size:12px"><input type="checkbox" id="feedAuto" ${feedAuto ? "checked" : ""}> 自动刷新</label>
+  </div>
+  <div class="feed" id="feedList">${feedListHTML(items, feedShown)}</div>`;
+  $(T).scrollTop = st;
+  $("feedSel").onchange = () => {
+    feedSrc = $("feedSel").value;
+    localStorage.setItem("ks_feed_src", feedSrc);
+    viewFeed();
+  };
+  $("feedAuto").onchange = () => {
+    feedAuto = $("feedAuto").checked;
+    localStorage.setItem("ks_feed_auto", feedAuto ? "1" : "0");
+    scheduleFeedRefresh();
+  };
+  scheduleFeedRefresh();
+}
+
+/* ================= 运维（原 klee-panel：状态 / 配置 / 日志） ================= */
+const CFG_FIELDS = [
+  {k:"ws_url", label:"WebSocket 地址", ph:"ws://127.0.0.1:3001"},
+  {k:"group_policy", label:"群聊策略", opts:["mention","open","disabled"]},
+  {k:"dm_policy", label:"私聊策略", opts:["open","disabled"]},
+  {k:"group_chime_probability", label:"群随机搭话概率", hint:"0~1；0.3 ≈ 三成消息来搭话"},
+  {k:"group_chime_cooldown", label:"搭话冷却（秒）"},
+  {k:"send_interval_min", label:"连发气泡间隔·最小（秒）"},
+  {k:"send_interval_max", label:"连发气泡间隔·最大（秒）"},
+  {k:"wake_names", label:"唤醒词", hint:"逗号分隔；留空 = 关"},
+  {k:"notify_recall", label:"撤回通知", bool:true},
+  {k:"notify_poke", label:"戳一戳回应", bool:true},
+  {k:"greet_on_group_add", label:"进群问候", bool:true},
+  {k:"owner_id", label:"主人 QQ"},
+  {k:"forward_nickname", label:"转发卡片署名"},
+  {k:"quote_reply", label:"回复带引用", bool:true},
+  {k:"at_sender", label:"回复 @ 提问者", bool:true},
+  {k:"long_reply_mode", label:"长回复模式", opts:["split","forward"]},
+  {k:"forward_threshold", label:"长回复阈值（字）"},
+  {k:"download_voice", label:"下载收到的语音", bool:true},
+  {k:"max_images", label:"单条最多图片"},
+  {k:"vision_enabled", label:"图片理解（看图模型）", bool:true},
+  {k:"vision_max_bytes", label:"图片体积上限（字节）"},
+  {k:"vision_timeout", label:"图片理解超时（秒）"},
+  {k:"feature_prefix", label:"插件命令前缀"},
+  {k:"tts_enabled", label:"语音回复（TTS）", bool:true},
+  {k:"tts_voice", label:"TTS 音色"},
+  {k:"tts_max_chars", label:"单条语音字数上限"},
+  {k:"tts_max_per_msg", label:"每条回复语音条数"},
+  {k:"rate_limit_per_min", label:"每会话每分钟最多发几条", hint:"0 = 不限"},
+  {k:"rate_limit_burst", label:"突发容量（令牌桶）"},
+  {k:"agent_enabled", label:"Agent 工具循环", bool:true},
+  {k:"agent_owner_only", label:"Agent 仅主人可用", bool:true},
+  {k:"agent_max_steps", label:"Agent 最大步数（0-6）"},
+  {k:"agent_timeout", label:"Agent 总超时（秒）"},
+  {k:"agent_tools", label:"Agent 工具（逗号分隔）", hint:"web_search, web_fetch, kb_search, now, calc, list_skills, read_skill, use_skill, remember, recall"},
+  {k:"agent_skills", label:"Agent 可调用技能（插件）", bool:true},
+  {k:"request_notify", label:"好友/入群请求提醒主人", bool:true},
+  {k:"kb_enabled", label:"知识库注入", bool:true},
+  {k:"kb_url", label:"知识库地址"},
+  {k:"kb_topk", label:"知识库取几条"},
+  {k:"kb_threshold", label:"知识库相似度阈值"},
+  {k:"log_enabled", label:"记录运行日志（state/bot.log）", bool:true,
+   hint:"关掉后运维页日志区显示「已关闭」，重开即恢复"},
+  {k:"log_retention_days", label:"流水保留天数",
+   hint:"0 = 永不清理；只清告警 / 消息流 / 知识库命中 / bot.log，不动聊天记录"},
+  {k:"kb_max_chars", label:"知识库注入字数上限"},
+];
+
+let logTimer = null;
+let qrTimer = null;
+let alertTimer = null;
+let reqTimer = null;
+let opsCfgPrev = {};
+let alertsHash = null;
+let logHash = null;
+let logInited = false;
+function logTick(){ const cb = $("logAuto"); if (V === "ops" && cb && cb.checked) opsLogs(); }
+let boardTimer = null;
+let boardHash = null;
+async function viewBoard(target){
+  const T = target || "view";
+  const [d, ov, pl, ch] = await Promise.all([
+    api("/api/dashboard"), api("/api/overview"), api("/api/plugins"), api("/api/characters")
+  ]);
+  const bhash = JSON.stringify(d, (k, v) => (k === "generated" ? undefined : v));   // generated 每回都变，别拿它当指纹
+  if ($("bdChart") && bhash === boardHash){
+    await viewFeed("feedSlot");                // 看板不重绘，但消息照常刷新
+    return;
+  }
+  boardHash = bhash;
+  const m = d.messages || {};
+  const st = $(T).scrollTop;
+  const daily = d.daily || [];
+  const maxN = Math.max(1, ...daily.map(x => Number(x.n) || 0));
+  const bars = daily.map(x => {
+    const n = Number(x.n) || 0;
+    const h = n ? Math.max(4, Math.round(n / maxN * 88)) : 2;
+    return `<div class="bd-col" title="${esc(x.date)}：${n} 条">
+      <div class="bd-bar${n ? "" : " zero"}" style="height:${h}px"></div>
+      <div class="bd-lb">${esc(x.label || "")}</div>
+    </div>`;
+  }).join("");
+  const srcs = (d.sources || []).map(s => `<div class="bd-row">
+      <span class="tag" style="flex:none">${s.kind === "网页" ? "🌐" : "💬"} ${esc(s.kind)}</span>
+      <span class="bd-nm">${esc(s.label)}</span>
+      <span class="bd-tag">${s.last ? "最近 " + new Date(Number(s.last) * 1000).toLocaleString("zh-CN", {hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : ""}</span>
+      <span class="bd-tag" style="min-width:56px;text-align:right"><b>${s.n}</b> 条</span>
+    </div>`).join("");
+  const affs = (d.affinity || []).map((a, i) => {
+    const medal = ["🥇", "🥈", "🥉"][i] || `${i + 1}.`;
+    const lo = Number(a.prev_at || 0), hi = a.next_at ? Number(a.next_at) : null;
+    const pct = hi && hi > lo ? Math.min(100, Math.round((a.exp - lo) / (hi - lo) * 100)) : 100;
+    const tail = hi ? `再攒 ${hi - a.exp} 点到下一级` : "已是最高级";
+    return `<div class="bd-row">
+      <span class="bd-mk">${medal}</span>
+      <span class="bd-nm"><b>${esc(a.name)}</b> <span class="kv" style="margin:0">Lv.${a.level} ${esc(a.title)}</span></span>
+      <span class="bd-pg" title="${pct}%"><i style="width:${pct}%"></i></span>
+      <span class="bd-tag" style="min-width:104px;text-align:right"><b>${a.exp}</b> 点 · ${esc(tail)}</span>
+      <span class="bd-tag" style="min-width:92px;text-align:right">${a.signed ? "✅ 今日已签到" : "⭕ 未签到"} · 今 ${a.today_msgs} 条</span>
+    </div>`;
+  }).join("");
+  const widgets = boardWidgets(ov || {}, pl || {}, ch || {}, d || {});
+  $(T).innerHTML = `
+  <h2 class="page">📊 看板</h2>
+  <p class="tip">可莉最近过得怎么样，一眼看完。消息量读自 hermes 会话库 <code>state.db</code>，
+  好感度读自 <code>onebot_features/state/affinity.json</code>（等级表直接解析插件源码，和 QQ 里是同一套）。</p>
+  ${widgets}
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <span class="kv" style="margin:0">近 <b>${d.days || daily.length}</b> 天消息走势</span>
+      <button class="btn tiny" onclick="viewBoard()">⟳ 刷新</button>
+    </div>
+    <div class="bd-kpi">
+      <div class="b"><b>${m.today || 0}</b><span>今日消息</span></div>
+      <div class="b"><b>${m.total || 0}</b><span>累计消息</span></div>
+      <div class="b"><b>${m.user || 0}</b><span>其中 · 大家说的</span></div>
+      <div class="b"><b>${m.assistant || 0}</b><span>其中 · 可莉回的</span></div>
+      <div class="b"><b>${d.affinity_total || 0}</b><span>聊过天的人</span></div>
+    </div>
+    <div class="bd-chart" id="bdChart">${bars || '<div class="kv">还没有消息记录</div>'}</div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="kv" style="margin:0 0 6px">💬 活跃来源（按消息量）</div>
+    ${srcs || '<div class="kv">还没有来源数据～</div>'}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="kv" style="margin:0 0 6px">💛 好感度 Top5</div>
+    ${affs || '<div class="kv">还没人跟可莉聊过天呢～</div>'}
+  </div>
+  ${(d.errors && d.errors.length) ? `<div class="card" style="margin-top:14px"><div class="kv" style="color:#c0392b">⚠️ 部分数据读取失败：${esc(d.errors.join("；"))}</div></div>` : ""}
+  <div id="feedSlot" style="padding-bottom:12px"></div>`;
+  $(T).scrollTop = st;                    // 重绘也保住滚动位置
+  await viewFeed("feedSlot");
+  if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
+  boardTimer = setInterval(() => {
+    if (V === "board") viewBoard();
+    else { clearInterval(boardTimer); boardTimer = null; }
+  }, 60000);
+}
+
+function boardWidgets(ov, pl, ch, dash){
+  const mods = (uiModules.length ? uiModules : (UI.modules || []));
+  if (!mods.length) return "";
+  const a = ov.adapter || {}, nap = ov.napcat || {}, gw = ov.gateway || {};
+  const feats = a.features || [];
+  const onFeat = feats.filter(f => f.enabled).length;
+  const cur = (ch.items || []).find(x => x.id === ACTIVE.id) || {};
+  const pend = ((ov.requests || {}).pending) ?? ((dash.requests || {}).pending) ?? 0;
+  const m = dash.messages || {};
+  const cards = {
+    status: () => `<div class="wcard"><div class="wt">🛰 运行状态</div>
+      <div class="wv">${a.connected ? "在线" : "离线"}</div>
+      <div class="ws">${a.connected ? "QQ 已连接" : "QQ 未登录"} · NapCat ${nap.running ? "运行中" : "未运行"} · 面板 ${gw.running === false ? "待机" : "正常"}</div>
+      <a class="wl" href="javascript:go('ops')">去运维 →</a></div>`,
+    quick: () => `<div class="wcard"><div class="wt">⚡ 快捷入口</div>
+      <div class="row" style="margin-top:8px;gap:6px">
+        <button class="btn tiny" onclick="go('chat')">💬 对话</button>
+        <button class="btn tiny" onclick="go('plugins')">🧩 插件</button>
+        <button class="btn tiny" onclick="go('custom')">✨ 自定义</button>
+        <button class="btn tiny" onclick="go('kb')">📚 知识库</button>
+      </div>
+      <div class="ws" style="margin-top:8px">常用页面一键直达。</div></div>`,
+    recent: () => `<div class="wcard"><div class="wt">💬 最近消息</div>
+      <div class="wv">${m.today || 0}</div><div class="ws">今日消息 · 累计 ${m.total || 0} 条</div>
+      <a class="wl" href="javascript:go('feed')">看消息流 →</a></div>`,
+    char: () => `<div class="wcard" style="padding:0;overflow:hidden">
+      <div style="position:relative;height:118px;background:linear-gradient(135deg,${esc(ACTIVE.color)},${esc(ACTIVE.color2)})">
+        <img src="${charArt(ACTIVE.id)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:50% 22%;opacity:.95">
+        <div style="position:absolute;inset:0;background:linear-gradient(180deg,transparent 30%,rgba(0,0,0,.55))"></div>
+        <div style="position:absolute;left:12px;bottom:8px;color:#fff;font-family:var(--font-cute);font-size:20px;text-shadow:0 1px 6px rgba(0,0,0,.4)">${esc(ACTIVE.name)}</div>
+      </div>
+      <div style="padding:10px 14px"><div class="ws">📚 ${cur.kb && cur.kb.chunks || 0} 块记忆 · 🧩 ${(cur.plugins || []).length} 专属插件</div>
+      <a class="wl" href="javascript:go('chars')">切换角色 →</a></div></div>`,
+    plugins: () => `<div class="wcard"><div class="wt">🧩 插件</div>
+      <div class="wv">${onFeat}<span style="font-size:15px;color:var(--ink-soft)"> / ${feats.length}</span></div>
+      <div class="ws">已启用 · 当前角色 ${esc(ACTIVE.name)}</div>
+      <a class="wl" href="javascript:go('plugins')">打开插件商店 →</a></div>`,
+    kb: () => `<div class="wcard"><div class="wt">📚 知识库</div>
+      <div class="wv">${cur.kb && cur.kb.chunks || 0}</div>
+      <div class="ws">${esc(ACTIVE.name)} 的检索块 · ${cur.kb && cur.kb.name ? "已建索引" : "未建索引"}</div>
+      <a class="wl" href="javascript:go('kb')">检索测试 →</a></div>`,
+    ops: () => `<div class="wcard"><div class="wt">🚨 告警</div>
+      <div class="wv">${(ov.alerts || []).length || 0}</div>
+      <div class="ws">最近掉线/恢复事件</div>
+      <a class="wl" href="javascript:go('ops')">查看运维 →</a></div>`,
+    requests: () => `<div class="wcard"><div class="wt">🙋 待处理</div>
+      <div class="wv">${pend}</div><div class="ws">好友 / 入群请求（不会自动同意）</div>
+      <a class="wl" href="javascript:go('ops')">去处理 →</a></div>`,
+  };
+  const html = mods.map(m => {
+    if (String(m).startsWith("!")) return "";
+    const fn = cards[String(m)];
+    return fn ? fn() : "";
+  }).filter(Boolean).join("");
+  return html ? `<div class="wgrid">${html}</div>` : "";
+}
+
+function stopOpsTimers(){
+  if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }
+  if (logTimer){ clearInterval(logTimer); logTimer = null; }
+  if (alertTimer){ clearInterval(alertTimer); alertTimer = null; }
+  if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
+}
+
+async function viewOps(target){
+  const T = target || "view";
+  $(T).innerHTML = `${T === "view" ? '<h2 class="page">⚙️ 运维</h2>' : ''}<div class="kv">正在读取…</div>`;
+  const [ov, cfg] = await Promise.all([api("/api/overview"), api("/api/config")]);
+  const a = ov.adapter || {}, g = ov.gateway || {}, n = ov.napcat || {};
+  const st = a.stats || {};
+  const feats = a.features || [];
+  const onN = feats.filter(f => f.enabled).length;
+  const badF = feats.filter(f => f.error);
+  $(T).innerHTML = `
+  <h2 class="page">⚙️ 运维</h2>
+  <p class="tip">面板 bot / QQ / NapCat 状态、常用配置与日志。QQ 链路已改为面板自持 OneBot 协议。</p>
+  <div class="opsgrid">
+    <div class="card"><h3>🛰️ 面板 bot</h3>
+      <div class="opsline">角色：<b>${esc(ACTIVE.emoji + " " + ACTIVE.name)}</b>
+        <a href="javascript:go('chars')" style="font-size:12px">切换</a><br>
+        状态：<b>${g.active ? "运行中" : "停了"}</b>（${esc(g.state || "?")}）<br>
+        模型：${esc((ov.bot && ov.bot.model && ov.bot.model.model) || "—")}<br>
+        插件：<b>${onN}/${feats.length} 开</b></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn tiny" onclick="opsAct('restart_gateway')">重载插件</button>
+      </div>
+    </div>
+    <div class="card"><h3>💬 QQ 连接</h3>
+      <div class="opsline">连接：<b>${a.connected ? "在线" : "离线"}</b> · 上次事件 ${a.age ?? "—"}s 前 · 运行 ${a.uptime ?? "—"}s<br>
+        收 ${st.events ?? 0} · 发 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 命令 ${st.commands ?? 0} · 错误 ${st.errors ?? 0}</div>
+      ${badF.length ? `<div class="opsline"><b style="color:var(--red)">插件报错：${badF.map(f=>esc(f.name)).join("、")}</b></div>` : ""}
+      <div class="opsline">插件：<b>${onN}/${feats.length} 开</b> · 命中 ${feats.reduce((s,f)=>s+(f.hits||0),0)} 次</div>
+    </div>
+    <div class="card"><h3>🐱 NapCat</h3>
+      <div class="opsline">登录：<b>${n.ok ? (n.is_login ? "已登录" : "未登录") : "取不到"}</b>${n.uin ? ` · ${esc(n.uin)}${n.nick ? " " + esc(n.nick) : ""}` : ""}<br>
+        阶段：${esc(n.phase || "—")}</div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn tiny" onclick="opsAct('restart_napcat')">重启 NapCat</button>
+      </div>
+    </div>
+  </div>
+  <div class="card" id="qrCard" style="margin-bottom:14px"><h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫——不用再等人发截图</span></h3>
+    <div id="qrBox" class="kv">正在读取二维码…</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn tiny" onclick="opsQr(true)">⟳ 刷新二维码</button>
+      <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
+      <span class="kv" id="qrMsg"></span>
+    </div>
+  </div>
+  <div class="card" id="alertCard" style="margin-bottom:14px"><h3>🔔 掉线告警 <span class="kv" style="font-family:var(--font-body)">QQ 离线超过 2 分钟自动记一条，恢复也记一条</span></h3>
+    <div id="alertBox" class="kv">正在读取…</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn tiny" onclick="opsAlerts()">⟳ 刷新</button>
+      <span class="kv" id="alertMsg"></span>
+    </div>
+  </div>
+  <div class="card" id="reqCard" style="margin-bottom:14px"><h3>🙋 好友 / 入群请求 <span class="kv" style="font-family:var(--font-body)">只记录、不自动通过——要同意就点按钮，可莉不会替你做决定</span></h3>
+    <div id="reqBox" class="kv">正在读取…</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn tiny" onclick="opsRequests()">⟳ 刷新</button>
+      <span class="kv" id="reqMsg"></span>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">写入面板 bot 配置（state/bot_config.json），保存后下一条消息即生效</span></h3>
+    ${cfg.ok ? `<div class="cfgform">${CFG_FIELDS.map(f => cfgRow(f, cfg.values || {})).join("")}</div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" onclick="opsSaveCfg()">保存配置</button>
+        <span class="kv" id="cfgMsg"></span>
+      </div>`
+      : `<div class="kv">✗ 读配置失败：${esc(cfg.error || "")}</div>`}
+  </div>
+  <div class="card"><h3>📜 面板 bot 日志</h3>
+    <div class="row" style="margin-bottom:8px">
+      <input type="text" id="logGrep" placeholder="过滤词，比如 OneBot / ERROR / KB" style="flex:1;min-width:180px">
+      <select id="logN"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>
+      <button class="btn" onclick="opsLogs(true)">⟳ 刷新</button>
+      <label class="check" style="font-size:12px"><input type="checkbox" id="logAuto"> 自动刷新</label>
+    </div>
+    <div class="logbox" id="logBox">加载中…</div>
+  </div>`;
+  $("logGrep").addEventListener("keydown", e => { if (e.key === "Enter") opsLogs(); });
+  $("logAuto").onchange = () => {
+    if (logTimer){ clearInterval(logTimer); logTimer = null; }
+    if ($("logAuto").checked) logTimer = setInterval(logTick, 5000);
+  };
+  opsCfgPrev = cfg.values || {};
+  if (!(n.ok && n.is_login)){
+    qrTimer = setInterval(() => opsQr(false), 20000);   // 先立定时器：首刷说明里就有「每 20 秒自动换」
+  }
+  opsQr(false);
+  logHash = null; logInited = false;                    // 页面重新装好，第一次必须真渲染
+  alertsHash = null;
+  opsLogs();
+  opsAlerts();
+  opsRequests();
+  alertTimer = setInterval(opsAlerts, 30000);
+  reqTimer = setInterval(opsRequests, 30000);
+}
+
+/* 好友/入群请求：只展示，通过/拒绝必须人点 */
+async function opsRequests(){
+  const box = $("reqBox"); if (!box) return;
+  const d = await api("/api/requests?n=20");
+  if (!d || !d.ok){ box.innerHTML = '<div class="kv">✗ 读取失败</div>'; return; }
+  const items = d.items || [];
+  const pending = items.filter(x => x.kind && !x.action);
+  if (!pending.length){ box.innerHTML = '<div class="kv">最近没有待处理的请求。</div>'; return; }
+  box.innerHTML = pending.map(r => {
+    const who = esc(r.nickname || r.user_id || "?");
+    const what = r.kind === "friend" ? "加好友" : `进群 ${esc(r.group_id || "")}`;
+    const when = r.ts ? new Date(r.ts * 1000).toLocaleString("zh-CN", {hour12: false}) : "";
+    return `<div class="opsline" style="margin:6px 0">
+      <b>${who}</b>（${esc(r.user_id || "")}）想${what}
+      ${r.comment ? `· 备注：${esc(r.comment)}` : ""}
+      <span class="kv">${esc(when)}</span>
+      <button class="btn tiny" onclick="opsReqAct('${esc(r.flag)}','${esc(r.kind)}',true)">通过</button>
+      <button class="btn tiny" onclick="opsReqAct('${esc(r.flag)}','${esc(r.kind)}',false)">拒绝</button>
+    </div>`;
+  }).join("");
+}
+async function opsReqAct(flag, kind, approve){
+  if (!confirm((approve ? "通过" : "拒绝") + "这个请求？")) return;
+  const d = await post("/api/requests/action", {flag, kind, approve});
+  $("reqMsg").textContent = d.ok ? (approve ? "✓ 已通过" : "✓ 已拒绝") : "✗ " + (d.error || "失败");
+  opsRequests();
+}
+
+/* 掉线告警流水：QQ 离线 >2 分钟落一条 offline，恢复落一条 recovered —— 晨报直接读同一个 alerts.jsonl */
+async function opsAlerts(){
+  const box = $("alertBox"); if (!box) return;
+  const d = await api("/api/alerts?n=20");
+  if (!d || !d.ok){ box.innerHTML = `<div class="kv">✗ 读取失败</div>`; return; }
+  const h = d.health || {};
+  const head = h.connected
+    ? `<b style="color:var(--green)">当前在线</b>`
+    : `<b style="color:var(--red)">当前离线</b> · ${esc(h.detail || h.reason || "")}`;
+  const list = (d.alerts || []).slice().reverse();
+  const rows = list.map(e => {
+    const bad = e.kind === "offline";
+    const dur = (e.down_s === null || e.down_s === undefined) ? "—" : `${e.down_s}s`;
+    return `· <b>${esc(e.time || "")}</b> <span class="pill ${bad ? "bad" : "ok"}" style="font-size:10px;padding:1px 7px">${bad ? "掉线" : "恢复"}</span>
+      ${esc(e.text || "")} <span class="kv">(离线 ${dur})</span>`;
+  }).join("<br>");
+  const ahtml = `<div class="opsline">${head}</div>` + (rows
+    ? `<div class="opsline" style="max-height:220px;overflow:auto;line-height:1.9">${rows}</div>`
+    : `<div class="kv">还没有告警记录 —— 要么一直在线，要么掉线还没超过 2 分钟。</div>`);
+  if (ahtml !== alertsHash){                   // 内容没变就不重绘（30 秒一轮不再闪）
+    alertsHash = ahtml;
+    box.innerHTML = ahtml;
+  }
+  if ($("alertMsg")) $("alertMsg").textContent = "更新于 " + hhmmss(Date.now() / 1000);
+}
+
+/* QQ 被踢下线时，NapCat 会写一张新二维码到缓存 —— 这里就地显示，省掉“截图发给主人”那一环 */
+let qrLastB64 = "";
+async function opsQrOpen(){
+  // 走带鉴权头的 fetch 拿 b64，再开 blob —— 不再裸露 /qr.png
+  const d = await api("/api/napcat/qr");
+  if (!d || !d.ok || !d.b64){ alert("现在没有可打开的二维码"); return; }
+  const a = document.createElement("a");
+  a.href = d.b64; a.target = "_blank"; a.rel = "noreferrer";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function opsQr(manual){
+  const box = $("qrBox"); if (!box) return;
+  const d = await api("/api/napcat/qr");
+  if (!d || !d.ok){
+    if (!$("qrErr")){
+      box.innerHTML = `<div class="kv" id="qrErr">${esc((d && d.error) || "没有二维码")}<br>QQ 已经在线时本来就没有码，不用管它。</div>`;
+    }
+    qrLastB64 = "";
+    if (manual && $("qrMsg")) $("qrMsg").textContent = "没有可扫的码";
+    return;
+  }
+  const info = `
+        生成于 <b>${d.age_s}s</b> 前 · ${d.scale}× 重绘${d.decoded ? "（已解出登录链接）" : ""}
+        ${d.stale ? `<br><b style="color:var(--red)">这张可能已被 NapCat 换掉，点「⟳ 刷新二维码」</b>` : ""}
+        ${d.url ? `<br>登录链接：<code style="word-break:break-all">${esc(d.url)}</code>` : ""}
+        <br><br>用<b>手机 QQ</b> 扫左边这张：拿另一台设备打开本页，或点「↗ 在新标签打开大图」。
+        ${qrTimer ? "<br>本页每 20 秒自动换成最新一张。" : ""}`;
+  if ($("qrImg")){
+    if (d.b64 && d.b64 !== qrLastB64){         // 只有码真的换了才换图 —— 20 秒轮询不再闪
+      $("qrImg").src = d.b64;
+      qrLastB64 = d.b64;
+    }
+    $("qrInfo").innerHTML = info;              // 文字块照常更新（结构不动，不闪）
+  } else {
+    qrLastB64 = d.b64 || "";
+    box.innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      <img id="qrImg" src="${d.b64}" alt="QQ 登录二维码" width="260" height="260"
+           style="image-rendering:pixelated;background:#fff;padding:8px;border-radius:10px">
+      <div class="opsline" id="qrInfo" style="max-width:360px">${info}</div>
+    </div>`;
+  }
+  if (manual && $("qrMsg")) $("qrMsg").textContent = "已刷新 " + hhmmss(Date.now() / 1000);
+}
+
+function cfgRow(field, vals){
+  const v = vals[field.k];
+  const val = v === null || v === undefined ? "" : String(v);
+  let ctl;
+  if (field.bool){
+    ctl = `<select id="cfg_${field.k}"><option value="true" ${val === "true" ? "selected" : ""}>开 / true</option><option value="false" ${val === "false" ? "selected" : ""}>关 / false</option></select>`;
+  } else if (field.opts){
+    ctl = `<select id="cfg_${field.k}">${field.opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  } else {
+    ctl = `<input type="text" id="cfg_${field.k}" value="${esc(val)}" placeholder="${esc(field.ph || "")}">`;
+  }
+  return `<div class="cfgrow"><label>${esc(field.label)}${field.hint ? ` <span class="hint">${esc(field.hint)}</span>` : ""}</label>${ctl}</div>`;
+}
+
+async function opsSaveCfg(){
+  const updates = {};
+  for (const f of CFG_FIELDS){
+    const el = $("cfg_" + f.k); if (!el) continue;
+    const nv = el.value;
+    const ov = opsCfgPrev[f.k];
+    const ovs = ov === null || ov === undefined ? "" : String(ov);
+    if (nv !== ovs) updates[f.k] = nv;      // 只提交改过的字段，没碰的不动
+  }
+  if (!Object.keys(updates).length){ $("cfgMsg").textContent = "没有改动"; return; }
+  $("cfgMsg").textContent = "保存中…";
+  const r = await post("/api/config", {updates});
+  const res = r.results || {};
+  const bad = Object.entries(res).filter(([, s]) => s !== "ok");
+  if (!bad.length){ for (const [k, v] of Object.entries(updates)) opsCfgPrev[k] = v; }
+  $("cfgMsg").innerHTML = bad.length
+    ? `✗ ${bad.map(([k, s]) => esc(k) + "：" + esc(String(s).slice(0, 80))).join("；")}`
+    : `✓ 已写入 ${Object.keys(res).length} 项——已生效`;
+}
+
+async function opsLogs(manual){
+  const box = $("logBox"); if (!box) return;
+  const grepEl = $("logGrep"), nEl = $("logN");
+  const d = await api(`/api/logs?n=${nEl ? encodeURIComponent(nEl.value) : "200"}&grep=${encodeURIComponent(grepEl ? grepEl.value : "")}`);
+  const head = (d && d.enabled === false)
+    ? "（运行日志已关闭 · 常用配置里可重新打开）\n"
+    : "";
+  const lines = (d && d.lines) || [];
+  const lhtml = head + lines.map(l => {
+    const cls = l.includes(" ERROR ") ? " class=\"le\"" : l.includes(" WARNING ") ? " class=\"lw\"" : "";
+    return `<span${cls}>${esc(l)}</span>`;
+  }).join("\n") + `\n\n<span style="color:#c9b8a4">— ${lines.length} 行 —</span>`;
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  if (lhtml !== logHash){                      // 内容没变不重绘；变了的重绘保留滚动，不硬拽到底
+    logHash = lhtml;
+    box.innerHTML = lhtml;
+  }
+  if (manual || !logInited || stick) box.scrollTop = box.scrollHeight;
+  logInited = true;
+}
+
+async function opsAct(action){
+  if (action === "restart_gateway" && !confirm("重载面板 bot 的插件？（QQ 不中断）")) return;
+  if (action === "restart_napcat" && !confirm("确定重启 NapCat？（会尝试快速登录，人在的话最稳）")) return;
+  const r = await post("/api/action", {action});
+  alert(r.msg || (r.ok ? "已执行" : r.error) || "done");
+}
+
+/* ================= 可见性 / 快捷键 ================= */
+let hiddenAt = 0;
+function pauseTimers(){
+  clearInterval(stripTimer); stripTimer = null;
+  if (chat.timer){ clearInterval(chat.timer); chat.timer = null; }
+  if (chat.tick){ clearInterval(chat.tick); chat.tick = null; }
+  if (feedTimer){ clearInterval(feedTimer); feedTimer = null; }
+  if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
+  try{ stopOpsTimers(); }catch(e){}
+}
+function resumeTimers(){
+  if (!stripTimer) stripTimer = setInterval(strip, 15000);
+  strip();
+  if (V === "chat" && !chat.timer){
+    chat.idle = 0;
+    armChatPoll();
+    chat.tick = setInterval(tickTyping, 1000);
+    pollChat();
+  }
+  if (Date.now() - hiddenAt < 30000) return;   // 短暂切走不重绘
+  if (V === "board") viewBoard();
+  else if (V === "feed") viewFeed();
+  else if (V === "ops") viewOpsBot();
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden){ hiddenAt = Date.now(); pauseTimers(); }
+  else resumeTimers();
+});
+document.addEventListener("keydown", (e) => {
+  const tag = (e.target && e.target.tagName || "").toLowerCase();
+  const typing = tag === "input" || tag === "textarea" || (e.target && e.target.isContentEditable);
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"){ e.preventDefault(); cmdkOpen(); return; }
+  if (e.key === "Escape"){
+    cmdkClose(); closePluginDrawer(); closeSheet();
+    return;
+  }
+  if (typing) return;
+  if (e.key === "/"){ e.preventDefault(); cmdkOpen(); return; }
+  if (e.altKey && /^[1-8]$/.test(e.key)){
+    e.preventDefault();
+    const v = PAGES[Number(e.key) - 1]; if (v) go(v[0]);
+  }
+});
+
+/* ================= 启动 ================= */
+async function boot(){
+  try {
+    const d = await api("/api/characters");
+    if (d && d.ok){
+      charData = d;
+      const c = (d.items || []).find(x => x.id === d.active) || (d.items || [])[0];
+      if (c) setActiveChar(c);
+      loadUI(d.active);                                   // 不阻塞首屏
+    }
+  } catch(e){}
+  // PWA 快捷方式（manifest.shortcuts）带 ?v=<页面>
+  const want = new URLSearchParams(location.search).get("v");
+  if (want && PAGES.some(p => p[0] === want)){
+    V = want;
+    history.replaceState(null, "", "/");
+  }
+  render();
+}
+let stripTimer = setInterval(strip, 15000);
+strip();
+boot();
+</script>
+</body>
+</html>

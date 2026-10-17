@@ -1,0 +1,23 @@
+{
+  "id": "klee",
+  "name": "糖果爆破",
+  "version": "1.0",
+  "tokens": {
+    "--bg": "#fff3e2",
+    "--paper": "#fffdf6",
+    "--ink": "#4a342a",
+    "--dim": "#94745a",
+    "--line": "#f2dcc4",
+    "--red": "#e8484f",
+    "--red-deep": "#c93a45",
+    "--red-soft": "#ffe9e6",
+    "--gold": "#f2b23e",
+    "--gold-soft": "#fff3d6",
+    "--sky": "#6fb9e4",
+    "--sky-soft": "#e8f5fc",
+    "--green": "#7aab5e",
+    "--green-soft": "#eef7e8",
+    "--shadow": "0 4px 14px rgba(190,120,80,.14)",
+    "--font-cute": "\"ZCOOL KuaiLe\",\"PingFang SC\",\"HarmonyOS Sans SC\",\"Noto Sans CJK SC\",\"Microsoft YaHei\",sans-serif"
+  }
+}

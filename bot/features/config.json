@@ -1,0 +1,105 @@
+{
+  "enabled": [
+    "affinity",
+    "anniversary",
+    "battery",
+    "bomb",
+    "book",
+    "brew",
+    "butterfly",
+    "charcard",
+    "choose",
+    "comfort",
+    "countdown",
+    "coupon",
+    "cycle",
+    "daily",
+    "diagnose",
+    "dice",
+    "dive",
+    "draw",
+    "echo",
+    "eden",
+    "fortune",
+    "funeral",
+    "gacha",
+    "gallery",
+    "guess",
+    "help",
+    "highperf",
+    "idiom",
+    "keyword",
+    "like",
+    "logbook",
+    "lore",
+    "lullaby",
+    "memory",
+    "mimi",
+    "moderation",
+    "nlu",
+    "novel",
+    "panel",
+    "philia",
+    "poem",
+    "purge_ai_talk",
+    "qr",
+    "quote",
+    "randchar",
+    "reincarnation",
+    "remind",
+    "repair",
+    "repeater",
+    "reunion",
+    "riddle",
+    "rocket",
+    "rps",
+    "say",
+    "school",
+    "smoke",
+    "snow",
+    "stargaze",
+    "tarot",
+    "tears",
+    "treasure",
+    "vote",
+    "vow",
+    "weather",
+    "wish",
+    "xiehouyu"
+  ],
+  "settings": {
+    "keyword": {
+      "rules": [
+        {
+          "pattern": "打卡",
+          "reply": "今天的可莉也活力满满！[表情:呲牙]",
+          "mode": "exact",
+          "cooldown": 0
+        }
+      ]
+    },
+    "draw": {
+      "keep_images": 50,
+      "draw_daily_limit": 0,
+      "_doc": "keep_images=state/images 只留最近几任(0不限)；draw_daily_limit=每天总共最多画几张(0不限)"
+    },
+    "weather": {
+      "card": true,
+      "_doc": "card=true 发天气小卡片；false 只发纯文本。default_city 默认城市，timeout 取数超时秒"
+    },
+    "wish": {
+      "card": true,
+      "avatar": true,
+      "_doc": "card=true 发祈愿卡片；false 只发纯文本（保底记账不受影响）。avatar=true 角色卡贴头像；false 不贴"
+    },
+    "help": {
+      "card": true,
+      "_doc": "card=true 发帮助长图；false 只发文字菜单"
+    },
+    "moderation": {
+      "cooldown": 60,
+      "bad_words": [],
+      "reply": "琴团长会生气的！可莉不听这些～"
+    }
+  }
+}

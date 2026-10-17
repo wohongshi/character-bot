@@ -1,0 +1,21 @@
+{
+  "name": "Character Bot · 角色聊天室",
+  "short_name": "Character Bot",
+  "description": "每个角色都有独立人格、知识库和专属插件。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fff3e2",
+  "theme_color": "#ffefdd",
+  "icons": [
+    { "src": "/static/img/favicon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/img/favicon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/img/favicon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "对话", "url": "/?v=chat" },
+    { "name": "插件", "url": "/?v=plugins" }
+  ]
+}

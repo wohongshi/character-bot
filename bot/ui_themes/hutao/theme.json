@@ -1,0 +1,23 @@
+{
+  "id": "hutao",
+  "name": "往生堂 · 朱墨",
+  "version": "1.0",
+  "tokens": {
+    "--bg": "#f5ebdd",
+    "--paper": "#fffaf1",
+    "--ink": "#2a1c1a",
+    "--dim": "#8a6a5e",
+    "--line": "#e3cdb6",
+    "--red": "#a3232f",
+    "--red-deep": "#7c1822",
+    "--red-soft": "#f7e3dd",
+    "--gold": "#c9a24a",
+    "--gold-soft": "#f8efd8",
+    "--sky": "#8a9a9e",
+    "--sky-soft": "#eef1f1",
+    "--green": "#6f8a5a",
+    "--green-soft": "#eef3e7",
+    "--shadow": "0 3px 0 rgba(122,24,34,.10), 0 10px 24px rgba(80,40,30,.08)",
+    "--font-cute": "\"Noto Serif CJK SC\",\"Songti SC\",\"STSong\",serif"
+  }
+}

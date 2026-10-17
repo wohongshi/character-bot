@@ -1,0 +1,23 @@
+{
+  "id": "atri",
+  "name": "高性能 · 终端",
+  "version": "1.0",
+  "tokens": {
+    "--bg": "#eef4fa",
+    "--paper": "#ffffff",
+    "--ink": "#1f2d3d",
+    "--dim": "#6b8098",
+    "--line": "#d3e2f0",
+    "--red": "#2f6fae",
+    "--red-deep": "#1f5488",
+    "--red-soft": "#e3f0fb",
+    "--gold": "#d8a13c",
+    "--gold-soft": "#fbf1dd",
+    "--sky": "#4f9bd6",
+    "--sky-soft": "#e7f3fc",
+    "--green": "#3f9a7a",
+    "--green-soft": "#e4f5ef",
+    "--shadow": "0 2px 0 rgba(47,111,174,.10), 0 8px 20px rgba(40,80,120,.08)",
+    "--font-cute": "ui-monospace,\"SFMono-Regular\",Menlo,Consolas,\"Noto Sans Mono CJK SC\",monospace"
+  }
+}

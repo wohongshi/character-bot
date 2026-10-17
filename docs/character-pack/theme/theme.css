@@ -1,0 +1,2 @@
+/* 主题插件只写样式；变量在 theme.json 里声明。 */
+body[data-theme="example"] .card { border-color: rgba(242,178,62,.28); }

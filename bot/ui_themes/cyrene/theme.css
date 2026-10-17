@@ -1,0 +1,19 @@
+/* 记忆：书页横线、暖金细边、安静 */
+body[data-theme="cyrene"]{
+  background-image:
+    repeating-linear-gradient(0deg, rgba(123,95,168,.045) 0 1px, transparent 1px 30px),
+    radial-gradient(circle at 86% 10%, rgba(194,168,107,.14), transparent 45%);
+}
+body[data-theme="cyrene"] aside{background:linear-gradient(180deg,#fffdfa,#f3edf8);
+  border-right:1px solid #e7ddcf}
+body[data-theme="cyrene"] .card,body[data-theme="cyrene"] .charitem{
+  border-width:1px;border-radius:6px;box-shadow:0 10px 28px rgba(95,70,137,.07)}
+body[data-theme="cyrene"] nav button{border-radius:6px}
+body[data-theme="cyrene"] nav button.on{background:linear-gradient(135deg,#8a6bb3,#5f4689);
+  box-shadow:0 4px 14px rgba(95,70,137,.25)}
+body[data-theme="cyrene"] .bub{border-width:1px;border-radius:10px;border-top-left-radius:2px;
+  background:#fffdfa;box-shadow:0 6px 18px rgba(95,70,137,.07)}
+body[data-theme="cyrene"] .msg.me .bub{border-radius:10px;border-top-right-radius:2px}
+body[data-theme="cyrene"] h2.page{letter-spacing:2.5px;font-weight:400}
+body[data-theme="cyrene"] .brand::after{content:"❦";font-family:serif;font-size:34px;
+  color:rgba(123,95,168,.18);margin-left:auto}
