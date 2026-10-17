@@ -1815,9 +1815,6 @@ function plugFilter(m){
   document.querySelectorAll("[data-pf]").forEach(b => b.classList.toggle("on", b.dataset.pf === m));
   renderPlugGrid();
 }
-function plugIsMine(p){
-  return !(p.characters || []).length || (p.characters || []).includes(ACTIVE.id);
-}
 function renderPlugGrid(){
   const box = $("plugGrid"); if (!box) return;
   const q = ($("plugSearch") ? $("plugSearch").value : "").trim().toLowerCase();
@@ -1860,195 +1857,6 @@ function renderPlugGrid(){
     </div>`;
   }).join("");
 }
-function openPlug(file){ plSel = file; plTab = "file"; viewPlugins(); }
-
-function plField(key, f, v){
-  const id = "pls_" + key;
-  const label = esc(f.description || key);
-  const t = f.type || "str";
-  if (t === "bool")
-    return `<label class="check" style="display:block;margin:8px 0"><input type="checkbox" id="${id}" ${v ? "checked" : ""}> ${label}</label>`;
-  let input;
-  if (t === "int" || t === "float")
-    input = `<input type="number" id="${id}" value="${v ?? ""}" step="${t === "float" ? "0.1" : "1"}"
-      ${f.min !== undefined ? `min="${f.min}"` : ""} ${f.max !== undefined ? `max="${f.max}"` : ""} style="width:140px">`;
-  else if (t === "select")
-    input = `<select id="${id}">${(f.options || []).map(o => `<option ${String(o) === String(v) ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
-  else if (t === "list")
-    input = `<textarea id="${id}" rows="4" style="width:100%;font-family:var(--font-body)" placeholder="一行一个">${esc((v || []).join("\n"))}</textarea>`;
-  else if (t === "text" || t === "json")
-    input = `<textarea id="${id}" rows="5" style="width:100%;font-family:var(--font-body)">${esc(t === "json" ? JSON.stringify(v ?? null, null, 2) : (v ?? ""))}</textarea>`;
-  else
-    input = `<input type="text" id="${id}" value="${esc(v ?? "")}" style="width:100%">`;
-  return `<label class="f">${label} <span class="kv" style="font-family:var(--font-body)">${esc(key)}</span></label>${input}`;
-}
-async function loadPluginSettings(){
-  const box = $("plSetBox"); if (!box) return;
-  if (!plSel){ box.innerHTML = "先选一个插件"; return; }
-  const d = await api(`/api/plugins/schema?name=${encodeURIComponent(plSel.replace(/\.py$/, ""))}`);
-  if (!d || !d.ok){ box.innerHTML = "✗ 读取失败"; return; }
-  if (!d.has_schema){
-    box.innerHTML = `<div class="kv">这个插件还没声明 <code>CONFIG_SCHEMA</code>。<br>
-      在插件文件里加一段（AstrBot 的 <code>_conf_schema</code> 风格）就能自动出表单：<br>
-      <code>CONFIG_SCHEMA = {"key": {"type": "int", "default": 3, "description": "..."}}</code></div>`;
-    return;
-  }
-  const fields = Object.entries(d.schema || {}).map(([k, f]) => plField(k, f, (d.values || {})[k])).join("");
-  box.innerHTML = `
-    <div class="kv" style="margin-bottom:6px">${esc(d.title || d.name)}${d.usage ? " · " + esc(d.usage) : ""}${d.author ? " · by " + esc(d.author) : ""}</div>
-    ${fields}`;
-}
-async function savePluginSettings(){
-  if (!plSel) return;
-  const d0 = await api(`/api/plugins/schema?name=${encodeURIComponent(plSel.replace(/\.py$/, ""))}`);
-  if (!d0 || !d0.ok) return;
-  const values = {};
-  for (const [key, f] of Object.entries(d0.schema || {})){
-    const el = $("pls_" + key); if (!el) continue;
-    if (f.type === "bool") values[key] = el.checked;
-    else if (f.type === "int" || f.type === "float") values[key] = el.value === "" ? null : Number(el.value);
-    else if (f.type === "list") values[key] = el.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
-    else if (f.type === "json") { try { values[key] = JSON.parse(el.value || "null"); } catch(e){ values[key] = el.value; } }
-    else values[key] = el.value;
-  }
-  const r = await post("/api/plugins/settings", {name: plSel.replace(/\.py$/, ""), values});
-  $("plSetMsg").textContent = r.ok
-    ? "✓ 已保存并重载" + (r.errors && r.errors.length ? "（" + r.errors.join("；") + "）" : "")
-    : "✗ " + (r.error || "保存失败");
-}
-
-async function openFile(name){
-  plSel = name;
-  document.querySelectorAll("#plList button").forEach(b => b.classList.toggle("on", b.textContent.startsWith(name.replace(/\.py$/,""))));
-  const f = await api(`/api/plugins/file?name=${encodeURIComponent(name)}`);
-  if ($("plCode") && f.ok){ $("plCode").value = f.content; $("plName").textContent = name; }
-}
-async function saveFile(){
-  const r = await post("/api/plugins/file", {name: plSel, content: $("plCode").value});
-  $("plMsg").textContent = r.ok ? `✓ ${r.note}` : `✗ ${r.error}`;
-}
-async function saveCfg(){
-  let cfg; try { cfg = JSON.parse($("plCfgBox").value); }
-  catch(e){ $("plMsg").textContent = "✗ JSON 格式错误：" + e.message; return; }
-  const r = await post("/api/plugins/config", {config: cfg});
-  $("plMsg").textContent = r.ok ? `✓ ${r.note}` : `✗ ${r.error}`;
-}
-async function newPlugin(){
-  const name = prompt("新插件文件名（小写字母/下划线，不带 .py）：");
-  if (!name) return;
-  const tpl = `"""${name}：新插件（干跑测试台可以立刻试）"""\n\nNAME = "${name}"\nDESCRIPTION = "……"\nVERSION = "0.1"\n\n\ndef register(api):\n    async def hello(ctx):\n        await ctx.reply("你好呀，这是 ${name} 插件！")\n    api.on_command("${name}", hello, help=".${name} —— 打个招呼")\n`;
-  const r = await post("/api/plugins/file", {name: name + ".py", content: tpl});
-  if (r.ok){ plSel = name + ".py"; await viewPlugins(); }
-  else alert(r.error || "失败");
-}
-async function plStatus(){
-  const box = $("plStat"); if (!box) return;
-  const all = Object.keys(plMeta || {});
-  if (!all.length){ box.innerHTML = `<h3>📊 运行状态</h3><div class="kv">读不到插件状态（bot 可能没在跑）</div>`; return; }
-
-  const row = (n) => {
-    const f = plMeta[n] || {};
-    const bits = [];
-    if (f.hits) bits.push(`命中 ${f.hits}`);
-    if (f.errors) bits.push(`错误 ${f.errors}`);
-    if (f.error) bits.push(`<b style="color:var(--red)">${esc(String(f.error).slice(0,50))}</b>`);
-    const action = f.locked
-      ? `<span class="kv" title="角色限定插件随角色自动启用，不能手动关闭">锁定</span>`
-      : `<button class="btn tiny" onclick="togglePlugin('${esc(n)}')">${f.enabled ? "停用" : "启用"}</button>`;
-    return `<div class="plsrow">
-      <span class="dot ${f.enabled ? "yes" : "no"}"></span>
-      <span class="nm">${esc(f.title || n)}</span>
-      <span class="cnt">${f.enabled ? "运行中" : "已停"}${bits.length ? " · " + bits.join(" · ") : ""}</span>
-      ${action}
-    </div>`;
-  };
-  const isMine = (n) => {
-    const f = plMeta[n] || {};
-    return !f.locked || (f.characters || []).includes(ACTIVE.id);
-  };
-  const common = all.filter(n => !(plMeta[n] || {}).locked);
-  const mine = all.filter(n => (plMeta[n] || {}).locked && isMine(n));
-  const count = (list) => `${list.filter(n => (plMeta[n]||{}).enabled).length}/${list.length} 开`;
-  const sect = (title, list) => list.length
-    ? `<div class="kv" style="margin:10px 0 2px;font-weight:600">${title}
-         <span class="kv" style="font-weight:400">${count(list)}</span></div>
-       <div class="plsgrid">${list.sort().map(row).join("")}</div>`
-    : "";
-  box.innerHTML = `<h3>📊 运行状态 <span class="kv" style="font-family:var(--font-body)">${esc(ACTIVE.emoji + " " + ACTIVE.name)} · 角色限定只列本角色可用的；改完 ≤20 秒热重载</span></h3>`
-    + sect("通用插件（可关闭）", common)
-    + sect(`角色限定 · ${esc(ACTIVE.name)}（不可关闭）`, mine);
-  renderPlugGrid();
-}
-
-function plListHTML(){
-  const badge = (name) => {
-    const m = plMeta[name] || {};
-    if (m.locked) return `<span class="badge on" title="角色限定">锁定</span>`;
-    const on = plCfg.enabled === null || !plCfg.enabled || plCfg.enabled.includes(name);
-    return `<span class="badge ${on ? "on" : "off"}">${on ? "开" : "停"}</span>`;
-  };
-  const group = (locked) => plFiles.filter(f => {
-    const m = plMeta[f.name.replace(/\.py$/, "")] || {};
-    if (Boolean(m.locked) !== locked) return false;
-    // 角色限定只列「当前角色」可用的；别的角色的留给各自角色页
-    if (locked) return (m.characters || []).includes(ACTIVE.id);
-    return true;
-  });
-  const sect = (title, hint, locked) => {
-    const items = group(locked);
-    if (!items.length) return locked
-      ? `<div class="kv" style="margin:8px 0 4px;font-weight:600">${title} <span class="kv" style="font-weight:400">${hint}</span></div>
-         <div class="kv" style="margin-bottom:6px">${esc(ACTIVE.name)}暂时没有专属插件（通用插件照常可用）</div>`
-      : "";
-    return `<div class="kv" style="margin:8px 0 4px;font-weight:600">${title} <span class="kv" style="font-weight:400">${hint}</span></div>` +
-      items.map(f => {
-        const name = f.name.replace(/\.py$/, "");
-        const m = plMeta[name] || {};
-        const sub = m.locked ? ` · ${(m.characters || []).join("/")}` : "";
-        return `<button class="${f.name === plSel ? "on" : ""}" onclick="openFile('${esc(f.name)}')">${esc(m.title || name)}${sub}${badge(name)}</button>`;
-      }).join("");
-  };
-  return sect("通用插件", "可关闭", false)
-    + sect(`角色限定 · ${esc(ACTIVE.name)}`, "随角色自动启用 · 不可关闭", true);
-}
-async function togglePlugin(name){
-  const m = plMeta[name] || {};
-  if (m.locked){ alert("角色限定插件不能关闭，它会随角色自动启用/停用。"); return; }
-  const names = plFiles.map(f => f.name.replace(/\.py$/, ""));
-  const cur = Array.isArray(plCfg.enabled) ? plCfg.enabled.map(String) : names.slice();
-  const set = new Set(cur);
-  set.has(name) ? set.delete(name) : set.add(name);
-  plCfg.enabled = names.filter(n => set.has(n));
-  const r = await post("/api/plugins/config", {config: plCfg});
-  if (!r.ok){ alert(r.error || "失败"); return; }
-  const msg = $("plMsg");
-  if (msg) msg.textContent = `✓ 已${set.has(name) ? "启用" : "停用"} ${name}（≤20 秒生效）`;
-  plStatus();
-}
-async function dryRun(){
-  const spec = {
-    text: $("dryText").value, is_group: $("dryWhere").value === "group",
-    mentioned: $("dryMention").checked, role: $("dryRole").value,
-    as_owner: $("dryOwner").checked, user_name: "干跑访客",
-  };
-  $("dryResult").innerHTML = `<div class="result">正在推演…</div>`;
-  const r = await post("/api/plugins/dryrun", spec);
-  if (!r.ok){ $("dryResult").innerHTML = `<div class="result">✗ ${esc(r.error || "跑不动")}</div>`; return; }
-  const d = r.result;
-  const stop = d.consumed || d.blocked;
-  $("dryResult").innerHTML = `
-    <div class="result">
-      <div class="route ${stop ? "stop" : "agent"}">${esc(d.route)}</div>
-      ${d.config_warning ? `<div class="kv" style="color:var(--red)">⚠ ${esc(d.config_warning)}</div>` : ""}
-      ${d.command ? `<div class="kv">命中命令：<b>.${esc(d.command)}</b></div>` : ""}
-      ${d.hits && d.hits.length ? `<div class="kv">触发的插件：${d.hits.map(h=>`<span class="tag">${esc(h.plugin)}</span>`).join("")}</div>` : ""}
-      ${d.silent ? `<div class="kv">（被静默吞掉：权限不足或冷却中）</div>` : ""}
-      ${d.text !== spec.text ? `<div class="kv">钩子改写后的文本：<div class="bub" style="margin-top:5px">${faces(d.text)}</div></div>` : ""}
-      ${d.state_dir ? `<div class="kv">🔒 状态隔离：这次干跑的状态写在临时目录 <code style="font-size:11px">${esc(d.state_dir)}</code>${(d.isolated_state && d.isolated_state.length) ? `（另有 ${d.isolated_state.length} 个插件常量被强制改写：<code style="font-size:11px">${esc(d.isolated_state.join("、"))}</code>）` : ""} —— <b>不会</b>写生产 <code>onebot_features/state/</code>。</div>` : ""}
-      ${d.replies && d.replies.length ? `<div class="kv">会发出的回复：${d.replies.map(t=>`<div class="say"><div class="ava sm"><img src="/static/img/klee-ava.png" alt=""></div><div class="bub">${faces(t)}</div></div>`).join("")}</div>` : ""}
-    </div>`;
-}
-
 /* ================= 运维 · 机器人（合并页） ================= */
 let opsBotTab = "ops";
 async function viewOpsBot(tab){
@@ -2344,6 +2152,48 @@ async function importZip(){
   }
 }
 
+/* 角色卡：选中（只高亮，不切换） / 切换出演（真的换人格） */
+function pickChar(id){
+  charSel = id;
+  document.querySelectorAll("#view .charitem").forEach(el =>
+    el.classList.toggle("on", el.dataset.id === id));
+  const cur = ((charData && charData.items) || []).find(c => c.id === id);
+  const nameEl = $("charPlugName"), bodyEl = $("charPlugBody");
+  if (cur && nameEl && bodyEl){
+    nameEl.innerHTML = `🧩 ${esc(cur.name)} 的专属插件 `
+      + `<span class="kv" style="font-family:var(--font-body)">随角色自动启用 · 不可关闭</span>`;
+    bodyEl.innerHTML = (cur.plugins || []).length
+      ? cur.plugins.map(p => `<span class="tag">${esc(p.title || p.name)}</span>`).join(" ")
+      : "这个角色暂时没有专属插件（通用插件照常可用）";
+  }
+  if (cur && !cur.active) flash(`已选中「${cur.name}」——点「切换出演」才会真的换人`);
+}
+
+async function switchChar(id){
+  if (!id) return;
+  if (id === ACTIVE.id){ go("chars"); return; }
+  flash("切换中…");
+  let r;
+  try {
+    r = await post("/api/characters/switch", {id});
+  } catch(e){
+    flash("切换失败：网络错误"); return;
+  }
+  if (!r || !r.ok){
+    flash("切换失败：" + ((r && r.error) || "未知错误"));
+    return;
+  }
+  if (r.character) setActiveChar(r.character);
+  if (charData && Array.isArray(charData.items)){
+    charData.active = r.active || id;
+    charData.items.forEach(c => { c.active = (c.id === charData.active); });
+  }
+  charSel = id;
+  chat.char = ""; chat.after = 0;        // 回对话页时重新拉这个角色的会话
+  flash("已切换到 " + ((r.character && r.character.name) || id));
+  go("chars");
+}
+
 async function viewChars(){
   const d = await api("/api/characters");
   if (!d || !d.ok){ $("view").innerHTML = `<h2 class="page">🎭 角色</h2><div class="kv">✗ 读不到角色列表</div>`; return; }
@@ -2403,8 +2253,8 @@ async function viewChars(){
       </div>`).join("")}
   </div>
   <div class="card" style="margin-top:14px">
-    <h3>🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">随角色自动启用 · 不可关闭</span></h3>
-    <div class="kv" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
+    <h3 id="charPlugName">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">随角色自动启用 · 不可关闭</span></h3>
+    <div class="kv" id="charPlugBody" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
     <div class="kv" style="margin-top:10px">人格在「🌸 人格 · 知识库」页编辑。</div>
   </div>`;
 }
@@ -2412,8 +2262,6 @@ async function viewChars(){
 /* ================= 开发规范 ================= */
 let docTab = "characters";
 /* ================= 知识库（已并入「人格 · 知识库」） ================= */
-async function viewKb(){ return viewPersona(); }
-
 /* ================= 提醒·日历 ================= */
 let remindTimer = null;
 function _cd(due, now){

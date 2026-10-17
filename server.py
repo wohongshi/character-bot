@@ -87,7 +87,6 @@ OFFLINE_STALE_S = 90.0
 OFFLINE_ALERT_S = float(os.environ.get("KLEE_OFFLINE_ALERT_S", "120"))   # 连续掉线多久才落一条告警
 ALERT_POLL_S = float(os.environ.get("KLEE_ALERT_POLL_S", "15"))          # 巡检间隔（测试可调小）
 NAPCAT_WEBUI = Path("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json")
-DRYRUN = STUDIO_HOME / "dryrun.py"
 CONFIG_YAML = STATE_DIR / "bot_config.json"
 GATEWAY_LOG = STATE_DIR / "bot.log"
 
@@ -1198,13 +1197,6 @@ def _plugins_uncached() -> dict:
             "meta": _plugin_meta()}
 
 
-def _safe_feature_path(name: str) -> Path | None:
-    name = Path(name).name
-    if not name.endswith(".py") or name.startswith("_"):
-        return None
-    return FEATURES_DIR / name
-
-
 # ---------- 消息流（直读会话库） ----------
 def _feed(limit: int = 80, src: str = "") -> list:
     """src: "" = 全部 | "web" = 网页/其他 | 具体 chat_id（如 private:10001 / group:12345）
@@ -1591,7 +1583,7 @@ def _gz(body: bytes, tag: str) -> bytes:
 
 _SENSITIVE_GET = frozenset({
     "/api/napcat/qr", "/api/requests", "/api/feed", "/api/feed/sources",
-    "/api/logs", "/api/logs/meta", "/api/plugins/file", "/api/persona", "/api/chat",
+    "/api/logs", "/api/logs/meta", "/api/persona", "/api/chat",
     "/api/chat/sessions", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
@@ -1839,14 +1831,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "缺少 name"}, 400)
                 return
             self._json(_plugin_schema(name))
-            return
-        if u.path == "/api/plugins/file":
-            name = (q.get("name") or [""])[0]
-            p = _safe_feature_path(name)
-            if not p or not p.is_file():
-                self._json({"ok": False, "error": "文件不存在"}, 404)
-                return
-            self._json({"ok": True, "name": p.name, "content": p.read_text(encoding="utf-8")})
             return
         if u.path == "/api/feed":
             limit = _int_param(q, "limit", 80, lo=10, hi=200)
@@ -2181,6 +2165,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:                                 # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 400)
                 return
+            # 切换后才失效缓存：POST 开头清过一次，但并发 GET 可能在切换过程中把旧值又缓存上
+            _CHAR_CACHE.update(ts=0.0, data=None)
+            _PLUG_CACHE.update(ts=0.0, data=None)   # snapshot 里的 enabled 是按角色算的
             self._json({"ok": True, "active": info["id"], "character": info,
                         "note": "已切换（人格 / 知识库 / 角色插件一起生效）"})
             return
@@ -2298,49 +2285,6 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "name": name, "errors": errors,
                         "values": _plugin_schema(name)["values"]})
             return
-        if u.path == "/api/plugins/file":
-            name = str(body.get("name") or "")
-            content = body.get("content")
-            p = _safe_feature_path(name)
-            if not p or not isinstance(content, str):
-                self._json({"ok": False, "error": "参数不对"}, 400)
-                return
-            # 先编译校验，再落盘
-            import py_compile
-            uniq = f"{os.getpid()}.{threading.get_ident()}"
-            tmp = p.with_suffix(f".py.{uniq}.tmpcheck")
-            try:
-                tmp.write_text(content, encoding="utf-8")
-                py_compile.compile(str(tmp), doraise=True)
-            except py_compile.PyCompileError as e:
-                self._json({"ok": False, "error": f"语法错误：{e}", "compiled": False}, 400)
-                return
-            finally:
-                tmp.unlink(missing_ok=True)
-            tmp = p.with_suffix(f".py.{uniq}.tmpwrite")   # 原子替换：崩了也不留半截插件（OCR 修）
-            tmp.write_text(content, encoding="utf-8")
-            os.replace(tmp, p)
-            RELOAD_MARK.touch()
-            self._json({"ok": True, "compiled": True, "note": "已保存并重载（≤20 秒）"})
-            return
-
-        if u.path == "/api/plugins/dryrun":
-            spec = {k: body.get(k) for k in
-                    ("text", "is_group", "mentioned", "role", "user_id", "user_name", "group_id")}
-            if not str(spec.get("text") or "").strip():
-                self._json({"ok": False, "error": "写点什么再跑"}, 400)
-                return
-            env = dict(os.environ)
-            env["KLEE_FEATURES_DIR"] = str(FEATURES_DIR)
-            rc, out = _run([_pm_python(), str(DRYRUN), json.dumps(spec, ensure_ascii=False)],
-                           timeout=60, env=env)
-            try:
-                self._json({"ok": rc == 0, "result": json.loads(out.splitlines()[-1]) if out else None,
-                            "raw": None if rc == 0 else out[-500:]})
-            except (ValueError, IndexError):
-                self._json({"ok": False, "error": out[-500:] or f"exit={rc}"})
-            return
-
         if u.path == "/api/agent":
             if not BOT:
                 self._json({"ok": False, "error": "bot 未启动"}, 503)
