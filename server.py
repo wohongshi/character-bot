@@ -1511,10 +1511,41 @@ def _kb_recent(n: int = 20, character: str = "") -> list:
     return out
 
 
+_SRC_CACHE: dict = {"key": None, "data": None}
+
+
+def _iter_jsonl_all(path: Path):
+    """逐行流式读整份 jsonl（不建列表、不限尾部）。给需要全量口径的统计用。"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    continue
+    except OSError:
+        return
+
+
 def _feed_sources() -> list:
-    """「消息」页的来源筛选项：QQ 私聊/群（按号码）+ 网页。"""
+    """「消息」页的来源筛选项：QQ 私聊/群（按号码）+ 网页。
+
+    条数必须按**全量**算。以前复用 `_read_jsonl`（只读最后 4MB），文件一大
+    「（2825 条）」就和真实条数（5 万）对不上了 —— 是个不报错、纯静默的错误。
+    现在全量扫一遍并按 (size, mtime) 缓存；Go 边缘层在时根本走不到这里。
+    """
+    try:
+        st = MSG_JSONL.stat()
+        key = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None and _SRC_CACHE["key"] == key and _SRC_CACHE["data"]:
+        return _SRC_CACHE["data"]
     agg: dict = {}
-    for e in _read_jsonl(MSG_JSONL):
+    for e in _iter_jsonl_all(MSG_JSONL):
         if e.get("role") not in ("user", "assistant") or not e.get("text"):
             continue
         cid = str(e.get("chat_id") or "")
@@ -1532,6 +1563,8 @@ def _feed_sources() -> list:
             web += cnt
     if web:
         out.append({"value": "web", "label": f"网页 / 其他（{web} 条）"})
+    if key is not None:
+        _SRC_CACHE.update(key=key, data=out)
     return out
 
 
@@ -1546,9 +1579,26 @@ LEVELS_FALLBACK = [(0, "路过蒙德的旅人"), (50, "眼熟的路人"), (150, 
                    (1200, "火花骑士的挚友"), (2000, "嘟嘟可的守护者")]
 
 
+_LEVELS_CACHE: dict = {"key": None, "data": None}
+
+
 def _levels() -> list:
+    """好感度等级表。
+
+    affinity.py 的 LEVELS 是唯一真源，但以前每次看板请求都 ast.parse 一遍源文件
+    （实测 13.4ms/次，占 dashboard 的 3/4）。这里按 mtime+size 缓存：插件热重载
+    改了文件就自动失效，其余时间零成本。
+    """
+    src = FEATURES_DIR / "affinity.py"
     try:
-        tree = ast.parse((FEATURES_DIR / "affinity.py").read_text(encoding="utf-8"))
+        st = src.stat()
+        key = (st.st_mtime_ns, st.st_size)
+        if _LEVELS_CACHE["key"] == key and _LEVELS_CACHE["data"]:
+            return _LEVELS_CACHE["data"]
+    except OSError:
+        key = None
+    try:
+        tree = ast.parse(src.read_text(encoding="utf-8"))
         for node in tree.body:
             if not isinstance(node, ast.Assign):
                 continue
@@ -1556,7 +1606,10 @@ def _levels() -> list:
                 continue
             val = ast.literal_eval(node.value)
             if isinstance(val, list) and val:
-                return [(int(x[0]), str(x[1])) for x in val]
+                out = [(int(x[0]), str(x[1])) for x in val]
+                if key is not None:
+                    _LEVELS_CACHE.update(key=key, data=out)
+                return out
     except Exception:                                          # noqa: BLE001
         pass
     return list(LEVELS_FALLBACK)

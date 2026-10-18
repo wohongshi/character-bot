@@ -189,11 +189,19 @@ python3 server.py          # :8797
 | `index.html` | 149 KB | 47 KB（gzip） |
 | `/` 吞吐 | 156 rps / p99 1.16s | **949 rps / p99 74ms** |
 | 角色图吞吐 | 198 rps | **5932 rps**（WebP + 内存缓存） |
+| `/api/feed`（74MB 数据） | 185 ms | **13 ms**（Go 尾部读） |
+| `/api/feed/sources` | 207 ms | **4.6 ms**（Go 增量聚合） |
+| `/api/dashboard` | 43 ms | **16 ms**（等级表缓存） |
 
 做法：去掉 8MB 装饰字体、角色图转 WebP、gzip + ETag/304、HTTP/1.1 keep-alive、
 静态文件与压缩结果内存缓存、`/api/overview` 与 `/api/characters` 2 秒缓存、
 请求去重、切后台暂停轮询、聊天冷场降频、消息懒加载、`content-visibility`，
-以及可选的 **Go 边缘层**（`edge/`，静态资源常驻内存 + 反代，19MB 内存）。
+以及可选的 **Go 边缘层**（`edge/`，静态资源常驻内存 + 反代 + 消息流两个读接口，19MB 内存）。
+
+> 为什么只有静态资源和消息流放在 Go：静态是纯 I/O，消息流是唯一「成本随数据量
+> 线性增长」的接口。业务逻辑（人格、知识库、插件、模型调用）继续留在 Python ——
+> 那里真正的热点（PIL 出图、numpy 向量检索、libwebp 编码）底层本来就是 C，
+> 换语言不会快，只会多一份要同步维护的实现。
 
 ## 目录结构
 

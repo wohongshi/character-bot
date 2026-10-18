@@ -164,6 +164,12 @@ func main() {
 	root = *staticDir
 	index = "static/index.html"
 
+	// 消息流两个读接口由 Go 直接算（增量聚合 + 尾部读取），失败原样反代给 Python。
+	feedPath := messagesPath(root)
+	agg := newSourceAgg(feedPath)
+	studioToken := os.Getenv("KLEE_STUDIO_TOKEN")
+	log.Printf("[klee-edge] feed -> %s", feedPath)
+
 	u, err := url.Parse(*upstream)
 	if err != nil {
 		log.Fatalf("bad upstream: %v", err)
@@ -189,6 +195,14 @@ func main() {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			switch {
+			case edgeGuardOK(r, studioToken) && r.URL.Path == "/api/feed":
+				if serveFeed(w, r, feedPath) {
+					return
+				}
+			case edgeGuardOK(r, studioToken) && r.URL.Path == "/api/feed/sources":
+				if serveSources(w, r, agg) {
+					return
+				}
 			case r.URL.Path == "/" || r.URL.Path == "/index.html":
 				if serveAsset(w, r, index) {
 					return

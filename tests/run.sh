@@ -7,7 +7,7 @@ for f in test_agent.py test_skills.py test_plugin_meta.py test_themes.py \
          test_kb_characters.py test_theme_http.py test_bot_runtime.py \
          test_character_plugins.py test_character_import.py test_plugin_import.py \
          test_plugins_all.py test_logs.py test_ui_refs.py \
-         test_http_hygiene.py test_config_fields.py test_model_discover.py test_plugins_config.py test_copy.py; do
+         test_http_hygiene.py test_config_fields.py test_model_discover.py test_plugins_config.py test_copy.py test_feed_sources.py test_feed_parity.py; do
   echo "== $f"
   python3 "$f" || rc=1
 done
