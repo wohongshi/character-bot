@@ -183,17 +183,18 @@ button.btn.tabon{background:var(--red-soft);border-color:#f0a99e;color:var(--red
   display:flex;align-items:center;justify-content:center}
 .ava img{width:100%;height:100%;display:block;object-fit:cover}
 .msg.me .ava{background:linear-gradient(135deg,#f09a7a,#d96a55);color:#fff;font-size:12px;font-weight:700}
-.msg > div{display:flex;flex-direction:column;align-items:flex-start}
+.msg > div{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
 .msg.me > div{align-items:flex-end}
 .bub{position:relative;background:#fffef8;border:2px solid var(--line);border-radius:16px;border-top-left-radius:5px;
-  padding:10px 14px;box-shadow:var(--shadow);white-space:pre-wrap;word-break:break-word;font-size:14.5px}
+  padding:10px 14px;box-shadow:var(--shadow);white-space:pre-wrap;word-break:break-word;
+  overflow-wrap:anywhere;max-width:100%;font-size:14.5px}
 .bub::before{content:"";position:absolute;left:-8px;top:15px;width:11px;height:11px;
   background:inherit;border-left:2px solid var(--line);border-bottom:2px solid var(--line);transform:rotate(45deg)}
 .msg.me .bub::before{left:auto;right:-8px;border-left:0;border-bottom:0;
   border-right:2px solid #f2bfb4;border-top:2px solid #f2bfb4}
 .msg.me .bub{background:linear-gradient(180deg,#ffece5,#ffdcd0);border-color:#f2bfb4;
   border-radius:16px;border-top-right-radius:5px}
-.meta{font-size:11px;color:var(--dim);margin-top:5px}
+.meta{font-size:11px;color:var(--dim);margin-top:5px;max-width:100%;overflow-wrap:anywhere}
 .msg.me .meta{text-align:right}
 .face{font-size:16px;vertical-align:-2px;margin:0 1px}
 .face.chip{font-size:11px;background:var(--gold-soft);border:1px solid #f0dcae;border-radius:6px;

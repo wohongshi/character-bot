@@ -1595,6 +1595,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "klee-studio/1.0"
     protocol_version = "HTTP/1.1"      # 默认是 1.0 = 每个请求新建 TCP；手机端首屏 20+ 请求差别很大
     timeout = 65                       # 空闲连接最多挂 65 秒（小于常见代理的 75s）
+    # TCP_NODELAY：socket 默认开着 Nagle。响应是「头 + 体」两次小写，
+    # 在 keep-alive 连接上会被对端的 delayed ACK 卡住 40ms（Go 边缘层实测 5ms → 48ms）。
+    disable_nagle_algorithm = True
 
     def log_message(self, fmt, *args):                         # noqa: A003
         # 每个静态请求都往 journald 写一行，是这里最贵的一步（一次 ~2ms，还带磁盘 IO）。
