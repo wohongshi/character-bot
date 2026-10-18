@@ -181,7 +181,9 @@ class BotRuntime(RuntimeFeatures):
         self._chime_last: dict = {}
         self.group_policy = str(config.get("group_policy") or "mention").lower()
         self.max_chars = int(config.get("max_reply_chars") or 1200)
-        # agent（工具循环）：开关 / 仅主人 / 步数 / 工具白名单
+        # agent（工具循环）：常开。面板本身就是半个 agent（网页聊天默认走工具循环），
+        # 所以界面上没有开关；这里仍读配置，只作排障用的后门（模型不支持 tools 时）。
+        # 旧的 false 会在 BotService._load_config 里被纠回 true。
         self.agent_enabled = bool(config.get("agent_enabled", True))
         self.agent_owner_only = bool(config.get("agent_owner_only", True))
         self.agent_max_steps = max(0, min(6, int(config.get("agent_max_steps") or 3)))

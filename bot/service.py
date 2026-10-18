@@ -74,7 +74,8 @@ DEFAULT_CONFIG = {
     "vision_max_bytes": 8 * 1024 * 1024,
     "vision_timeout": 60,
     "max_images": 3,
-    # agent（工具循环）
+    # agent（工具循环）—— 常开：面板本身就是半个 agent，界面不再给开关。
+    # 这个键保留只是为了排障（模型不支持 tools 时可临时关），加载时会把 false 纠成 true。
     "agent_enabled": True,
     "agent_owner_only": True,
     "agent_max_steps": 3,
@@ -231,6 +232,11 @@ class BotService:
                 legacy_tools = "agent_tools" in disk and "agent_skills" not in disk
                 # 系统插件是后加的：老配置没有这个键时，把原来那个 adapter 迁成
                 # 「已启用」，否则升级一次机器人就静默掉线（用户会以为程序坏了）。
+                # agent 改成常开：旧配置里显式关掉的，加载时纠回 true，
+                # 否则升级完还是关着（用户找不到开关，会以为功能坏了）。
+                if disk.get("agent_enabled") is False:
+                    disk["agent_enabled"] = True
+                    self._config_needs_persist = True
                 legacy_platform = ("system_plugins" not in disk)
                 if legacy_platform:
                     disk["system_plugins"] = [str(disk.get("adapter") or "onebot11")]

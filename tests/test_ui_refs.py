@@ -59,7 +59,8 @@ check("关键交互函数齐全", not miss_req, str(miss_req))
 
 # 4) 已删掉的东西不许再被引用（防止改回来一半）
 GONE = ["restorePersona", "viewDocs", "openFile", "savePluginFile",
-        "opsQr", "opsQrOpen"]   # 旧版二维码接口名已废弃（现在叫 qrRefresh/qrArm，只在机器人页）
+        "opsQr", "opsQrOpen",   # 旧版二维码接口名已废弃（现在叫 qrRefresh/qrArm，只在机器人页）
+        "agentBtn", "agEnabled"]  # agent 常开：开关已拆掉，别再长回来
 referenced = [n for n in GONE if re.search(rf"(?<![\w$.]){re.escape(n)}\s*\(", html)]
 check("已移除的功能不再被引用", not referenced, str(referenced))
 

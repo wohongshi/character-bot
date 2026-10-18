@@ -764,7 +764,9 @@ def _chat_worker() -> None:
             persona = _persona_text(cid)
             cname = (_char_store().get(cid) or {}).get("name") or cid
             reasoning = str(job.get("reasoning") or "default")
-            use_agent = bool(job.get("agent")) and rt is not None
+            # 面板本身就是半个 agent：网页聊天默认就走工具循环，
+            # 不再读 job["agent"]（前端也已经没有那个开关了）。
+            use_agent = rt is not None
             msgs = [{"role": "system", "content": persona +
                      f"\n\n【对话场景】你现在在网页面板里和主人聊天，你就是{cname}。像手机聊天一样说短句，别用 Markdown。"}]
             kb_ctx = _kb_context(job["text"], cid)
@@ -1964,7 +1966,8 @@ def _agent_get() -> dict:
     cfg = BOT.config
     return {
         "ok": True,
-        "enabled": bool(cfg.get("agent_enabled", True)),
+        # 常开：面板本身就是半个 agent。保留这个字段是为了前端/测试知道「不用开关」。
+        "enabled": True,
         "owner_only": bool(cfg.get("agent_owner_only", True)),
         "max_steps": int(cfg.get("agent_max_steps") or 3),
         "timeout": float(cfg.get("agent_timeout") or 120),
@@ -2899,7 +2902,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 upd = {}
-                for k, typ in (("enabled", bool), ("owner_only", bool),
+                # `enabled` 故意不在这个列表里：agent 常开，接口也不再暴露开关。
+                # 老客户端仍可能带 enabled=false，直接忽略（不报错，也不生效）。
+                for k, typ in (("owner_only", bool),
                                ("max_steps", int), ("timeout", float)):
                     if k in body and body[k] is not None:
                         upd[k] = typ(body[k])
@@ -2909,8 +2914,6 @@ class Handler(BaseHTTPRequestHandler):
                 if "skills" in body:
                     upd["skills"] = bool(body.get("skills"))
                 cfg_patch = {}
-                if "enabled" in upd:
-                    cfg_patch["agent_enabled"] = upd["enabled"]
                 if "owner_only" in upd:
                     cfg_patch["agent_owner_only"] = upd["owner_only"]
                 if "max_steps" in upd:
