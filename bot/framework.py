@@ -189,7 +189,13 @@ def coerce_setting(field: dict, value):
     if typ == "json":
         if isinstance(value, (dict, list)):
             return value
-        return json.loads(str(value or "null"))
+        # 已经是 JSON 标量（bool / 数字）就原样返回：str(False) 是 "False"，
+        # json.loads 不认；`value or "null"` 更糟，会把 0 / False 变成 null。
+        if isinstance(value, (bool, int, float)):
+            return value
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return json.loads(str(value))
     if typ == "select":
         out = str(value)
         allowed = [str(x) for x in field.get("options") or []]
@@ -503,7 +509,8 @@ class FeatureAPI:
             if cmd.help:
                 out.append(cmd.help)
             else:
-                out.append(f".{cmd.name}")
+                prefix = str(getattr(self._manager.adapter, "feature_prefix", ".") or ".")
+                out.append(f"{prefix}{cmd.name}")
         return out
 
     def log(self, msg: str, *args: Any) -> None:
@@ -584,6 +591,9 @@ class FeatureManager:
             self._load_locked()
 
     def _load_locked(self) -> None:
+        # 指纹在装载**之前**取：装载过程中又改文件的话，下一轮扫描还能发现变化；
+        # 取在末尾会把「没被装载进去的那版」当成已处理，改动永远丢失。
+        fp_at_start = self._fingerprint()
         self.scaffold()
         # 复位注册表（hits/errors 跨重载保留）。
         # `plugin == "__builtin__"` 的是运行时自带的命令（如 .agent），不来自插件文件，
@@ -631,7 +641,7 @@ class FeatureManager:
         self.hooks_request.sort(key=lambda h: h.priority)
         self.loaded = True
         self.last_reload_ts = time.time()
-        self._fp_seen = self._fingerprint()
+        self._fp_seen = fp_at_start
         logger.info("OneBot: 插件装载完成 —— %d 个（启用 %d），命令 %d 个，NLU %d 条，钩子 入%d/出%d",
                     len(self.plugins),
                     sum(1 for p in self.plugins.values() if p["enabled"]),
@@ -677,8 +687,13 @@ class FeatureManager:
 
         # 元信息：优先模块变量，其次 docstring 首行
         desc = str(getattr(module, "DESCRIPTION", "") or "").strip()
-        if not desc and module.__doc__:
-            desc = module.__doc__.strip().splitlines()[0]
+        if not desc:
+            # `"   "` 这种 docstring：strip() 之后 splitlines() 是空列表，
+            # [0] 直接 IndexError —— 而且这行在 try/except 之外，一个插件的
+            # 空白 docstring 会把整次装载带崩。
+            doc = (module.__doc__ or "").strip()
+            if doc:
+                desc = doc.splitlines()[0]
         meta = getattr(module, "__plugin_meta__", None)
         meta = meta if isinstance(meta, dict) else {}
         info["description"] = str(meta.get("description") or desc)
@@ -702,7 +717,7 @@ class FeatureManager:
         info["locked"] = bool(info["characters"])
 
         if info["locked"]:
-            info["enabled"] = self.active_character in info["characters"]
+            info["enabled"] = str(self.active_character).strip().lower() in info["characters"]
             info["lock_reason"] = ("当前角色可用" if info["enabled"]
                                    else "仅 " + "/".join(info["characters"]) + " 可用")
         elif enabled_cfg is None:
@@ -792,7 +807,9 @@ class FeatureManager:
         t = (text or "").strip()
         if not t:
             return None
-        for r in sorted(self.nlu_rules, key=lambda r: (r.priority, r.seq)):
+        with self._lock:
+            rules = sorted(self.nlu_rules, key=lambda r: (r.priority, r.seq))
+        for r in rules:
             m = r.pattern.fullmatch(t)
             if not m:
                 continue
@@ -816,7 +833,9 @@ class FeatureManager:
 
         async def _features_cmd(ctx: FeatureContext) -> None:
             if ctx.args and ctx.args[0].lower() in ("reload", "重载"):
-                self.load()
+                # 装载要 import/exec 上百个文件，放线程里跑，别卡住事件循环
+                # （卡住期间连心跳都发不出去）。
+                await asyncio.to_thread(self.load)
                 await ctx.reply("🧩 插件已重载")
                 return
             lines = ["🧩 可莉的插件："]
@@ -849,7 +868,8 @@ class FeatureManager:
         if not parsed:
             return False
         token, args = parsed
-        cmd = self.commands.get(token.lower())
+        with self._lock:                    # 热重载会在另一个线程重置字典
+            cmd = self.commands.get(token.lower())
         if cmd is None:
             return False
 
@@ -893,7 +913,9 @@ class FeatureManager:
 
     async def run_message_hooks(self, ctx: FeatureContext) -> bool:
         """入站钩子链；返回 False = 消息被拦下（不再发往 agent）。"""
-        for hook in self.hooks_in:
+        with self._lock:                    # 快照：热重载会在别的线程重建这个列表
+            hooks = list(self.hooks_in)
+        for hook in hooks:
             try:
                 res = hook.handler(ctx)
                 if inspect.isawaitable(res):
@@ -915,7 +937,8 @@ class FeatureManager:
 
         异常只计数不抛：一个插件写错不该让「提醒主人」也失效。
         """
-        hooks = self.hooks_notice if kind == "notice" else self.hooks_request
+        with self._lock:
+            hooks = list(self.hooks_notice if kind == "notice" else self.hooks_request)
         if not hooks:
             return []
         ctx = EventContext(adapter=getattr(self, "adapter", None), kind=kind,
@@ -938,7 +961,9 @@ class FeatureManager:
         """出站钩子链；返回改写后的文本。"""
 
         sc = _SendCtx(chat_id=chat_id, is_group=is_group)
-        for hook in self.hooks_out:
+        with self._lock:
+            hooks = list(self.hooks_out)
+        for hook in hooks:
             try:
                 res = hook.handler(sc, text)
                 if inspect.isawaitable(res):

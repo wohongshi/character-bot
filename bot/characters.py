@@ -168,7 +168,13 @@ def load_definitions(state_dir: Path) -> dict:
     data = _read_json(repo_file)
     if data:
         rows = data.get("characters") if isinstance(data, dict) else data
-        for row in rows or []:
+        if isinstance(rows, dict):        # 单个角色对象也认
+            rows = [rows]
+        if not isinstance(rows, (list, tuple)):
+            # `{"characters": 5}` 这种：直接迭代会 TypeError，整个启动挂掉
+            log.warning("characters.json 的 characters 必须是数组，已忽略")
+            rows = []
+        for row in rows:
             try:
                 d = _clean_def(row)
                 defs[d["id"]] = d
@@ -215,7 +221,9 @@ class CharacterStore:
     def reload_defs(self) -> dict:
         self.defs = load_definitions(self.state_dir)
         self._ensure_souls()
-        if self.active_id() not in self.defs:
+        # 注意：不能写 `if self.active_id() not in self.defs` —— active_id()
+        # 在 id 不存在时已经回 DEFAULT_ID，条件永远为假，坏值就永远留在文件里。
+        if self.data.get("active") not in self.defs:
             self.data["active"] = DEFAULT_ID
         return self.defs
 
@@ -227,12 +235,23 @@ class CharacterStore:
             src = self.seeds / c.get("seed", f"{c['id']}.md")
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                if src.exists():
-                    shutil.copy2(src, dest)
-                else:
-                    dest.write_text(
-                        f"# {c['name']}\n\n你是{c['name']}。用自然的短句聊天，像在手机上发消息。\n",
-                        encoding="utf-8")
+                # 先写临时文件再 os.replace：中途失败（磁盘满/被 kill）不会留下
+                # 半截 SOUL.md —— 那种文件下次启动会被 exists() 当成「已播种」，
+                # 角色的人格就永久缺一块，而且没有任何报错。
+                tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                try:
+                    if src.exists():
+                        shutil.copy2(src, tmp)
+                    else:
+                        tmp.write_text(
+                            f"# {c['name']}\n\n你是{c['name']}。用自然的短句聊天，像在手机上发消息。\n",
+                            encoding="utf-8")
+                    os.replace(tmp, dest)
+                finally:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 log.info("角色 %s 人格已播种：%s", c["id"], dest)
             except OSError as e:
                 log.warning("角色 %s 人格播种失败：%s", c["id"], e)
@@ -250,7 +269,10 @@ class CharacterStore:
         active = str(d.get("active") or DEFAULT_ID)
         if active not in self.defs:
             active = DEFAULT_ID
-        return {"active": active, "order": [str(x) for x in (d.get("order") or [])]}
+        order = d.get("order")
+        if not isinstance(order, (list, tuple)):
+            order = []                    # `"order": 5` 迭代会 TypeError
+        return {"active": active, "order": [str(x) for x in order]}
 
     def save(self) -> None:
         with SAVE_LOCK:
@@ -321,6 +343,8 @@ class CharacterStore:
             raise CharacterError(f"没有角色 {cid!r}")
         if not theme_id:
             raise CharacterError("theme 不能为空")
+        if not _TOKEN_RE.match(theme_id):
+            raise CharacterError("theme 只能是小写字母/数字/-/_，最长 32")
         d = {k: cur.get(k) for k in _FIELDS}
         d["theme"] = theme_id
         self._write_user_def(d)

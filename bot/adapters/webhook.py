@@ -64,7 +64,10 @@ class WebhookAdapter(BaseAdapter):
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 body = r.read(2048).decode("utf-8", "replace")
-            return {"ok": True, "status": 200, "body": body[:500], "message_id": ""}
+                # 2xx 不只有 200（Bark/ntfy 的异步受理常回 201/202），
+                # 写死 200 会让排障时对不上服务端日志。
+                status = int(getattr(r, "status", 200) or 200)
+            return {"ok": True, "status": status, "body": body[:500], "message_id": ""}
         except urllib.error.HTTPError as e:
             detail = ""
             try:
@@ -89,12 +92,18 @@ class WebhookAdapter(BaseAdapter):
                    at_uid: Optional[str] = None) -> Any:
         p = Path(path)
         try:
+            # 先 stat 再读：误传几百 MB 的文件时，read_bytes() 会先把内存吃满
+            # 才轮到「太大」的判断（这台机器只有 1GB 内存）。
+            size = p.stat().st_size
+            if size > MAX_IMAGE_BYTES:
+                raise AdapterError(f"图片过大（{size} 字节，上限 {MAX_IMAGE_BYTES}），webhook 不发")
             raw = p.read_bytes()
         except OSError as e:
             raise AdapterError(f"读不到图片 {p}：{e}") from e
-        if len(raw) > MAX_IMAGE_BYTES:
+        if len(raw) > MAX_IMAGE_BYTES:          # stat 与读取之间被换掉的情况
             raise AdapterError(f"图片过大（{len(raw)} 字节），webhook 不发")
         payload = {"chat_id": chat_id, "platform": self.platform,
+                   "reply_to": reply_to or "", "at_uid": at_uid or "",
                    "image_base64": base64.b64encode(raw).decode("ascii"),
                    "image_name": p.name}
         payload[self.field] = caption or ""
@@ -114,7 +123,17 @@ class WebhookAdapter(BaseAdapter):
 
     def reconfigure(self, config: dict) -> bool:
         super().reconfigure(config)
-        self.url = str(self.config.get("webhook_url") or self.url).strip()
-        self.token = str(self.config.get("webhook_token") or "").strip()
-        self.field = str(self.config.get("webhook_field") or self.field).strip() or "text"
+        incoming = dict(config or {})
+        # 这些键「传了空的」= 清空；只有没传才沿用旧值
+        if "webhook_url" in incoming:
+            self.url = str(incoming.get("webhook_url") or "").strip()
+        if "webhook_token" in incoming:
+            self.token = str(incoming.get("webhook_token") or "").strip()
+        if "webhook_field" in incoming:
+            self.field = str(incoming.get("webhook_field") or "").strip() or "text"
+        if "webhook_timeout" in incoming:
+            try:
+                self.timeout = max(1.0, float(incoming.get("webhook_timeout")))
+            except (TypeError, ValueError):
+                pass
         return True

@@ -57,6 +57,16 @@ def _opener(url: str):
     return urllib.request.build_opener()
 
 
+def _open_url(req, timeout: float):
+    """打一次 HTTP（本机/内网绕开代理）。
+
+    单独抽出来是为了让测试能替换：测试里以前 patch `urllib.request.urlopen`，
+    而这里必须用 opener 才能绕代理 —— 不抽这一层，测试的桩就失效，
+    单测会真的去请求线上模型（已经发生过一次）。
+    """
+    return _opener(req.full_url).open(req, timeout=timeout)
+
+
 def _models_from_payload(obj) -> list[str]:
     """兼容几种常见 /models 返回：OpenAI、Gemini 风格、Ollama。"""
     out: list[str] = []
@@ -81,8 +91,13 @@ def _models_from_payload(obj) -> list[str]:
                 for it in v:
                     take(it)
             elif isinstance(v, dict):
-                for it in (v.get("data") or v.get("models") or []):
-                    take(it)
+                # `v` 也可能是「模型名 → 元数据」的映射，直接迭代会拿到一堆键名
+                inner = v.get("data")
+                if not isinstance(inner, list):
+                    inner = v.get("models")
+                if isinstance(inner, list):
+                    for it in inner:
+                        take(it)
     return out
 
 
@@ -332,7 +347,9 @@ class ModelStore:
                 raise ValueError(f"没有 provider {pid}")
             for key in ("active", "vision", "agent"):
                 sec = self.data.get(key)
-                if isinstance(sec, dict) and sec.get("provider") == pid:
+                # vision/agent 的「关闭」就是 model 为空，此时并不真的在用这个 provider
+                if isinstance(sec, dict) and sec.get("provider") == pid \
+                        and (key == "active" or sec.get("model")):
                     raise ValueError(f"provider {pid} 正在被 {key} 使用，先换掉再删")
             self.data["providers"] = [p for p in provs if p.get("id") != pid]
             self._save_locked()
@@ -382,7 +399,10 @@ class ModelStore:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:      # noqa: S310
+            # 和 discover_models 用同一个 opener：本机/内网 provider 绕开 HTTP(S)_PROXY。
+            # 之前这里用全局 urlopen —— 环境里一有 http_proxy，127.0.0.1:7863 就被
+            # 送去代理，报 "via 127.0.0.1" 或干脆超时。
+            with _open_url(req, timeout) as r:                           # noqa: S310
                 raw = r.read().decode("utf-8", "replace") or "{}"
         except urllib.error.HTTPError as e:
             body = ""
@@ -413,7 +433,9 @@ class ModelStore:
         for c in (msg.get("tool_calls") or []):
             if not isinstance(c, dict):
                 continue
-            fn = c.get("function") or {}
+            fn = c.get("function")
+            if not isinstance(fn, dict):      # 上游偶尔给字符串/None
+                continue
             name = str(fn.get("name") or "").strip()
             if not name:
                 continue

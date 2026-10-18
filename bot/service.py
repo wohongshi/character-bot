@@ -6,6 +6,7 @@ import concurrent.futures
 import copy
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -96,13 +97,19 @@ def coerce_config(patch: dict) -> dict:
                 out[k] = bool(v)
         elif isinstance(default, int):
             try:
-                out[k] = int(float(v))
-            except (TypeError, ValueError):
+                num = float(v)
+                if not math.isfinite(num):        # "inf" / "nan" / "1e400"
+                    raise ValueError("要有限数字")
+                out[k] = int(num)
+            except (TypeError, ValueError, OverflowError):
                 out[k] = default
         elif isinstance(default, float):
             try:
-                out[k] = float(v)
-            except (TypeError, ValueError):
+                num = float(v)
+                if not math.isfinite(num):
+                    raise ValueError("要有限数字")
+                out[k] = num
+            except (TypeError, ValueError, OverflowError):
                 out[k] = default
         elif isinstance(default, list):
             if isinstance(v, str):
@@ -285,54 +292,71 @@ class BotService:
             self._sync_log_handler()
             self._thread.start()
             self.runtime.loop = self.loop
+            fut = None
             try:
-                asyncio.run_coroutine_threadsafe(self.runtime.start(), self.loop)
+                fut = asyncio.run_coroutine_threadsafe(self.runtime.start(), self.loop)
             except Exception:                                      # noqa: BLE001
                 logger.warning("插件看护任务启动失败")
+
+            def _start_done(f, _rt=self.runtime):
+                # run_coroutine_threadsafe 返回的 Future 里存着协程抛的异常，
+                # 不读出来就等于「服务自称已启动、看护任务其实死了」。
+                if f.cancelled():
+                    return
+                exc = f.exception()
+                if exc is not None:
+                    logger.error("插件看护任务启动失败：%s: %s",
+                                 type(exc).__name__, exc)
+
+            if fut is not None:
+                fut.add_done_callback(_start_done)
             self.runtime.loop_thread = self._thread
 
     def stop(self) -> None:
+        # 全程持 _cfg_lock（RLock）：以前只在开头持有，后面拆 loop 的过程中
+        # 并发的 start() 能装好新的 loop/thread，再被这里 `self.loop = None` 抹掉 ——
+        # 服务还在跑，但已经没有任何引用能停它。
         with self._cfg_lock:
             if not self._started:
                 return
             self._started = False
             rt, th, loop = self.runtime, self._thread, self.loop
             self.runtime = None
-        if loop is not None and rt is not None:
-            try:
-                asyncio.run_coroutine_threadsafe(rt.stop(), loop).result(timeout=2)
-            except Exception:                                      # noqa: BLE001
-                pass
-        if loop is not None:
-            try:
-                def _cancel_all():
-                    for task in asyncio.all_tasks(loop):
-                        task.cancel()
-                loop.call_soon_threadsafe(_cancel_all)
-                loop.call_soon_threadsafe(loop.stop)
-            except RuntimeError:
-                pass
-        if th is not None and th.ident is not None:
-            th.join(timeout=3.0)
-            if th.is_alive():
-                logger.warning("bot 循环线程 3 秒内没有退出（可能卡在插件里）")
-        with self._inflight_lock:
-            self._inflight = 0
-            self._epoch += 1                # 让 stop 前发出的旧回调失效，别再减计数
-        if loop is not None and not loop.is_running():
-            try:
-                loop.close()
-            except RuntimeError:
-                pass
-        self.loop = None
-        self._thread = None
-        if self._log_handler:
-            try:
-                logging.getLogger("klee").removeHandler(self._log_handler)
-                self._log_handler.close()
-            except OSError:
-                pass
-            self._log_handler = None
+            if loop is not None and rt is not None:
+                try:
+                    asyncio.run_coroutine_threadsafe(rt.stop(), loop).result(timeout=2)
+                except Exception:                                  # noqa: BLE001
+                    pass
+            if loop is not None:
+                try:
+                    def _cancel_all():
+                        for task in asyncio.all_tasks(loop):
+                            task.cancel()
+                    loop.call_soon_threadsafe(_cancel_all)
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+            if th is not None and th.ident is not None:
+                th.join(timeout=3.0)
+                if th.is_alive():
+                    logger.warning("bot 循环线程 3 秒内没有退出（可能卡在插件里）")
+            with self._inflight_lock:
+                self._inflight = 0
+                self._epoch += 1            # 让 stop 前发出的旧回调失效，别再减计数
+            if loop is not None and not loop.is_running():
+                try:
+                    loop.close()
+                except RuntimeError:
+                    pass
+            self.loop = None
+            self._thread = None
+            if self._log_handler:
+                try:
+                    logging.getLogger("klee").removeHandler(self._log_handler)
+                    self._log_handler.close()
+                except OSError:
+                    pass
+                self._log_handler = None
 
     def reload(self) -> None:
         rt, loop = self.runtime, self.loop
@@ -386,10 +410,12 @@ class BotService:
         `rt.set_character` 会改 active_character / soul_path / 插件门控，必须在 bot 循环线程里跑，
         否则和 handle_event 并发改同一份状态（面板点切换时正好来消息，就可能用错人格）。
         """
-        info = self.characters.set_active(cid)
+        # 只有在没有运行时（未启动）时才由这里落盘；有运行时就交给
+        # rt.set_character 去写 —— 它会先改内存再 save，失败不会留下
+        # 「文件里换了、实际人格还是旧的」这种不一致状态。
         rt, loop = self.runtime, self.loop
         if rt is None:
-            return info
+            return self.characters.set_active(cid)
         if loop is None:
             raise RuntimeError("bot 循环未启动")
         fut = concurrent.futures.Future()

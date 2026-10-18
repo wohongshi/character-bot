@@ -72,8 +72,13 @@ class OneBotHTTP:
         if not sep:
             kind, target = "private", kind          # 兼容裸数字（当私聊）
         target = target.strip()
-        if (kind not in ("group", "private") or not target.isascii()
-                or not target.isdigit() or int(target) <= 0):
+        valid = False
+        if kind in ("group", "private") and target.isascii() and target.isdigit():
+            try:
+                valid = int(target) > 0
+            except ValueError:              # 4300 位以上的数字串会触发 int 位数上限
+                valid = False
+        if not valid:
             raise OneBotError(f"非法 chat_id：{chat_id!r}（期望 'group:<id>' / 'private:<id>'）")
         return kind, target
 
@@ -137,23 +142,20 @@ class OneBotHTTP:
         """发语音（record 段，base64 上传）。"""
         from pathlib import Path
         p = Path(path)
-        try:
-            if p.stat().st_size > self.MAX_VOICE_BYTES:
-                raise OneBotError(f"语音过大（{p.stat().st_size} 字节，上限 "
-                                  f"{self.MAX_VOICE_BYTES}）：{p}")
-        except OSError as e:
-            raise OneBotError(f"读取语音失败：{p}: {type(e).__name__}: {e}") from e
+        # 只 stat 一次、只用一个上限。以前先判 5MB、又判 10MB（永远不可能触发），
+        # 中间还重复 stat 两次 —— 复制粘贴留下的死代码。
         try:
             size = p.stat().st_size
         except OSError as e:
             raise OneBotError(f"读取语音失败：{p}: {type(e).__name__}: {e}") from e
-        if size > 10 * 1024 * 1024:
-            raise OneBotError(f"语音过大（{size} 字节）：{p}")
+        if size > self.MAX_VOICE_BYTES:
+            raise OneBotError(f"语音过大（{size} 字节，上限 "
+                              f"{self.MAX_VOICE_BYTES}）：{p}")
         try:
             raw = p.read_bytes()
         except OSError as e:
             raise OneBotError(f"读取语音失败：{p}: {type(e).__name__}: {e}") from e
-        if len(raw) > 10 * 1024 * 1024:
+        if len(raw) > self.MAX_VOICE_BYTES:      # stat 与读取之间被换掉的兜底
             raise OneBotError(f"语音过大（{len(raw)} 字节）：{p}")
         import base64
         segs = []

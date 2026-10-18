@@ -361,16 +361,19 @@ class BotRuntime(RuntimeFeatures):
             text, voice_texts = self.extract_voice_tags(text)
         if not text and not voice_texts:
             return SimpleNamespace(success=True)
+        # 限流放在分支前：以前只有语音的回复会在检查之前就 return，
+        # rate_limit_per_min 对 TTS 完全不生效，也不计入 sent。
+        if not self.allow_send(chat_id):
+            logger.warning("限流：%s 超过 rate_limit_per_min=%s", chat_id, self.rate_limit_per_min)
+            return SimpleNamespace(success=False, error="rate_limited")
         if not text:
             ok = False
             for vt in voice_texts[:1]:
                 ok = await self.send_voice(chat_id, vt)
             if ok:
+                self.stats["sent"] += 1
                 return SimpleNamespace(success=True)
             text = voice_texts[0]                     # TTS 失败 → 至少把话发出去
-        if not self.allow_send(chat_id):
-            logger.warning("限流：%s 超过 rate_limit_per_min=%s", chat_id, self.rate_limit_per_min)
-            return SimpleNamespace(success=False, error="rate_limited")
         chunks = self._chunk_text(text)
         parts = []
         for ch in chunks:
@@ -547,16 +550,25 @@ class BotRuntime(RuntimeFeatures):
         self.stats["last_event_ts"] = time.time()
         self.stats["last_event_text"] = text[:80]
 
+        # 引用是「给模型看的上下文」，不是用户说的话。
+        # 以前直接把 `[引用: …]` 拼进 text 再去分发命令，回复一条消息发 .help
+        # 就永远不命中（_split_command 看首字符）。
+        dispatch_text = text
+        chat_text = text
         if reply_ids:
             quoted = await self._resolve_quoted(reply_ids[0])
             if quoted:
-                text = f"[引用: {quoted}]\n{text}"
+                chat_text = f"[引用: {quoted}]\n{text}"
         chat_id = self._chat_id(is_group, group_id, user_id)
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
-        self._log_msg(chat_id, "user", text)
+        self._log_msg(chat_id, "user", chat_text)
+
+        # 群聊策略 disabled = 群聊完全不理（连命令也不接，和面板/INSTALL 的措辞一致）
+        if is_group and self.group_policy == "disabled":
+            return
 
         ctx = FeatureContext(
-            adapter=self, text=text, is_group=is_group, group_id=group_id,
+            adapter=self, text=dispatch_text, is_group=is_group, group_id=group_id,
             user_id=user_id,
             user_name=str(sender.get("card") or sender.get("nickname") or user_id),
             message_id=str(ev.get("message_id") or ""), mentioned=mentioned,
@@ -577,15 +589,20 @@ class BotRuntime(RuntimeFeatures):
             chime = self._maybe_chime(group_id)
             if not chime:
                 return                                            # 闲聊/ NLU 必须被叫到
+        # open = 群里的每条都看；mention 已在上面的分支筛过；私聊永远看
+        allow_chat = (not ctx.is_group or self.group_policy == "open"
+                      or ctx.mentioned or chime)
 
-        # 3) 自然语言（只有被叫到/私聊才尝试）
-        if ctx.mentioned or chime or not ctx.is_group:
-            hit = self.mgr.nlu_match(ctx.text.strip())
+        # 3) 自然语言（只有被叫到/私聊/开放模式才尝试）
+        if allow_chat:
+            # NLU 拿用户原话匹配（带 [引用: …] 前缀会匹配不上）
+            hit = self.mgr.nlu_match(dispatch_text.strip())
             if hit:
                 ctx.text = self.feature_prefix + hit.lstrip("./／")
                 if await self.mgr.handle_command(ctx):
                     self.stats["commands"] += 1
                     return
+            ctx.text = chat_text              # 进模型时才把引用上下文带上
             # 4) 图片理解：先把图交给 vision 模型，换成文字描述再进聊天
             if images and not await self._prepare_images(ctx, images):
                 return
@@ -794,9 +811,13 @@ class BotRuntime(RuntimeFeatures):
             return
         chat_id = ctx.chat_id
         async with self._hist_lock:
-            hist = self.hist.setdefault(self._hist_key(chat_id), [])
+            hist_key = self._hist_key(chat_id)
+            hist = self.hist.setdefault(hist_key, [])
             while len(self.hist) > 200:                          # 会话数封顶
-                self.hist.pop(next(iter(self.hist)))
+                oldest = next(iter(self.hist))
+                if oldest == hist_key:                           # 别把正在聊的这个踢掉
+                    break
+                self.hist.pop(oldest)
             hist_snapshot = list(hist)
         kb = await asyncio.to_thread(self._kb_context, text)
         msgs = self._build_messages(ctx, text, hist=hist_snapshot, kb=kb)
@@ -986,7 +1007,10 @@ class BotRuntime(RuntimeFeatures):
         self.agent_owner_only = bool(cfg.get("agent_owner_only", True))
         self.agent_max_steps = max(0, min(6, int(cfg.get("agent_max_steps") or self.agent_max_steps)))
         self.agent_timeout = max(10.0, float(cfg.get("agent_timeout") or self.agent_timeout))
-        self.agent_tools = agent_mod.resolve_tools(cfg.get("agent_tools") or self.agent_tools)
+        # 注意别写 `cfg.get("agent_tools") or self.agent_tools`：面板上把工具全取消
+        # 就是空列表，`or` 会把它顶回旧白名单 —— 用户看到的「关掉」是假的。
+        if cfg.get("agent_tools") is not None:
+            self.agent_tools = agent_mod.resolve_tools(cfg.get("agent_tools"))
         self.agent_skills = bool(cfg.get("agent_skills", self.agent_skills))
         self.vision_enabled = bool(cfg.get("vision_enabled", True))
         self.vision_max_bytes = int(cfg.get("vision_max_bytes") or self.vision_max_bytes)

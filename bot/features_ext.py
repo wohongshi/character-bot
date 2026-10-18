@@ -9,7 +9,6 @@ import inspect
 import logging
 import re
 import time
-from pathlib import Path
 
 from .tts import synthesize
 
@@ -49,7 +48,9 @@ class RuntimeFeatures:
         # 走 `self.ob`（传输句柄）而不是 `self.adapter`：
         # ① 老代码/测试都是把 FakeOB 挂到 rt.ob 上做隔离的，绕过它就变成真发网络请求；
         # ② 切换适配器时两者一起换（apply_config 里），不会分叉。
-        target = getattr(self, "ob", None) or self.adapter
+        target = getattr(self, "ob", None)
+        if target is None:                 # 显式判 None：对象可能是 falsy 的
+            target = self.adapter
         fn = getattr(target, name, None)
         if not callable(fn):
             from .adapters.base import AdapterError
@@ -95,9 +96,14 @@ class RuntimeFeatures:
         cap = max(1.0, self.rate_limit_burst)
         rate = self.rate_limit_per_min / 60.0
         if len(self._buckets) > 500:                              # 清闲置桶，防无限增长
-            refill_s = (cap / rate) if rate > 0 else 0
+            # 之前 idle 阈值 = refill_s*2：限流设成 1 次/分钟时那是 20 分钟，
+            # 几分钟内的会话全留下 → 每次 >500 都重建整张表，越跑越慢。
+            idle_s = max((cap / rate) * 2 if rate > 0 else 0.0, 60.0)
             self._buckets = {k: v for k, v in self._buckets.items()
-                             if now - v[1] < refill_s * 2}
+                             if now - v[1] < idle_s}
+            if len(self._buckets) > 500:            # 还超标就按最久未用淘汰
+                keep = sorted(self._buckets.items(), key=lambda kv: kv[1][1])[-500:]
+                self._buckets = dict(keep)
         tokens, last = self._buckets.get(chat_id, (cap, now))
         tokens = min(cap, tokens + (now - last) * rate)
         if tokens < 1.0:

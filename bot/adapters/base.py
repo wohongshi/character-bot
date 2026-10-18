@@ -38,10 +38,18 @@ REGISTRY: Dict[str, type["BaseAdapter"]] = {}
 
 
 def register(cls: type["BaseAdapter"]) -> type["BaseAdapter"]:
-    """类装饰器：把适配器登记进 REGISTRY。"""
+    """类装饰器：把适配器登记进 REGISTRY。
+
+    同名 platform 直接报错，不静默覆盖：否则 `build()` 选到哪个实现取决于
+    import 顺序，出问题时毫无线索（配置写的是 webhook，跑起来可能是别的）。
+    """
     platform = str(getattr(cls, "platform", "") or "").strip().lower()
     if not platform:
         raise AdapterError(f"{cls.__name__} 没有声明 platform")
+    prev = REGISTRY.get(platform)
+    if prev is not None and prev is not cls:
+        raise AdapterError(
+            f"platform {platform!r} 已被 {prev.__name__} 占用，{cls.__name__} 无法注册")
     REGISTRY[platform] = cls
     return cls
 
@@ -50,9 +58,11 @@ def available() -> list:
     """所有已注册的适配器（面板用来出下拉）。"""
     out = []
     for pid, cls in sorted(REGISTRY.items()):
+        # `"   "` 这种 docstring：strip() 之后是空列表，[0] 会 IndexError，
+        # 整个面板的适配器列表就没了。
+        doc = (cls.__doc__ or "").strip()
         out.append({"id": pid, "name": getattr(cls, "title", pid),
-                    "description": (cls.__doc__ or "").strip().splitlines()[0]
-                    if cls.__doc__ else ""})
+                    "description": doc.splitlines()[0] if doc else ""})
     return out
 
 
@@ -142,10 +152,19 @@ class BaseAdapter:
                 "capabilities": dict(self.CAPABILITIES)}
 
     def reconfigure(self, config: dict) -> bool:
-        """配置热更新。返回 True 表示连的是同一个目标、已就地生效。"""
-        self.config = {**self.config, **(config or {})}
-        self.owner_id = str(self.config.get("owner_id") or self.owner_id or "")
-        self.self_id = str(self.config.get("self_id") or self.self_id or "")
+        """配置热更新。
+
+        返回 True 表示就地生效；返回 False 表示「连接目标变了，请重建实例」。
+        基类不碰任何连接，所以无条件 True —— 会换目标的适配器要覆盖它。
+        """
+        incoming = dict(config or {})
+        self.config = {**self.config, **incoming}
+        # 只在这次配置里**带了**这个键时才改：显式传空串是「清掉」的意思，
+        # 用 `or self.owner_id` 会把它顶回旧值，等于永远清不掉。
+        if "owner_id" in incoming:
+            self.owner_id = str(incoming.get("owner_id") or "")
+        if "self_id" in incoming:
+            self.self_id = str(incoming.get("self_id") or "")
         return True
 
     def close(self) -> None:

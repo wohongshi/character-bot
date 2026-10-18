@@ -94,10 +94,15 @@ class OneBotAdapter(BaseAdapter):
     def health(self) -> dict:
         try:
             st = self.raw.get_status()
-            ok = bool(st)
+            st = st if isinstance(st, dict) else {}
+            # HTTP 通了 ≠ QQ 在线：NapCat 掉线时照样回 {"online": false}。
+            # 之前只看 bool(st)，面板会把「未登录」显示成健康。
+            online = st.get("online")
+            ok = bool(online) if online is not None else bool(st)
             return {"ok": ok, "platform": self.platform, "base": self.base,
-                    "online": (st or {}).get("online"),
-                    "detail": "" if ok else "get_status 返回空"}
+                    "online": online,
+                    "detail": "" if ok else ("QQ 未登录" if online is False
+                                             else "get_status 返回空")}
         except Exception as e:                                    # noqa: BLE001
             return {"ok": False, "platform": self.platform, "base": self.base,
                     "error": f"{type(e).__name__}: {e}"}

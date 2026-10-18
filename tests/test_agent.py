@@ -228,14 +228,14 @@ def main():
         def __exit__(self, *a):
             return False
 
-    orig = L.urllib.request.urlopen
+    orig = L._open_url
     try:
         payload = {"choices": [{"message": {
             "content": "", "reasoning_content": "想一下",
             "tool_calls": [{"id": "call_1", "type": "function",
                             "function": {"name": "now", "arguments": "{}"}}]},
             "finish_reason": "tool_calls"}]}
-        L.urllib.request.urlopen = lambda *a, **k: Resp(json.dumps(payload).encode())
+        L._open_url = lambda *a, **k: Resp(json.dumps(payload).encode())
         got = ms.complete_raw([{"role": "user", "content": "x"}], tools=A.specs(["now"]))
         check("7.1 content 空时回退 reasoning", got["text"] == "想一下", str(got))
         check("7.2 tool_calls 归一化", got["tool_calls"] == [{"id": "call_1", "name": "now",
@@ -243,15 +243,15 @@ def main():
         check("7.3 finish_reason 保留", got["finish_reason"] == "tool_calls")
         payload2 = {"choices": [{"message": {"content": "", "tool_calls": [
             {"id": "c9", "function": {"name": "calc", "arguments": {"expr": "1+1"}}}]}}]}
-        L.urllib.request.urlopen = lambda *a, **k: Resp(json.dumps(payload2).encode())
+        L._open_url = lambda *a, **k: Resp(json.dumps(payload2).encode())
         got2 = ms.complete_raw([{"role": "user", "content": "x"}])
         check("7.4 非字符串 arguments 会序列化",
               got2["tool_calls"][0]["arguments"] == '{"expr": "1+1"}', str(got2))
-        L.urllib.request.urlopen = lambda *a, **k: Resp(json.dumps(
+        L._open_url = lambda *a, **k: Resp(json.dumps(
             {"choices": [{"message": {"content": "普通回答"}}]}).encode())
         check("7.5 chat() 仍返回纯文本", ms.chat([{"role": "user", "content": "x"}]) == "普通回答")
     finally:
-        L.urllib.request.urlopen = orig
+        L._open_url = orig
 
     print()
     print(f"PASS {len(PASS)} / {len(PASS) + len(FAIL)}")
