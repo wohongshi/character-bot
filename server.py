@@ -44,6 +44,63 @@ import qrimg
 logger = logging.getLogger("klee.studio")
 
 # —— 面板自持 bot（不依赖 Hermes 网关）——
+def _env_set(name: str, value: str, path=None) -> None:
+    """把 KEY=VALUE 写进 .env（保留其它行/注释），并立刻生效到本进程。
+
+    面板里加供应商时用；不写进 state/models.json，所以 Key 不会跟着配置文件走。
+    """
+    name = str(name or "").strip()
+    if not re.match(r"^[A-Z][A-Z0-9_]{1,40}$", name):
+        raise ValueError("环境变量名只能是大写字母/数字/下划线，且以字母开头")
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError("Key 不能为空")
+    path = Path(path) if path else (Path(__file__).resolve().parent / ".env")
+    lines: list[str] = []
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines()
+    hit = False
+    for i, line in enumerate(lines):
+        t = line.strip()
+        if not t or t.startswith("#") or "=" not in t:
+            continue
+        if t.split("=", 1)[0].strip() == name:
+            lines[i] = f"{name}={value}"
+            hit = True
+            break
+    if not hit:
+        lines.append(f"{name}={value}")
+    tmp = path.with_suffix(".env.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.environ[name] = value
+
+
+def _env_lookup(name: str) -> str:
+    """先查进程环境，再回读 .env —— 面板里刚填的 key_env 不必重启服务。"""
+    name = str(name or "").strip()
+    if not name:
+        return ""
+    val = os.environ.get(name, "")
+    if val:
+        return val
+    try:
+        for line in (Path(__file__).resolve().parent / ".env").read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() == name:
+                v = v.strip().strip('"').strip("'")
+                if v:
+                    os.environ.setdefault(name, v)
+                return v
+    except Exception:                                          # noqa: BLE001
+        pass
+    return ""
+
+
 def _load_env() -> None:
     """读 studio 自己的 .env（KEY=VALUE），只补缺不覆盖已有环境变量。"""
     try:
@@ -2194,6 +2251,37 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_models_get())
             except Exception as e:                                 # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 400)
+            return
+
+        if u.path == "/api/models/key":
+            key_env = str(body.get("key_env") or "").strip()
+            try:
+                _env_set(key_env, str(body.get("value") or ""))
+            except Exception as e:                             # noqa: BLE001
+                self._json({"ok": False, "error": str(e)[:200]}, 400)
+                return
+            self._json({"ok": True, "key_env": key_env,
+                        "length": len(str(body.get("value") or "").strip()),
+                        "saved_to": ".env"}, 200)
+            return
+
+        if u.path == "/api/models/discover":
+            from bot.llm import discover_models
+            api = str(body.get("api") or "").strip()
+            key_env = str(body.get("key_env") or "").strip()
+            pid = str(body.get("provider") or "").strip()
+            if pid and not key_env and BOT:                    # 编辑已有供应商：沿用它的 key_env
+                prov = BOT.models.get_provider(pid)
+                if prov:
+                    key_env = str(prov.get("key_env") or "").strip()
+                    if not api:
+                        api = str(prov.get("api") or "")
+            key = _env_lookup(key_env)
+            out = discover_models(api, key)
+            out["key_env"] = key_env
+            out["key_seen"] = bool(key)
+            out["count"] = len(out.get("models") or [])
+            self._json(out, 200 if out.get("ok") else 400)
             return
 
         if u.path == "/api/models/test":

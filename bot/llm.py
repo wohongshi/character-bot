@@ -12,8 +12,10 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -41,6 +43,106 @@ DEFAULT_PROVIDERS = [
         "models": ["mimo-v2.5-tts"],
     },
 ]
+
+
+# ---------- 供应商模型发现 ----------
+_LOCAL_HOST_RE = re.compile(r"^(?:localhost|127\.|0\.0\.0\.0|::1|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)")
+
+
+def _opener(url: str):
+    """本机/内网地址绕开 HTTP(S)_PROXY（否则代理会把 127.0.0.1 拦掉）。"""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if _LOCAL_HOST_RE.match(host) or host in ("localhost", ""):
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener()
+
+
+def _models_from_payload(obj) -> list[str]:
+    """兼容几种常见 /models 返回：OpenAI、Gemini 风格、Ollama。"""
+    out: list[str] = []
+
+    def take(item):
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            for k in ("id", "name", "model", "title"):
+                v = item.get(k)
+                if isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+                    return
+
+    if isinstance(obj, list):
+        for it in obj:
+            take(it)
+    elif isinstance(obj, dict):
+        for key in ("data", "models", "result"):
+            v = obj.get(key)
+            if isinstance(v, list):
+                for it in v:
+                    take(it)
+            elif isinstance(v, dict):
+                for it in (v.get("data") or v.get("models") or []):
+                    take(it)
+    return out
+
+
+def discover_models(api: str, key: str = "", timeout: float = 15) -> dict:
+    """打 {api}/models 拿模型清单。
+
+    返回 {ok, models, url, error}；`error` 里带 HTTP 状态码和上游原话，
+    这样面板能直接告诉用户是地址写错、还是 key 不对。
+    """
+    api = str(api or "").strip().rstrip("/")
+    if not api.startswith(("http://", "https://")):
+        return {"ok": False, "models": [], "error": "地址要以 http:// 或 https:// 开头"}
+    urls = [f"{api}/models"]
+    if not re.search(r"/v\d+$", api):
+        urls.append(f"{api}/v1/models")
+        urls.append(f"{api}/api/tags")          # Ollama
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    errs: list[str] = []
+    for url in urls:
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with _opener(url).open(req, timeout=timeout) as r:
+                body = r.read(4 * 1024 * 1024).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            raw = ""
+            try:
+                raw = e.read(600).decode("utf-8", "replace").strip().replace("\n", " ")
+            except Exception:                                   # noqa: BLE001
+                pass
+            errs.append(f"{e.code} {e.reason}" + (f"：{raw}" if raw else ""))
+            if e.code in (401, 403):
+                return {"ok": False, "models": [], "url": url,
+                        "error": f"{e.code} 鉴权失败（key 不对或没设置）：{raw}"[:400]}
+            continue
+        except urllib.error.URLError as e:
+            r = e.reason
+            if isinstance(r, ConnectionRefusedError):
+                errs.append(f"连不上 {url}（端口没开或地址写错）")
+            elif isinstance(r, (TimeoutError, socket.timeout)):
+                errs.append(f"{url} 超时（{timeout:.0f}s 没响应）")
+            else:
+                errs.append(f"{url} 打不开：{r}")
+            continue
+        except Exception as e:                                  # noqa: BLE001
+            errs.append(f"{type(e).__name__}: {e}")
+            continue
+        try:
+            obj = json.loads(body)
+        except Exception:                                       # noqa: BLE001
+            errs.append(f"{url} 返回的不是 JSON（前 80 字：{body[:80]!r}）")
+            continue
+        models = sorted({m for m in _models_from_payload(obj) if m})
+        if models:
+            return {"ok": True, "models": models, "url": url, "error": ""}
+        errs.append(f"{url} 里没有模型清单")
+    # 404 只是「这个路径没有」，别盖掉「返回的不是 JSON / 401」这种更有用的信息
+    useful = next((e for e in errs if not e.startswith("404")), errs[0] if errs else "")
+    return {"ok": False, "models": [], "error": useful or "拉不到模型清单"}
 
 
 class ModelStore:

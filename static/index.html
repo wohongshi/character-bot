@@ -244,6 +244,20 @@ input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,texta
 input[type=checkbox]{accent-color:var(--red);width:15px;height:15px}
 input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .check{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ink)}
+.mpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:2px 14px;
+  max-height:280px;overflow:auto;margin-top:8px;padding:10px 12px;border-radius:12px;
+  border:2px solid var(--line);background:var(--surface-2)}
+.mpick label{display:flex;gap:7px;align-items:center;min-width:0;cursor:pointer;
+  font-size:12px;color:var(--ink);padding:3px 0}
+.mpick label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mpick input{flex:none;accent-color:var(--ui-accent);margin:0}
+.mpick{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--ink) 30%,transparent) transparent}
+.mpick::-webkit-scrollbar{width:10px}
+.mpick::-webkit-scrollbar-track{background:transparent}
+.mpick::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--ink) 26%,transparent);
+  border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+.mpick::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--ink) 45%,transparent);background-clip:padding-box}
+@media(max-width:700px){.mpick{grid-template-columns:1fr;max-height:300px}}
 /* 人格页：官方介绍卡 */
 .posterRow{display:flex;gap:20px;align-items:center}
 .posterRow img{width:102px;border-radius:14px;border:3px solid #fff;
@@ -740,7 +754,7 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
 .fld{display:flex;flex-direction:column;gap:6px}
 .fld label{font-size:11.5px;color:var(--ink-soft);letter-spacing:.5px}
-.fld input[type=text],.fld select,.fld input[type=number]{
+.fld input[type=text],.fld input[type=password],.fld select,.fld input[type=number]{
   border-radius:12px;border:1px solid var(--glass-line);background:var(--surface-2);padding:8px 11px;font-size:13px;color:var(--ink)}
 .seg{display:flex;gap:6px;flex-wrap:wrap}
 .seg button{border-radius:999px;padding:6px 12px;font-size:12px;border:1px solid var(--glass-line);background:var(--surface-2);color:var(--ink);cursor:pointer}
@@ -1870,6 +1884,7 @@ async function mountAgentCard(){
   const [md, ag] = await Promise.all([api("/api/models"), api("/api/agent")]);
   const provs = (md && md.providers) || [];
   window.__provs = provs;
+  pvFetched = "";
   const act = (md && md.active) || {};
   const agentCfg = (ag && ag.ok) ? ag : {enabled:false, owner_only:true, max_steps:3,
     timeout:120, tools:[], available_tools:[], model:{}};
@@ -1909,18 +1924,40 @@ async function mountAgentCard(){
   <div class="card">
     <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">OpenAI 兼容接口；Key 只从环境变量读，不写进配置文件</span></h3>
     <div class="row" style="font-size:12px">
-      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${esc(p.api||"")} ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
+      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${(p.models||[]).length} 个模型 · ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
       <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
     </div>
-    <div class="row" style="margin-top:10px">
-      <input id="pvId" placeholder="id（字母/数字/_-）" style="width:150px">
-      <input id="pvName" placeholder="显示名" style="width:150px">
-      <input id="pvApi" placeholder="https://api.example.com/v1" style="min-width:260px">
-      <input id="pvKeyEnv" placeholder="KEY_ENV（环境变量名）" style="width:180px">
+    <div class="row" style="margin-top:10px;align-items:flex-end">
+      <div class="fld"><label>供应商 id</label>
+        <input id="pvId" placeholder="myapi" style="width:140px"></div>
+      <div class="fld"><label>显示名</label>
+        <input id="pvName" placeholder="我的中转" style="width:150px"></div>
+      <div class="fld" style="flex:1;min-width:240px"><label>接口地址（OpenAI 兼容，一般以 /v1 结尾）</label>
+        <input id="pvApi" placeholder="https://api.example.com/v1" title="OpenAI 兼容接口地址，一般以 /v1 结尾"
+               oninput="pvAuto()" onblur="pvAuto()"></div>
+      <div class="fld"><label>Key 环境变量名</label>
+        <input id="pvKeyEnv" placeholder="MYAPI_KEY" style="width:170px"
+               oninput="pvAuto()" onblur="pvAuto()"></div>
     </div>
-    <div class="row" style="margin-top:8px">
-      <textarea id="pvModels" rows="3" placeholder="模型名，一行一个" style="flex:1;min-width:260px;font-family:var(--font-body)"></textarea>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <input id="pvKey" type="password" autocomplete="new-password"
+             placeholder="粘贴 Key（存到本机 .env，已设置就留空）"
+             style="min-width:320px">
+      <button class="btn tiny" onclick="botProvSaveKey()">保存 Key</button>
+      <span class="kv" id="pvKeyOut"></span>
     </div>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <button class="btn tiny" onclick="botProvFetch()">⟳ 拉取模型</button>
+      <input id="pvSearch" placeholder="筛选…" style="width:130px;display:none" oninput="pvFilter()">
+      <a href="javascript:pvPickAll(1)" id="pvAll" style="display:none;font-size:12px">全选</a>
+      <a href="javascript:pvPickAll(0)" id="pvNone" style="display:none;font-size:12px">清空</a>
+      <span class="kv" id="pvFetchOut">填好地址就自动拉取，不用手打模型名</span>
+    </div>
+    <div id="pvModelBox" class="mpick" style="display:none"></div>
+    <details style="margin-top:8px">
+      <summary class="kv" style="cursor:pointer">手动填写模型名（地址拉不到时用）</summary>
+      <textarea id="pvModels" rows="3" placeholder="模型名，一行一个" style="width:100%;margin-top:6px;font-family:var(--font-body)"></textarea>
+    </details>
     <div class="row" style="margin-top:8px">
       <button class="btn" onclick="botProvSave()">保存供应商</button>
       <span class="kv" id="pvOut"></span>
@@ -1934,9 +1971,14 @@ async function mountAgentCard(){
       <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
       <span class="kv" id="qrMsg"></span>
     </div>`;
+  if (pvPending){                        // 保存/删除后卡片重建，把结果补回去
+    const o = $("pvOut");
+    if (o) o.textContent = pvPending;
+    pvPending = "";
+  }
 }
 let plugMode = "all";
-const PLUG_ICON = {klee:"💥",hutao:"🦋",citlali:"🔮",cyrene:"🪶",atri:"⚙️"};
+const PLUG_ICON = {klee:"💥",hutao:"🦋",citlali:"🔮",cyrene:"🪶",honghong:"🦊",atri:"⚙️"};
 let plugSearchTimer = null;
 function plugSearchSoon(){
   clearTimeout(plugSearchTimer);
@@ -2161,35 +2203,164 @@ async function botSaveAgent(){
     ? `✓ 已保存：${d.enabled ? "启用" : "关闭"} · ${d.owner_only ? "仅主人" : "所有人"} · 最多 ${d.max_steps} 步 · 工具 ${d.tools.length} 个 · 技能${d.skills ? "开" : "关"} · 模型 ${d.model.provider} / ${d.model.model}`
     : "✗ " + (d.error || "保存失败");
 }
+/* ---- 模型供应商：地址一填就自动拉模型清单，勾选即可，不用手打 ---- */
+let pvFetched = "";          // 上一次成功拉取的 api|key_env，防重复请求
+let pvPending = "";          // 卡片重渲染后要补到 pvOut 的一句话
+let pvTimer = null;
+
+function pvModelLines(){
+  return ($("pvModels").value || "").split(/\n+/).map(x => x.trim()).filter(Boolean);
+}
+function pvBox(){ return $("pvModelBox"); }
+
+/* 拉到的清单 + 已勾选的取并集：编辑老供应商时，它原有的模型不会消失 */
+function pvRender(all, sel){
+  const box = pvBox();
+  const keep = new Set(sel);
+  const rows = [...new Set([...(all || []), ...keep])].sort((a, b) => a.localeCompare(b));
+  if (!rows.length){ box.style.display = "none"; return; }
+  box.innerHTML = rows.map(m => `<label title="${esc(m)}"><input type="checkbox" value="${esc(m)}"
+    ${keep.has(m) ? "checked" : ""} onchange="pvSync()"> <span>${esc(m)}</span></label>`).join("");
+  box.style.display = "";
+  pvFitRows(box);                          // 可视高度凑成整行，别把最后一行切一半
+  const n = keep.size;
+  $("pvFetchOut").textContent = `拉到 ${rows.length} 个模型 · 已选 ${n} 个`;
+  $("pvSearch").style.display = "";
+  $("pvAll").style.display = ""; $("pvNone").style.display = "";
+}
+function pvFitRows(box){
+  const first = box.querySelector("label");
+  if (!first) return;
+  const gap = parseFloat(getComputedStyle(box).rowGap) || 0;
+  const rh = Math.ceil(first.getBoundingClientRect().height) + gap;
+  const pad = 20;                          // .mpick 上下 padding 各 10
+  const max = window.innerWidth <= 700 ? 300 : 280;
+  const rows = Math.max(3, Math.floor((max - pad) / rh));
+  box.style.maxHeight = (rows * rh + pad - gap) + "px";
+}
+window.addEventListener("resize", () => { if (pvBox()) pvFitRows(pvBox()); });
+
+function pvSync(){
+  const picked = [...pvBox().querySelectorAll("input:checked")].map(i => i.value);
+  $("pvModels").value = picked.join("\n");
+  const total = pvBox().querySelectorAll("input").length;
+  $("pvFetchOut").textContent = `拉到 ${total} 个模型 · 已选 ${picked.length} 个`;
+}
+function pvFilter(){
+  const q = ($("pvSearch").value || "").trim().toLowerCase();
+  pvBox().querySelectorAll("label").forEach(l => {
+    l.style.display = !q || l.textContent.toLowerCase().includes(q) ? "" : "none";
+  });
+}
+function pvPickAll(on){
+  const q = ($("pvSearch").value || "").trim().toLowerCase();
+  pvBox().querySelectorAll("label").forEach(l => {
+    if (q && !l.textContent.toLowerCase().includes(q)) return;
+    l.querySelector("input").checked = !!on;
+  });
+  pvSync();
+}
+
+async function botProvSaveKey(){
+  const ken = $("pvKeyEnv").value.trim();
+  const val = $("pvKey").value;
+  if (!ken){ $("pvKeyOut").textContent = "先填环境变量名（比如 MYAPI_KEY）"; return; }
+  if (!val.trim()){ $("pvKeyOut").textContent = "Key 是空的"; return; }
+  const d = await post("/api/models/key", {key_env: ken, value: val});
+  if (!d.ok){ $("pvKeyOut").textContent = "✗ " + (d.error || "保存失败"); return; }
+  $("pvKey").value = "";
+  $("pvKeyOut").textContent = `✓ 已写入 .env（${d.key_env}，${d.length} 字），马上能用了`;
+  pvFetched = "";
+  botProvFetch(true);
+}
+
+async function botProvFetch(quiet){
+  const api = $("pvApi").value.trim();
+  const ken = $("pvKeyEnv").value.trim();
+  if (!/^https?:\/\//i.test(api)){
+    if (!quiet) $("pvFetchOut").textContent = "先填一个 http(s) 地址";
+    return false;
+  }
+  const sig = api + "|" + ken;
+  if (quiet && sig === pvFetched) return true;
+  $("pvFetchOut").textContent = "正在向 " + api + " 要模型清单…";
+  let d;
+  try { d = await post("/api/models/discover", {api, key_env: ken}); }
+  catch (e){ $("pvFetchOut").textContent = "✗ 请求失败：" + e; return false; }
+  if (!d || !d.ok){
+    const msg = (d && d.error) || "拉取失败";
+    // 还在敲地址/没填 key 时别吓人，成功了一次就正常报错
+    $("pvFetchOut").textContent = (quiet && !pvFetched ? "…" : "✗ ") + msg.slice(0, 120);
+    return false;
+  }
+  pvFetched = sig;
+  pvRender(d.models, pvModelLines());          // pvRender 会写「拉到 N · 已选 M」
+  if (!d.key_seen && ken){
+    $("pvFetchOut").textContent += `（环境变量 ${ken} 没设值，只有公开接口能拉到）`;
+  }
+  return true;
+}
+
+let pvAutoTimer = null;
+function pvAuto(){
+  clearTimeout(pvAutoTimer);
+  pvAutoTimer = setTimeout(() => {
+    const api = $("pvApi").value.trim();
+    if (/^https?:\/\/\S+\.[^\s]+/i.test(api) && (api + "|" + $("pvKeyEnv").value.trim()) !== pvFetched){
+      botProvFetch(true);
+    }
+  }, 900);
+}
+
 function botProvNew(){
+  pvFetched = "";
   $("pvId").value = ""; $("pvName").value = ""; $("pvApi").value = "";
   $("pvKeyEnv").value = ""; $("pvModels").value = ""; $("pvOut").textContent = "";
+  $("pvFetchOut").textContent = "填好地址就自动拉取，不用手打模型名";
+  $("pvKey").value = ""; $("pvKeyOut").textContent = "";
+  $("pvSearch").value = ""; $("pvSearch").style.display = "none";
+  $("pvAll").style.display = "none"; $("pvNone").style.display = "none";
+  pvBox().innerHTML = ""; pvBox().style.display = "none";
   $("pvId").focus();
 }
 function botProvEdit(id){
   const p = (window.__provs || []).find(x => x.id === id);
   if (!p) return;
+  pvFetched = "";
   $("pvId").value = p.id; $("pvName").value = p.name || "";
   $("pvApi").value = p.api || ""; $("pvKeyEnv").value = p.key_env || "";
   $("pvModels").value = (p.models || []).join("\n");
   $("pvOut").textContent = "正在编辑 " + p.id;
+  $("pvKey").value = "";
+  $("pvKeyOut").textContent = p.has_key === false ? "⚠ 这个环境变量还没有值，粘一个 Key 保存" : "Key 已设置";
+  $("pvFetchOut").textContent = `已有 ${(p.models || []).length} 个模型，正在刷新清单…`;
+  botProvFetch(true);                      // 顺手拉一次，方便勾掉/补上
 }
 async function botProvSave(){
-  const models = $("pvModels").value.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  let models = pvModelLines();
+  if (!models.length){                      // 没填模型就现拉一次，全选
+    $("pvOut").textContent = "没填模型，正在自动拉取…";
+    if (await botProvFetch(true)){
+      pvPickAll(1);
+      models = pvModelLines();
+    }
+  }
+  if (!models.length){ $("pvOut").textContent = "✗ 没有模型：先拉取并勾选，或手动填写"; return; }
   const d = await post("/api/models", {provider: {
     id: $("pvId").value.trim(), name: $("pvName").value.trim(),
     api: $("pvApi").value.trim(), key_env: $("pvKeyEnv").value.trim(),
     models,
   }});
   if (!d.ok){ $("pvOut").textContent = "✗ " + (d.error || "保存失败"); return; }
-  $("pvOut").textContent = "✓ 已保存，正在刷新…";
-  await viewBot();
+  pvPending = "✓ 已保存 " + models.length + " 个模型";
+  await mountAgentCard();
 }
 async function botProvDelete(id){
   if (!confirm("确定删除供应商 " + id + "？")) return;
   const d = await post("/api/models", {delete_provider: id});
   if (!d.ok){ alert("✗ " + (d.error || "删除失败")); return; }
-  await viewBot();
+  pvPending = "✓ 已删除 " + id;
+  await mountAgentCard();
 }
 
 /* ================= 角色 ================= */

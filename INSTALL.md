@@ -169,7 +169,18 @@ NapCat 官方文档：<https://napneko.github.io/guide/napcat>
 
 - `api` 是 **OpenAI 兼容**的 base URL（结尾带 `/v1`，不要带 `/chat/completions`）。
 - `key_env` 是**环境变量名**，不是 key 本身。
-- 模型名可以随便写，服务端支持就行。
+- **模型名不用手打**：地址填完面板会自动请求 `{api}/models`，把清单列成勾选框；
+  拉不到时（有的服务不实现 `/models`）再展开「手动填写模型名」。
+- Key 也可以在面板里直接粘：写进本机 `.env`（权限 600），不落进 `state/models.json`，
+  写完立刻生效，不用重启。
+
+面板会自动试这几条路径，命中哪条算哪条：
+
+| 地址 | 请求 | 说明 |
+|---|---|---|
+| `…/v1` | `…/v1/models` | OpenAI 标准 |
+| `…` | `…/v1/models` | 只填了域名 |
+| `…` | `…/api/tags` | Ollama |
 
 > 推理模型注意：有些模型（如 DeepSeek-R1 系）**非流式**返回时 `message.content` 为空，
 > 内容在 `reasoning_content` 里。本项目已做回退，两种都能读。
