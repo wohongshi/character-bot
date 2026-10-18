@@ -192,11 +192,31 @@ python3 server.py          # :8797
 | `/api/feed`（74MB 数据） | 185 ms | **13 ms**（Go 尾部读） |
 | `/api/feed/sources` | 207 ms | **4.6 ms**（Go 增量聚合） |
 | `/api/dashboard` | 43 ms | **16 ms**（等级表缓存） |
+| 首屏传输（6× CPU + 3G） | 1654 KB | **326 KB**（−80%） |
+| 总阻塞时间 TBT | 5926 ms | **~1000 ms**（−83%） |
+| 完全加载 | 8748 ms | **1150 ms**（−87%） |
 
 做法：去掉 8MB 装饰字体、角色图转 WebP、gzip + ETag/304、HTTP/1.1 keep-alive、
 静态文件与压缩结果内存缓存、`/api/overview` 与 `/api/characters` 2 秒缓存、
 请求去重、切后台暂停轮询、聊天冷场降频、消息懒加载、`content-visibility`，
 以及可选的 **Go 边缘层**（`edge/`，静态资源常驻内存 + 反代 + 消息流两个读接口，19MB 内存）。
+
+### 低性能设备（6× CPU 降频 + 1.6Mbps 实测）
+
+目标机就是 4 GB 内存 / 4–8 核的安卓中低端。四处改动，按收益排序：
+
+1. **整屏飘落层不再每帧重绘**。原来动画改的是 `background-position`，浏览器只能
+   逐帧重画整个视口（660K 像素 × 60fps）。改成合成层 `transform` 位移后，
+   浏览器直接搬图层 → **TBT 5926ms → 1155ms**，这一条就占了大头。
+2. **字体从 1.5 MB 降到 197 KB**（`tools/subset_font.py`：只保留面板真正会显示的
+   1996 个字，转 WOFF2；缺字自动回退系统字体）+ `font-display:swap`、去掉 preload。
+3. **角色图分档**（`tools/char_variants.py`：480w / 720w / 900w + `srcset`）。
+   头像和看板小卡只下 20–44 KB，6 张合计 188 KB（原来 570 KB）。
+4. **自适应降级**：`deviceMemory ≤ 4` 或 `hardwareConcurrency ≤ 4` 直接给
+   `<html class="perf-low">`，关掉磨砂玻璃与整屏动画；其余设备跑 60 帧实测，
+   掉帧超 25% 再降。想强制满效果访问 `?perf=high`（记在 localStorage）。
+
+另外把对话页的「等会话列表才画壳子」改成先画后补，省掉一个 RTT。
 
 > 为什么只有静态资源和消息流放在 Go：静态是纯 I/O，消息流是唯一「成本随数据量
 > 线性增长」的接口。业务逻辑（人格、知识库、插件、模型调用）继续留在 Python ——

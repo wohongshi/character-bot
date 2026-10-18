@@ -13,7 +13,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Character Bot">
-<link rel="preload" href="/static/fonts/ZCOOLKuaiLe-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<!-- 字体不再 preload：它 197KB，preload 会和首屏大图抢 3G 带宽。
+         font-display:swap 保证先用系统字渲染，字体到了再换。 -->
 <script>
 (function(){
   try{
@@ -22,12 +23,55 @@
     document.documentElement.dataset.theme = (s === "light" || s === "dark") ? s : (d ? "dark" : "light");
   }catch(e){ document.documentElement.dataset.theme = "light"; }
 })();
+/* 低性能设备自适应。
+   先看硬件线索（核心数 / 内存），拿不到就实测帧率；判定后给 <html> 加 .perf-low，
+   CSS 那边关掉整屏飘落动画和 backdrop-filter（这两样是弱机掉帧的主要来源）。
+   手动覆盖：?perf=low / ?perf=high，选完记在 localStorage。 */
+(function(){
+  var H = document.documentElement;
+  function apply(mode){
+    H.classList.toggle("perf-low", mode === "low");
+    H.dataset.perf = mode;
+  }
+  var forced = "";
+  try{ forced = localStorage.getItem("ks_perf") || ""; }catch(e){}
+  if (!forced){
+    var q = /[?&]perf=(low|high|auto)/.exec(location.search);
+    if (q && q[1] !== "auto"){ forced = q[1]; try{ localStorage.setItem("ks_perf", q[1]); }catch(e){} }
+  }
+  if (forced === "low" || forced === "high"){ apply(forced); return; }
+
+  var reduced = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var cores = navigator.hardwareConcurrency || 0;
+  var mem = navigator.deviceMemory || 0;
+  // 硬件线索足够就立刻降级，不必等测帧
+  // 内存 ≤4GB 或核心 ≤4 就是这批「低性能设备」的主力（安卓中低端常见配置），
+  // 直接降级，不必先卡几秒再判断。想要满效果可以访问 ?perf=high 永久覆盖。
+  if (reduced || (mem && mem <= 4) || (cores && cores <= 4)){ apply("low"); return; }
+  apply("high");
+
+  // 再实测：load 之后连续数 90 帧，掉队超过 20% 就降级（只降不升，避免抖动）
+  function probe(){
+    var n = 0, slow = 0, last = performance.now();
+    function tick(t){
+      var dt = t - last; last = t;
+      if (dt > 30) slow++;                 // 一帧超过 30ms ≈ 掉到 33fps 以下
+      if (++n < 60) return requestAnimationFrame(tick);
+      if (slow > 15){ apply("low"); try{ H.dataset.perfWhy = "fps"; }catch(e){} }
+    }
+    requestAnimationFrame(tick);
+  }
+  if (document.readyState === "complete") setTimeout(probe, 250);
+  else window.addEventListener("load", function(){ setTimeout(probe, 250); });
+})();
 </script>
 <style>
 /* ============ 字体 ============ */
 @font-face{
   font-family:"ZCOOL KuaiLe";
-  src:url("/static/fonts/ZCOOLKuaiLe-Regular.ttf") format("truetype");
+  src:url("/static/fonts/zcool-ui.woff2") format("woff2"),
+      url("/static/fonts/zcool-ui.ttf") format("truetype");
+  font-display:swap;
   font-display:swap;
 }
 /* ============ 主题 ============ */
@@ -345,6 +389,19 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 @keyframes dots{0%{content:""}25%{content:"·"}50%{content:"··"}75%{content:"···"}}
 #view.fadein{animation:fadein .18s ease}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* ---- 低性能设备自适应（由脚本判定后加到 <html class="perf-low">）----
+   1) 停掉整屏飘落层：它虽然已经改成合成层位移，但弱 GPU 上 60fps 搬一层
+      660K 像素仍然吃力，静态星点视觉上几乎一样。
+   2) 关掉 backdrop-filter：磨砂玻璃要求每帧重新采样背后内容，是弱机掉帧头号元凶。
+   3) 只留 120ms 内的反馈动画（按下/弹窗），长过渡一律砍掉。 */
+html.perf-low body[data-effects="true"]::after{animation:none}
+html.perf-low aside,html.perf-low header#strip,html.perf-low .card,
+html.perf-low .drawerbox,html.perf-low .cmdk,html.perf-low #dock,
+html.perf-low .chatbar,html.perf-low .hero,html.perf-low .pill{backdrop-filter:none!important}
+html.perf-low *{animation-duration:0s!important;animation-iteration-count:1!important}
+html.perf-low .msg,html.perf-low .card,html.perf-low .plugcard{transition:none}
+html.perf-low #view.fadein{animation:none}
+html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08)}
 /* ============ 移动端 ============ */
 @media(max-width:760px){
   #app{flex-direction:column}
@@ -488,7 +545,11 @@ body[data-bg="grid"]{
 body[data-bg="plain"]{background:var(--bg)}
 /* 飘落花瓣 / 星屑：纯 CSS，不占交互层 */
 body[data-effects="true"]::after{
-  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.55;
+  content:"";position:fixed;inset:-60% -60% 0 0;pointer-events:none;z-index:0;opacity:.55;
+  /* 关键：不再动 background-position（那会每帧重绘整个屏幕）。
+     现在整块自己是一个合成层，只做 transform 位移，GPU 直接搬图层。 */
+  will-change:transform;
+  transform:translate3d(0,0,0);
   background-image:
     radial-gradient(circle at 12% 8%, rgba(255,255,255,.9) 0 1.6px, transparent 2px),
     radial-gradient(circle at 78% 18%, color-mix(in srgb, var(--ui-accent) 45%, white) 0 2px, transparent 2.6px),
@@ -496,9 +557,12 @@ body[data-effects="true"]::after{
     radial-gradient(circle at 88% 78%, color-mix(in srgb, var(--ui-accent2) 55%, white) 0 2.2px, transparent 2.8px),
     radial-gradient(circle at 24% 88%, rgba(255,255,255,.7) 0 1.2px, transparent 1.8px);
   background-size:320px 320px, 460px 460px, 380px 380px, 520px 520px, 280px 280px;
-  animation:drift 26s linear infinite;
+  animation:drift 90s linear infinite;
 }
-@keyframes drift{from{background-position:0 0,0 0,0 0,0 0,0 0}to{background-position:0 320px,0 460px,0 380px,0 520px,0 280px}}
+@keyframes drift{
+  from{transform:translate3d(0,0,0)}
+  to{transform:translate3d(-60px,-320px,0)}
+}
 #app{position:relative;z-index:1}
 
 /* 侧栏 */
@@ -1179,7 +1243,7 @@ function setActiveChar(c){
   const tm = $("themeColor");
   if (tm) tm.content = ACTIVE.color2 || "#fff3e2";
   const peek = document.querySelector(".sidefoot .peek");
-  if (peek){ peek.src = charArt(ACTIVE.id); peek.style.display = "block"; }
+  if (peek){ peek.src = charSrc(ACTIVE.id, "thumb"); peek.style.display = "block"; }
   loadUI(ACTIVE.id);
 }
 
@@ -1469,7 +1533,27 @@ async function installPluginPack(inp){
   }catch(e){ flash("安装失败：" + e); }
 }
 
-function charArt(id){ return "/static/img/chars/" + encodeURIComponent(id) + ".webp?v=3"; }
+function charArt(id){ return "/static/img/chars/" + encodeURIComponent(id) + ".webp?v=5"; }
+/* 多档尺寸（见 tools/char_variants.py）：_s=480w / _m=720w / 原图=900w。
+   不用 srcset —— 这套布局里 Chrome 会退回按 100vw 计算，一律挑到最大的 900w。
+   直接按 视口×DPR 算需要多少物理像素，够用就下最小那档：
+     thumb  头像 / 侧栏 / 看板小卡        固定 _s（≤48 CSS px）
+     card   角色卡（手机一整列 ~356px）    520 以内 _s，否则 _m
+     hero   聊天页大图（整屏宽）           ≤900 用 _m，再大才原图 */
+const CHAR_STEPS = [[480, "_s"], [720, "_m"], [900, ""]];
+function charSrc(id, role){
+  const key = encodeURIComponent(id);
+  if (role === "thumb") return `/static/img/chars/${key}_s.webp?v=5`;
+  const vw = window.innerWidth || 390;
+  // 角色卡的 CSS 宽度：手机一整列（约 92vw），桌面最多 300px（三列网格）
+  const css = role === "card" ? (vw <= 760 ? vw * 0.92 : 300) : vw;
+  const need = css * (window.devicePixelRatio || 1);
+  // 允许 10% 的轻微放大 —— 省下的字节比那点锐度值钱
+  for (const [w, suf] of CHAR_STEPS){
+    if (w >= need * 0.9) return `/static/img/chars/${key}${suf}.webp?v=5`;
+  }
+  return `/static/img/chars/${key}.webp?v=5`;
+}
 function artFallback(img){
   // 老浏览器不支持 WebP 时退回同目录 JPG
   if (img.src.endsWith(".webp") || img.src.includes(".webp?")){
@@ -1551,7 +1635,7 @@ function heroHTML(){
   return `
   <div class="hero" id="emptyHero">
     <div class="charart" style="position:relative;width:168px;height:196px;border-radius:26px;overflow:hidden;box-shadow:0 16px 36px rgba(120,70,50,.22)">
-      <img src="${charArt(ACTIVE.id)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:50% 16%" onerror="artFallback(this)">
+      <img src="${charSrc(ACTIVE.id, "thumb")}" alt="" onerror="artFallback(this)">
       <div style="position:absolute;left:10px;bottom:8px;font-size:28px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))">${ACTIVE.emoji}</div>
     </div>
     <div class="hbub">${esc(ACTIVE.greeting || (ACTIVE.name + "在这里"))}<br>说点什么吧
@@ -1561,12 +1645,14 @@ function heroHTML(){
 }
 async function viewChat(){
   if (chat.char !== ACTIVE.id){ chat.char = ACTIVE.id; chat.after = 0; }
-  const sessions = (await api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id))).sessions || [];
-  if (chat.session && !sessions.includes(chat.session)) sessions.push(chat.session);   // 新对话还没发消息时也要出现在下拉里
+  // 先用本地缓存的会话名把壳子画出来，不等后端 —— 3G 上一次 RTT 就是 300ms，
+  // 切页手感差别很明显。真正的会话列表到了只补下拉（见函数末尾），不重画整页。
+  const sessions = [chat.session || "studio-main"];
   $("view").innerHTML = `
   <div id="chatWrap" data-char="${esc(ACTIVE.id)}">
     <div class="chathero">
-      <img class="bg" src="${charArt(ACTIVE.id)}" alt="" onerror="artFallback(this)">
+      <img class="bg" src="${charSrc(ACTIVE.id, "hero")}"
+           fetchpriority="high" alt="" onerror="artFallback(this)">
       <div class="scrim"></div>
       <div class="ch">
         <span class="nm">${esc(ACTIVE.name)}</span>
@@ -1621,6 +1707,15 @@ async function viewChat(){
   if (_draft){ const el = $("chatBox"); el.value = _draft; el.dispatchEvent(new Event("input")); }
   chat.after = 0; $("msgs").innerHTML = "";
   await pollChat();
+  // 会话列表（不阻塞首帧）
+  api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id)).then(d => {
+    const list = ((d && d.sessions) || []).slice();
+    if (chat.session && !list.includes(chat.session)) list.push(chat.session);
+    const sel = $("sessSel");
+    if (!sel || !list.length) return;
+    sel.innerHTML = list.map(x =>
+      `<option value="${esc(x)}" ${x === chat.session ? "selected" : ""}>${esc(sessLabel(x))}</option>`).join("");
+  }).catch(() => {});
   chat.idle = 0;
   armChatPoll();
   clearInterval(chat.tick); chat.tick = setInterval(tickTyping, 1000);
@@ -1855,7 +1950,7 @@ async function viewPersona(){
   $("view").innerHTML = `
   <h2 class="page">🌸 人格 · 知识库</h2>
   <div class="card posterRow">
-    <img class="personaArt" src="${charArt(cid)}" alt="" loading="lazy">
+    <img class="personaArt" src="${charSrc(cid, "card")}" alt="" loading="lazy">
     <div class="pcopy">
       <b>${esc(ACTIVE.name)}</b><br>
       ${esc(meta.tagline || "独立人格与知识库")}<br>
@@ -2628,7 +2723,7 @@ async function viewChars(){
     ${items.map(c => `
       <div class="charitem ${c.id===charSel?"on":""} ${c.active?"active":""}" data-id="${esc(c.id)}"
            style="--c1:${esc(c.color)};--c2:${esc(c.color2)}" onclick="pickChar('${esc(c.id)}')">
-        <div class="artbg"><img src="${charArt(c.id)}" alt="" loading="lazy" decoding="async" onerror="artFallback(this)"></div>
+        <div class="artbg"><img src="${charSrc(c.id, "card")}" alt="" loading="lazy" decoding="async" onerror="artFallback(this)"></div>
         <div class="artveil"></div>
         <span class="bigemoji">${esc(c.emoji)}</span>
         <span class="stars">${"★".repeat(5)}</span>
@@ -3036,7 +3131,8 @@ function boardWidgets(ov, pl, ch, dash){
       <a class="wl" href="javascript:go('feed')">看消息流 →</a></div>`,
     char: () => `<div class="wcard" style="padding:0;overflow:hidden">
       <div style="position:relative;height:118px;background:linear-gradient(135deg,${esc(ACTIVE.color)},${esc(ACTIVE.color2)})">
-        <img src="${charArt(ACTIVE.id)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:50% 22%;opacity:.95">
+        <img src="${charSrc(ACTIVE.id, "thumb")}" alt=""
+             style="width:100%;height:100%;object-fit:cover;object-position:50% 22%;opacity:.95" loading="lazy">
         <div style="position:absolute;inset:0;background:linear-gradient(180deg,transparent 30%,rgba(0,0,0,.55))"></div>
         <div style="position:absolute;left:12px;bottom:8px;color:#fff;font-family:var(--font-cute);font-size:20px;text-shadow:0 1px 6px rgba(0,0,0,.4)">${esc(ACTIVE.name)}</div>
       </div>
