@@ -3049,6 +3049,15 @@ const CFG_GROUPS = [
      {k:"owner_id", label:"主人 QQ"},
      {k:"feature_prefix", label:"插件命令前缀"},
    ]},
+  {id: "adapter", emoji: "🔌", title: "适配器", open: false,
+   note: "换平台只改这里，插件不用动",
+   fields: [
+     {k:"adapter", label:"平台适配器", opts:[
+       {v:"onebot11", t:"OneBot 11（QQ / NapCat）"}, {v:"webhook", t:"通用 Webhook"}]},
+     {k:"webhook_url", label:"Webhook 地址", hint:"adapter=webhook 时才用"},
+     {k:"webhook_token", label:"Webhook Token", secret:true},
+     {k:"webhook_field", label:"正文字段名", hint:"Bark 用 body，ntfy 用 message"},
+   ]},
   {id: "chatstyle", emoji: "💬", title: "群聊与私聊", open: true,
    note: "群里怎么回、什么时候搭话、请求怎么处理",
    fields: [
@@ -3304,11 +3313,32 @@ function stopOpsTimers(){
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
 }
 
+/* 适配器卡片：平台 / 目标 / 能力。换适配器是框架能力，运维页要能一眼看到。
+   能力键是框架内部名（text / image / group_member_list…），面板上给人话。 */
+const CAP_CN = {
+  text: "发文本", image: "发图片", voice: "发语音",
+  group_member_list: "读群成员", message_lookup: "查历史消息",
+  request_approval: "审批好友/入群", recall: "撤回消息",
+};
+function adapterHTML(ad){
+  if (!ad || !ad.platform) return "读不到适配器信息";
+  const caps = ad.capabilities || {};
+  const on = Object.keys(caps).filter(k => caps[k]);
+  const off = Object.keys(caps).filter(k => !caps[k]);
+  const target = ad.base || ad.url || "—";
+  return `平台：<b>${esc(ad.title || ad.platform)}</b><br>
+    目标：<code style="font-size:11.5px">${esc(target)}</code><br>
+    支持：${on.length ? on.map(k => `<span class="tag">${esc(CAP_CN[k] || k)}</span>`).join(" ")
+                      : '<span class="kv">无</span>'}
+    ${off.length ? `<br><span class="kv">不支持：${esc(off.map(k => CAP_CN[k] || k).join("、"))}</span>` : ""}`;
+}
+
 async function viewOps(target){
   const T = target || "view";
   $(T).innerHTML = `${T === "view" ? '<h2 class="page">⚙️ 运维</h2>' : ''}<div class="kv">正在读取…</div>`;
   const [ov, cfg] = await Promise.all([api("/api/overview"), api("/api/config")]);
   const a = ov.adapter || {}, g = ov.gateway || {}, n = ov.napcat || {};
+  const ad = (ov.bot && ov.bot.adapter) || null;
   const st = a.stats || {};
   const feats = a.features || [];
   const onN = feats.filter(f => f.enabled).length;
@@ -3330,6 +3360,9 @@ async function viewOps(target){
         收到 ${st.events ?? 0} · 发出 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 命令 ${st.commands ?? 0} · 错误 ${st.errors ?? 0}</div>
       ${badF.length ? `<div class="opsline"><b style="color:var(--red)">插件报错：${badF.map(f=>esc(f.name)).join("、")}</b></div>` : ""}
       <div class="opsline">插件：<b>${onN}/${feats.length} 启用</b> · 命中 ${feats.reduce((s,f)=>s+(f.hits||0),0)} 次</div>
+    </div>
+    <div class="card"><h3>🔌 适配器 <span class="kv" style="font-family:var(--font-body)">收发消息的平台</span></h3>
+      <div class="opsline">${adapterHTML(ad)}</div>
     </div>
     <div class="card"><h3>🐱 NapCat <span class="kv" style="font-family:var(--font-body)">QQ 协议端</span></h3>
       <div class="opsline">登录：<b>${n.ok ? (n.is_login ? "已登录" : "未登录") : "取不到"}</b>${n.uin ? ` · ${esc(n.uin)}${n.nick ? " " + esc(n.nick) : ""}` : ""}<br>

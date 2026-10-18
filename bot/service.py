@@ -20,6 +20,11 @@ from .runtime import BotRuntime
 logger = logging.getLogger("klee.bot")
 
 DEFAULT_CONFIG = {
+    # ---- 适配器（框架层：换平台只改这几项，插件代码不用动）----
+    "adapter": "onebot11",       # onebot11 / webhook
+    "webhook_url": "",           # adapter=webhook 时的出站地址
+    "webhook_token": "",         # 有则带 Authorization: Bearer
+    "webhook_field": "text",     # 正文放在哪个 JSON 字段（Bark 用 body、ntfy 用 message）
     "self_id": "",              # 首次收到事件时自动学习；也可在面板填
     "owner_id": "",             # 主人 QQ（agent/.agent 权限、部分插件命令用）
     "napcat_http": "http://127.0.0.1:3101",

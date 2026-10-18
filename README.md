@@ -1,9 +1,16 @@
 # Character Bot · 角色聊天室
 
-一个**不依赖任何机器人框架**的 QQ 多角色机器人 + 网页控制台。
+一个**聊天机器人框架**，自带一个多角色 QQ 机器人作为参考实现。
 
-NapCat 提供 OneBot 11 接口，面板自己收事件、跑插件、调模型、管知识库；
-每个角色有独立人格、独立知识库、独立主题和一组专属插件，切换只在面板发生。
+三层可以分别替换：
+
+- **适配器**——消息从哪个平台来（内置 OneBot 11 的 QQ、通用 Webhook）
+- **插件**——机器人能干什么（118+ 个，热插拔，自带配置表单）
+- **人格**——它是谁（一个角色 = 一套 SOUL + 一套知识库 + 一套主题 + 一组限定插件）
+
+不依赖 AstrBot / NoneBot 之类的上游框架：事件、插件分发、模型调用、知识库检索、
+工具循环都是自己的实现，只用到 Python 标准库 + 一个 numpy（向量检索）。
+框架怎么用、怎么加适配器、怎么写插件：见 [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md)。
 
 - 后端 **纯 Python 标准库**（面板与机器人零 pip 依赖），前端单文件 vanilla JS（无构建）
 - 模型走任意 **OpenAI 兼容接口**：聊天 / 看图 / agent 三个槽位分别配置
@@ -261,6 +268,27 @@ python3 server.py          # :8797
 > 线性增长」的接口。业务逻辑（人格、知识库、插件、模型调用）继续留在 Python ——
 > 那里真正的热点（PIL 出图、numpy 向量检索、libwebp 编码）底层本来就是 C，
 > 换语言不会快，只会多一份要同步维护的实现。
+
+## 框架三层
+
+| 层 | 职责 | 换掉要动什么 |
+|---|---|---|
+| **Adapter** | 只做传输：发文本/图片/语音、拉群成员、取消息、审批请求 | 新写一个文件继承 `BaseAdapter`，配置里改 `adapter` |
+| **Runtime** | 拆句、限流、历史、人格、知识库、插件分发、Agent 工具循环 | 一般不用动 |
+| **Plugin** | 命令、消息钩子、出站改写、notice/request 旁听 | 放 `bot/features/*.py` 或上传 ZIP，8 秒热重载 |
+
+内置适配器：`onebot11`（QQ / NapCat）、`webhook`（任意收 JSON 的 HTTP 端点）。
+
+插件 API：
+
+```python
+api.on_command("名字", h, aliases=("别名",), cooldown=3, help="…")
+api.on_message(h)        # 入站，返回 str 改写 / api.BLOCK 拦截
+api.on_reply(h)          # 出站，返回 str 改写
+api.on_nlu(pattern, cmd) # 正则整句 → 等价于发命令
+api.on_notice(h)         # 戳一戳 / 入群 / 撤回
+api.on_request(h)        # 好友/入群申请（只能旁听，审批必须人工）
+```
 
 ## 目录结构
 

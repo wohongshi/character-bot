@@ -129,6 +129,12 @@ check("配置项标签不露路径/键名", not cfg_bad, str(cfg_bad[:3]))
 
 # ---------- 6) 尺寸单位统一（秒不写 s） ----------
 check("时长统一用「秒」", "近 60s 消息" not in HTML and "上次事件 " not in HTML)
+
+# ---------- 7) 适配器能力名要给人话，别把内部键印在面板上 ----------
+check("能力键有中文表", "CAP_CN" in HTML and "读群成员" in HTML)
+_BT = chr(96)
+RAW_CAP = "marks.map(k => " + _BT + '<span class="tag">${esc(k)}</span>' + _BT + ")"
+check("能力不从 cap 键直接渲染", RAW_CAP not in HTML)
 check("日志条数用「条」", "更早 " in HTML)
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")

@@ -20,10 +20,10 @@ from collections import OrderedDict, deque
 from pathlib import Path
 from types import SimpleNamespace
 
+from . import adapters as adapters_mod
 from .features_ext import RuntimeFeatures
 from .characters import CharacterStore
 from .framework import FeatureContext, FeatureManager, _Command
-from .onebot import OneBotHTTP
 from . import vision as vision_mod
 from . import agent as agent_mod
 from .skills import SkillHub
@@ -95,7 +95,7 @@ def _segments(message) -> list:
 
 
 class BotRuntime(RuntimeFeatures):
-    """可莉的「面板版」适配器 + 事件分发。"""
+    """面板自持的运行时：事件分发 + 插件 + 模型/知识库 + 适配器。"""
 
     def __init__(self, *, features_dir: Path, config: dict, models, soul_path: Path,
                  characters: CharacterStore | None = None,
@@ -135,8 +135,12 @@ class BotRuntime(RuntimeFeatures):
         self.vision_max_bytes = int(config.get("vision_max_bytes") or vision_mod.MAX_BYTES)
         self.vision_timeout = float(config.get("vision_timeout") or 60)
 
-        self.ob = OneBotHTTP(config.get("napcat_http") or "http://127.0.0.1:3101",
-                             config.get("napcat_token") or "")
+        # 适配器：配置里 adapter 缺省 = onebot11（老配置无需改动）。
+        # self.ob 保留成「适配器本身」——框架内部和历史代码都只调 send_text /
+        # send_image / get_msg 这些动词，换平台时这些调用一行都不用改。
+        self.adapter = adapters_mod.build(config, owner_id=self.owner_id,
+                                          self_id=self.self_id)
+        self.ob = self.adapter
         self._own_ids: "OrderedDict[str, None]" = OrderedDict()
         self._last_inbound: dict = {}            # chat_id → (message_id, user_id)，引用/@ 的锚点
         self._member_cache: dict = {}
@@ -396,6 +400,13 @@ class BotRuntime(RuntimeFeatures):
             logger.debug("KB 检索失败: %s", e)
             return ""
 
+    async def _run_event_hooks(self, kind: str, ev: dict) -> None:
+        """让插件旁听 notice / request。钩子出错只记录，不影响内置流程。"""
+        try:
+            await self.mgr.run_event_hooks(kind, ev)
+        except Exception:                                          # noqa: BLE001
+            logger.debug("%s 钩子链异常（已忽略）", kind)
+
     async def handle_event(self, ev: dict) -> None:
         try:
             await self._handle(ev)
@@ -407,9 +418,11 @@ class BotRuntime(RuntimeFeatures):
         if not isinstance(ev, dict):
             return
         if ev.get("post_type") == "notice":
+            await self._run_event_hooks("notice", ev)
             await self._handle_notice(ev)
             return
         if ev.get("post_type") == "request":
+            await self._run_event_hooks("request", ev)
             await self._handle_request(ev)
             return
         if ev.get("post_type") != "message":
@@ -520,18 +533,22 @@ class BotRuntime(RuntimeFeatures):
     _IMG_NOTE_RE = re.compile(r"\[图片(?:内容[:：][^\]]*)?\]")
 
     def _vision_friendly(self, reason: str) -> str:
-        """没看到图时说的话（比「出错了」友好，且说清该怎么办）。"""
+        """没看到图时说的话（比「出错了」友好，且说清该怎么办）。
+
+        角色名现取，别写死 —— 框架里这些提示对所有角色都要成立。
+        """
+        me = self.active_character_info.get("name") or "我"
         if reason == "unconfigured":
             return random.choice([
-                "诶…可莉现在还看不懂图片呢（管理员在面板「机器人」页给可莉配个 vision 模型就好啦）。"
-                "你直接跟可莉说说图里是什么嘛～",
-                "呜，可莉的眼睛还没装好（没配看图模型），你先描述一下，可莉陪你一起猜！",
+                f"诶…{me}现在还看不懂图片呢（管理员在面板「机器人」页配个 vision 模型就好啦）。"
+                f"你直接跟{me}说说图里是什么嘛～",
+                f"呜，{me}的眼睛还没装好（没配看图模型），你先描述一下，{me}陪你一起猜！",
             ])
         if reason == "disabled":
-            return "可莉这会儿关掉看图功能啦，你直接说图里是什么好不好～"
+            return f"{me}这会儿关掉看图功能啦，你直接说图里是什么好不好～"
         return random.choice([
-            "这张图可莉没看清…再发一次，或者跟我说说图里有什么嘛～",
-            "唔，图片好像没加载出来，可莉什么都没看到。你发个文字版？",
+            f"这张图{me}没看清…再发一次，或者跟我说说图里有什么嘛～",
+            f"唔，图片好像没加载出来，{me}什么都没看到。你发个文字版？",
         ])
 
     @staticmethod
@@ -572,7 +589,7 @@ class BotRuntime(RuntimeFeatures):
                 desc = await asyncio.to_thread(
                     vision_mod.describe, self.models, raw, max_bytes=self.vision_max_bytes,
                     text=caption, timeout=self.vision_timeout,
-                    name=self.active_character_info.get("name") or "可莉")
+                    name=self.active_character_info.get("name") or "角色")
             except vision_mod.VisionUnavailable:
                 self.stats["vision_fail"] += 1
                 reason = reason or "unconfigured"
@@ -627,7 +644,8 @@ class BotRuntime(RuntimeFeatures):
                                          is_group=ctx.is_group, max_chars=1100)
             if not idx:
                 return "现在还没有能用的技能呢～"
-            return ("可莉会这些：\n" + idx +
+            me = self.active_character_info.get("name") or "我"
+            return (f"{me}会这些：\n" + idx +
                     "\n想用哪个直接说，或者 .agent 让我自己挑～")
 
         self.mgr.register_command(_Command(
@@ -850,7 +868,7 @@ class BotRuntime(RuntimeFeatures):
         else:
             text = (f"🔔 收到入群请求：{who}（{uid}）想进群 {gid}"
                     + (f"\n备注：{comment}" if comment else ""))
-        text += "\n可莉没有自动同意哦，去面板「运维 → 好友/入群请求」处理。"
+        text += "\n没有自动同意哦，去面板「运维 → 好友/入群请求」处理。"
         try:
             await self.send(f"private:{owner}", text, sentence_split=False)
         except Exception as e:                                     # noqa: BLE001
@@ -872,15 +890,17 @@ class BotRuntime(RuntimeFeatures):
                 gid = str(ev.get("group_id") or "")
                 uid = str(ev.get("user_id") or "")
                 chat_id = f"group:{gid}" if gid else f"private:{uid}"
+                me = self.active_character_info.get("name") or "我"
                 await self.send(chat_id, random.choice(
-                    ["诶嘿～戳可莉做什么呀？", "唔……被戳了！（鼓脸）", "在的在的，可莉在这儿～"]),
+                    [f"诶嘿～戳{me}做什么呀？", "唔……被戳了！（鼓脸）", f"在的在的，{me}在这儿～"]),
                     sentence_split=False)
             return
         if ntype == "group_increase" and self.greet_on_group_add:
             gid = str(ev.get("group_id") or "")
             uid = str(ev.get("user_id") or "")
             if gid and uid:
-                await self.send(f"group:{gid}", f"欢迎新朋友～可莉是西风骑士团的火花骑士！",
+                me = self.active_character_info.get("name") or "我"
+                await self.send(f"group:{gid}", f"欢迎新朋友～{me}在这里。",
                                 sentence_split=False)
         return
 
@@ -911,10 +931,10 @@ class BotRuntime(RuntimeFeatures):
         self.owner_id = str(cfg.get("owner_id") or self.owner_id)
         self.feature_prefix = str(cfg.get("feature_prefix") or self.feature_prefix)
         self.hist_limit = int(cfg.get("history_messages") or self.hist_limit)
-        new_base = str(cfg.get("napcat_http") or self.ob.base)
-        new_token = str(cfg.get("napcat_token") or "")
-        if new_base.rstrip("/") != self.ob.base or new_token != self.ob.token:
-            self.ob = OneBotHTTP(new_base, new_token)
+        try:
+            self.adapter.reconfigure(cfg)          # 适配器自己决定要不要重连
+        except Exception as e:                                     # noqa: BLE001
+            logger.warning("适配器重配置失败：%s", e)
         self.setup_extras(cfg, preserve_buckets=True)
 
     # ---------- 状态 ----------
@@ -956,6 +976,7 @@ class BotRuntime(RuntimeFeatures):
         return {
             "ok": True,
             "self_id": self.self_id,
+            "adapter": self.adapter.describe(),
             "character": {"id": self.active_character,
                           "name": self.active_character_info.get("name", ""),
                           "emoji": self.active_character_info.get("emoji", ""),

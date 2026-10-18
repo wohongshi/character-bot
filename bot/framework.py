@@ -275,13 +275,102 @@ class FeatureContext:
 
     @property
     def chat_id(self) -> str:
-        return self.adapter._chat_id(self.is_group, self.group_id, self.user_id)
+        """会话 ID。优先问适配器（换平台时形态可能不同），老实现退回 _chat_id。"""
+        fn = getattr(self.adapter, "chat_id_of", None)
+        if callable(fn):
+            try:
+                return str(fn(self.is_group, self.group_id, self.user_id))
+            except Exception:                                      # noqa: BLE001
+                pass
+        return str(self.adapter._chat_id(self.is_group, self.group_id, self.user_id))
+
+    @property
+    def platform(self) -> str:
+        """当前适配器的平台名（插件据此做分支，比如 onebot11 / webhook）。"""
+        return str(getattr(self.adapter, "platform", "") or "onebot11")
+
+    def supports(self, capability: str) -> bool:
+        """这个平台支持某个能力吗（image / voice / group_member_list …）。
+
+        插件应该问它，而不是 `hasattr(adapter, "send_image")` —— 后者在有
+        BaseAdapter 兜底方法时永远为真。
+        """
+        caps = getattr(self.adapter, "CAPABILITIES", None)
+        if isinstance(caps, dict):
+            return bool(caps.get(capability))
+        return hasattr(self.adapter, capability)
 
     async def reply(self, text: str) -> None:
         """直接往当前会话发一条消息（走适配器 send：限速/引用/富文本都适用）。"""
         if text:
             # 命令输出是一个整体（菜单/结算/卡片文案），不参与「分句连发」拆条
             await self.adapter.send(self.chat_id, text, sentence_split=False)
+
+
+@dataclass
+class EventContext:
+    """非消息事件（notice / request）的上下文。
+
+    消息事件用 `FeatureContext`（有 text / args / reply）；这两类没有「回复」
+    语义，插件一般只做记录、审计、计数。要主动发消息用 `api.send(chat_id, …)`。
+
+    注意：钩子是**旁听**。内置行为（给主人发提醒、写 requests.jsonl）照常执行，
+    插件改不了「好友/入群请求绝不自动通过」这条铁律。
+    """
+
+    adapter: Any
+    kind: str                       # "notice" | "request"
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def platform(self) -> str:
+        return str(getattr(self.adapter, "platform", "") or "onebot11")
+
+    @property
+    def notice_type(self) -> str:
+        return str(self.raw.get("notice_type") or self.raw.get("sub_type") or "")
+
+    @property
+    def request_type(self) -> str:
+        return str(self.raw.get("request_type") or self.raw.get("sub_type") or "")
+
+    @property
+    def sub_type(self) -> str:
+        return str(self.raw.get("sub_type") or "")
+
+    @property
+    def user_id(self) -> str:
+        return str(self.raw.get("user_id") or self.raw.get("operator_id") or "")
+
+    @property
+    def group_id(self) -> str:
+        return str(self.raw.get("group_id") or "")
+
+    @property
+    def is_group(self) -> bool:
+        return bool(self.raw.get("group_id"))
+
+    @property
+    def chat_id(self) -> str:
+        fn = getattr(self.adapter, "chat_id_of", None)
+        if callable(fn):
+            try:
+                return str(fn(self.is_group, self.group_id, self.user_id))
+            except Exception:                                  # noqa: BLE001
+                pass
+        return f"group:{self.group_id}" if self.is_group else f"private:{self.user_id}"
+
+    @property
+    def is_owner(self) -> bool:
+        owner = str(getattr(self.adapter, "owner_id", "") or "")
+        return bool(owner) and self.user_id == owner
+
+    def supports(self, capability: str) -> bool:
+        """这个平台支持某能力吗（text / image / request_approval …）。"""
+        caps = getattr(self.adapter, "CAPABILITIES", None)
+        if isinstance(caps, dict):
+            return bool(caps.get(capability))
+        return hasattr(self.adapter, capability)
 
 
 @dataclass
@@ -341,6 +430,22 @@ class FeatureAPI:
     def on_reply(self, handler: Callable, *, priority: int = 50) -> None:
         self._manager.register_reply_hook(_Hook(handler=handler, plugin=self._plugin,
                                                 priority=int(priority)))
+
+    def on_notice(self, handler: Callable, *, priority: int = 50) -> None:
+        """订阅 notice 事件（戳一戳 / 入群 / 退群 / 撤回 …）。
+
+        签名：`async def h(ctx: EventContext)`。返回值不参与决策，只用于日志。
+        """
+        self._manager.register_notice_hook(_Hook(handler=handler, plugin=self._plugin,
+                                                 priority=int(priority)))
+
+    def on_request(self, handler: Callable, *, priority: int = 50) -> None:
+        """订阅 request 事件（好友申请 / 入群申请）。
+
+        ⚠️ 只能旁听：审批必须由主人在面板点，钩子无法自动通过。
+        """
+        self._manager.register_request_hook(_Hook(handler=handler, plugin=self._plugin,
+                                                  priority=int(priority)))
 
     def on_nlu(self, pattern: str, cmd: str, *, priority: int = 100) -> None:
         """注册自然语言触发：整句命中后消息被替换成 `.{cmd}`（`{1}` 引用正则分组）。
@@ -420,6 +525,8 @@ class FeatureManager:
         self.commands: Dict[str, _Command] = {}     # 小写名/别名 → _Command
         self.hooks_in: List[_Hook] = []
         self.hooks_out: List[_Hook] = []
+        self.hooks_notice: List[_Hook] = []     # 非消息事件（旁听）
+        self.hooks_request: List[_Hook] = []
         self.nlu_rules: List[_NluRule] = []      # 自然语言 → 命令 规则（nlu.py 注册）
         self._nlu_seq = 0
         self.plugins: Dict[str, dict] = {}          # name → {description, version, enabled, error, file}
@@ -485,6 +592,8 @@ class FeatureManager:
         self.commands = dict(builtin)
         self.hooks_in = []
         self.hooks_out = []
+        self.hooks_notice = []
+        self.hooks_request = []
         self.nlu_rules = []
         self._nlu_seq = 0
         self.plugins = {}
@@ -518,6 +627,8 @@ class FeatureManager:
 
         self.hooks_in.sort(key=lambda h: h.priority)
         self.hooks_out.sort(key=lambda h: h.priority)
+        self.hooks_notice.sort(key=lambda h: h.priority)
+        self.hooks_request.sort(key=lambda h: h.priority)
         self.loaded = True
         self.last_reload_ts = time.time()
         self._fp_seen = self._fingerprint()
@@ -622,11 +733,13 @@ class FeatureManager:
         api = FeatureAPI(self, name, settings.get(name) or {})
         # 注册到一半抛异常时，把半截命令/钩子/NLU 撤掉，别让「已停用」的插件还在接消息
         snapshot = (dict(self.commands), list(self.hooks_in), list(self.hooks_out),
+                    list(self.hooks_notice), list(self.hooks_request),
                     list(self.nlu_rules), self._nlu_seq)
         try:
             register(api)
         except Exception as e:                                # noqa: BLE001
             (self.commands, self.hooks_in, self.hooks_out,
+             self.hooks_notice, self.hooks_request,
              self.nlu_rules, self._nlu_seq) = snapshot
             info["error"] = f"register(): {type(e).__name__}: {e}"
             info["enabled"] = False
@@ -646,6 +759,12 @@ class FeatureManager:
 
     def register_reply_hook(self, hook: _Hook) -> None:
         self.hooks_out.append(hook)
+
+    def register_notice_hook(self, hook: _Hook) -> None:
+        self.hooks_notice.append(hook)
+
+    def register_request_hook(self, hook: _Hook) -> None:
+        self.hooks_request.append(hook)
 
     def register_nlu(self, pattern: str, cmd: str, plugin: str, priority: int = 100) -> None:
         """注册一条「自然语言 → 命令」规则（坏正则只告警不炸加载）。"""
@@ -790,6 +909,30 @@ class FeatureManager:
             if isinstance(res, str):
                 ctx.text = res
         return True
+
+    async def run_event_hooks(self, kind: str, ev: dict) -> list:
+        """跑 notice / request 钩子。返回 [(插件名, 返回值)]。
+
+        异常只计数不抛：一个插件写错不该让「提醒主人」也失效。
+        """
+        hooks = self.hooks_notice if kind == "notice" else self.hooks_request
+        if not hooks:
+            return []
+        ctx = EventContext(adapter=getattr(self, "adapter", None), kind=kind,
+                           raw=dict(ev or {}))
+        out = []
+        for hook in hooks:
+            try:
+                res = hook.handler(ctx)
+                if inspect.isawaitable(res):
+                    res = await res
+            except Exception:                                 # noqa: BLE001
+                self.errors[hook.plugin] = self.errors.get(hook.plugin, 0) + 1
+                logger.exception("OneBot: %s 钩子异常（插件 %s）", kind, hook.plugin)
+                continue
+            self._bump(hook.plugin)
+            out.append((hook.plugin, res))
+        return out
 
     async def run_reply_hooks(self, chat_id: str, is_group: bool, text: str) -> str:
         """出站钩子链；返回改写后的文本。"""

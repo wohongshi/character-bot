@@ -143,8 +143,15 @@ def _clean_def(raw: dict, *, fallback_theme: str = "klee") -> dict:
 
 
 def _read_json(path: Path):
+    """读可选的 JSON 定义文件。
+
+    文件不存在是**正常情况**（`bot/characters.json` 就是可选的仓库级覆盖，
+    没建也别在日志里吓人）；只有「文件在但读不动 / JSON 坏了」才告警。
+    """
     try:
         return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except (OSError, ValueError) as e:
         log.warning("读取 %s 失败：%s", path, e)
         return None
