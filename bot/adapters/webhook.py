@@ -104,7 +104,7 @@ class WebhookAdapter(BaseAdapter):
         p = Path(path)
         try:
             # 先 stat 再读：误传几百 MB 的文件时，read_bytes() 会先把内存吃满
-            # 才轮到「太大」的判断（这台机器只有 1GB 内存）。
+            # 才轮到「太大」的判断（这块板子总共 4GB，还得留给 zram 和模型代理）。
             size = p.stat().st_size
             if size > MAX_IMAGE_BYTES:
                 raise AdapterError(f"图片过大（{size} 字节，上限 {MAX_IMAGE_BYTES}），webhook 不发")

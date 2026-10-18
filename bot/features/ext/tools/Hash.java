@@ -1,7 +1,7 @@
 // 外部插件示例（Java）：.sha —— SHA-256（java.security.MessageDigest）。
 // 编译：javac -d . Hash.java && 运行：java -XX:+UseSerialGC -Xss256k -cp . Hash
-// 注意：JVM 启动 ~300ms、常驻 ~40MB —— 这就是「为什么 Java 不适合这台机器」的实证，
-// 但协议是通的，你自己的机器内存够就可以用。
+// 注意：JVM 启动约 360ms、首次调用 150ms（JIT 未热），从第 2 次起约 3ms；
+// 常驻 43MB。实测数据见 docs/POLYGLOT.md。
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
