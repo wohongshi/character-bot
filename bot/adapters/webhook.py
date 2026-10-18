@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
-from .base import AdapterError, BaseAdapter, register
+from .base import AdapterError, BaseAdapter, Inbound, register
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -38,6 +38,17 @@ class WebhookAdapter(BaseAdapter):
 
     platform = "webhook"
     title = "通用 Webhook"
+    DESCRIPTION = "POST JSON 到任意 HTTP 端点：Bark / ntfy / 钉钉 / 自建中转"
+    VERSION = "1.0"
+    INGRESS = None                 # 只做出站：入站由平台/别的适配器负责
+    CONFIG_SCHEMA = {
+        "webhook_url": {"type": "str", "label": "地址", "default": "",
+                        "description": "收 JSON 的 HTTP 端点"},
+        "webhook_token": {"type": "str", "label": "Bearer Token", "default": "",
+                          "secret": True, "description": "有就带 Authorization 头"},
+        "webhook_field": {"type": "str", "label": "正文字段名", "default": "text",
+                          "description": "Bark 用 body，ntfy 用 message"},
+    }
     CAPABILITIES = {
         "text": True, "image": True, "voice": False,
         "group_member_list": False, "message_lookup": False,

@@ -35,7 +35,8 @@ class RuntimeFeatures:
         self.stats.setdefault("vision_in", 0)
 
     # ---------------- 适配器调用 ----------------
-    async def _adapter_call(self, name: str, *args, **kwargs):
+    async def _adapter_call(self, name: str, *args, chat_id: str | None = None,
+                            **kwargs):
         """调适配器的一个动词，**同步实现和 async 实现都认**。
 
         `docs/FRAMEWORK.md` 承诺「同步 / async 都行」，之前 `maybe_await()`
@@ -44,13 +45,18 @@ class RuntimeFeatures:
 
           · 同步方法 → `asyncio.to_thread`（urllib 那种阻塞调用不能占住事件循环）
           · 协程函数 → 直接 await（它自己就该是非阻塞的）
+
+        传了 `chat_id` 就按「这条会话当初从哪个平台来的」选适配器 ——
+        多平台并存时，QQ 来的消息不能从飞书的号发出去。
+        没传（查群成员、查历史消息这类无会话的查询）就用主适配器。
         """
-        # 走 `self.ob`（传输句柄）而不是 `self.adapter`：
-        # ① 老代码/测试都是把 FakeOB 挂到 rt.ob 上做隔离的，绕过它就变成真发网络请求；
-        # ② 切换适配器时两者一起换（apply_config 里），不会分叉。
-        target = getattr(self, "ob", None)
-        if target is None:                 # 显式判 None：对象可能是 falsy 的
-            target = self.adapter
+        # 走 `self.ob` 这条兼容路径：老代码/测试都是把 FakeOB 挂到 rt.ob 上做隔离的，
+        # 绕过它就变成真发网络请求。`_adapter_for` 在没有路由时正好回落到 self.ob。
+        target = self._adapter_for(chat_id) if hasattr(self, "_adapter_for") else None
+        if target is None:
+            target = getattr(self, "ob", None)
+            if target is None:             # 显式判 None：对象可能是 falsy 的
+                target = self.adapter
         fn = getattr(target, name, None)
         if not callable(fn):
             from .adapters.base import AdapterError

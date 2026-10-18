@@ -69,11 +69,31 @@ MY_VISION_API_KEY=sk-xxxx
 
 ---
 
-## 3. 安装并接上 NapCat
+## 3. 选一个平台（系统插件）
+
+第一次启动**不会连任何平台**：`state/bot_config.json` 里 `system_plugins` 是空列表，
+机器人只在网页里能聊。要接平台就去 **插件 → 系统**，打开对应的卡片：
+
+| 系统插件 | 需要准备 | 入站地址（填到平台后台） |
+|---|---|---|
+| OneBot 11（QQ / NapCat） | NapCat 的 HTTP 地址 + token | `http://<你的地址>:8796/onebot/event` |
+| QQ 官方机器人 | AppID / AppSecret / BotSecret | `http://<你的地址>:8796/qqofficial/event` |
+| 飞书 | AppID / AppSecret / Verification Token | `http://<你的地址>:8796/feishu/event` |
+| 微信公众号 | AppID / AppSecret / 服务器 Token | `http://<你的地址>:8796/wechat/event` |
+| 通用 Webhook | 一个收 JSON 的地址 | 只出站，不需要入站 |
+
+可以同时开多个，消息按来源各走各的路。改完立即生效，不用重启。
+
+> 飞书要**留空 Encrypt Key**、公众号要用**明文模式** —— 标准库没有 AES，
+> 开了加密回调会直接返回一条说明让你去关掉，而不是静默收不到消息。
+
+---
+
+### 3.1 其中 QQ 走 NapCat 的完整步骤
 
 NapCat 官方文档：<https://napneko.github.io/guide/napcat>
 
-### 3.1 安装
+#### 3.1.1 安装
 
 按官方文档装好（Docker / 一键脚本 / 手动都行），能打开它的 WebUI（默认 `:6099`）即可。
 本项目的部署脚本参考了这套布局：
@@ -83,7 +103,7 @@ NapCat 官方文档：<https://napneko.github.io/guide/napcat>
 /etc/systemd/system/napcat.service
 ```
 
-### 3.2 配置 OneBot 11
+#### 3.1.2 配置 OneBot 11
 
 编辑 NapCat 的 `config/onebot11_<QQ号>.json`，只保留 **HTTP 服务端** 和 **HTTP 上报**：
 
@@ -122,7 +142,7 @@ NapCat 官方文档：<https://napneko.github.io/guide/napcat>
 - 不需要 WebSocket；`websocketServers` 留空即可。
 - NapCat **未登录时网络服务不会启动**，`:3101` 连不上是正常现象。
 
-### 3.3 登录
+#### 3.1.3 登录
 
 重启 NapCat，然后：
 
@@ -133,7 +153,7 @@ NapCat 官方文档：<https://napneko.github.io/guide/napcat>
 > 面板不再内置二维码 —— 登录统一在 NapCat WebUI 里做。
 > 需要脚本取码时：`GET /api/napcat/qr`，返回 `{b64, url, age_s}`，要带面板头 `X-Klee-Studio: 1`。
 
-### 3.4 面板里补两项
+#### 3.1.4 面板里补两项
 
 - **主人 QQ**（`owner_id`）：决定 `.agent`、管理命令、以及「Agent 仅主人可用」。
 - **群聊策略**（`group_policy`）：
@@ -240,7 +260,7 @@ python3 server.py            # 默认 :8797
 
 ## 6. 角色与插件
 
-### 6.1 内置五个角色
+### 6.1 内置六个角色
 
 `klee`（可莉）、`hutao`（胡桃）、`citlali`（茜特菈莉）、`cyrene`（昔莲）、`atri`（亚托莉）。
 每个角色 = **一套 SOUL + 一套知识库 + 一套主题 + 一组专属插件**，全部锁死，切换只在面板发生。

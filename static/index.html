@@ -884,6 +884,17 @@ body[data-bubble="comic"] .msg.me .bub::after{display:none}
 .plugcard .foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:max(11px, calc(10px * var(--fx)));color:var(--ink-soft)}
 .plugcard .st{position:absolute;right:11px;top:11px;width:9px;height:9px;border-radius:99px;background:#d9c9b8;box-shadow:0 0 0 3px rgba(255,255,255,.8)}
 .plugcard .st.on{background:#59b36b;box-shadow:0 0 0 3px rgba(89,179,107,.18)}
+/* 类名写两遍是有意的：角色主题里有 `body[data-theme=x] .plugcard{border-color:…}`
+   （选择器权重 0,2,1），单个 .plugcard.syscard（0,2,0）压不过它，左边条会被刷掉。 */
+.plugcard.syscard.syscard{
+  /* 用 ink 混色而不是 --red：主题里的 --red 是「色调」不是「对比色」，
+     角色主题下它可能是浅粉，做左边条根本看不见。 */
+  border-left:3px solid color-mix(in srgb,var(--ink) 60%,transparent);
+  background:linear-gradient(160deg,
+    color-mix(in srgb,var(--ink) 5%,white),
+    color-mix(in srgb,var(--ink) 2%,var(--paper)))}
+.plugcard.syscard.syscard .ico{background:color-mix(in srgb,var(--ink) 10%,transparent)}
+.plugcard.syscard.syscard .lock{color:var(--ink);border-color:color-mix(in srgb,var(--ink) 26%,transparent)}
 .plugcard .st.err{background:#e05a4f}
 .plugcard .lock{font-size:max(11px, calc(10px * var(--fx)));color:var(--ui-accent);border:1px solid color-mix(in srgb,var(--ui-accent) 30%,transparent);border-radius:999px;padding:1px 7px}
 body[data-card_style="outline"] .plugcard{background:transparent}
@@ -1465,7 +1476,7 @@ const PAGES = [
   ["chars", "🎭", "角色", "切换角色 / 导入角色包"],
   ["board", "📊", "看板", "消息、走势、好感度"],
   ["persona", "🌸", "人格 · 知识库", "SOUL 与检索"],
-  ["plugins", "🧩", "插件", "当前角色专属 + 通用"],
+  ["plugins", "🧩", "插件", "系统适配器 + 角色限定 + 通用"],
   ["reminders", "⏰", "提醒", "提醒与纪念日"],
   ["ops", "⚙️", "运维 · 机器人", "连接、配置、模型"],
   ["custom", "✨", "自定义", "配色、气泡、模块"],
@@ -1543,23 +1554,31 @@ function openPluginDrawer(name, meta){
   const el = $("pdrawer"); if (!el) return;
   if (!m){ flash("插件信息还没加载好，稍后再试"); return; }
   $("pdTitle").textContent = m.title || name;
-  $("pdSub").textContent = `${m.file || name + ".py"} · v${m.version || "1.0"}`
-    + (m.author ? " · " + m.author : "")
-    + (m.characters && m.characters.length ? " · 角色限定" : " · 通用");
+  $("pdSub").textContent = m.system
+    ? `系统插件（适配器） · v${m.version || "1.0"} · ${m.ingress || "只出站"}`
+    : `${m.file || name + ".py"} · v${m.version || "1.0"}`
+      + (m.author ? " · " + m.author : "")
+      + (m.characters && m.characters.length ? " · 角色限定" : " · 通用");
   const cmds = m.command_list || [];
+  const caps = m.capabilities || {};
+  const capLine = Object.keys(caps).length
+    ? `<h4>平台能力</h4><div class="row" style="gap:6px;flex-wrap:wrap">${
+        Object.keys(caps).map(k => `<span class="tag" style="${caps[k] ? "" : "opacity:.45"}">${esc(CAP_CN[k] || k)}</span>`).join("")
+      }</div>` : "";
   $("pdBody").innerHTML = `
     <div>${esc(m.description || "（没有说明）")}</div>
+    ${m.system ? capLine : ""}
     ${m.usage ? `<h4>用法</h4><div>${esc(m.usage)}</div>` : ""}
-    <h4>命令（${cmds.length}）</h4>
+    ${m.system ? "" : `<h4>命令（${cmds.length}）</h4>
     ${cmds.length ? cmds.map(c => `<div class="cmdrow"><code>.${esc(c.name)}</code>
         <span class="h">${esc(cmdHelpText(c))}</span>
         ${c.aliases && c.aliases.length ? `<span class="h alias">别名：${esc(c.aliases.join(" / "))}</span>` : ""}</div>`).join("")
-      : '<div class="kv">这个插件没有命令，只在消息里自动触发</div>'}
+      : '<div class="kv">这个插件没有命令，只在消息里自动触发</div>'}`}
     <h4>状态</h4>
     <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
       <span class="tag" id="pdState">${m.enabled ? "● 已启用" : "○ 已停用"}</span>
-      <span class="tag">命中 ${m.hits || 0}</span>
-      <span class="tag">错误 ${m.errors || 0}</span>
+      ${m.system ? "" : `<span class="tag">命中 ${m.hits || 0}</span>
+      <span class="tag">错误 ${m.errors || 0}</span>`}
       ${m.error ? `<span class="tag" style="color:#c0392b">${esc(String(m.error).slice(0, 80))}</span>` : ""}
       ${m.locked
         ? '<span class="tag" title="角色限定插件跟角色绑定">🔒 角色限定</span>'
@@ -2209,8 +2228,10 @@ async function viewPlugins(readonly){
   <div class="plugbar">
     <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
     <button class="fbtn on" data-pf="all" onclick="plugFilter('all')">全部</button>
-    <button class="fbtn" data-pf="general" onclick="plugFilter('general')">通用</button>
+    <button class="fbtn" data-pf="limited" onclick="plugFilter('limited')">限定</button>
+    <button class="fbtn" data-pf="system" onclick="plugFilter('system')">系统</button>
     <button class="fbtn" data-pf="on" onclick="plugFilter('on')">已启用</button>
+    <button class="fbtn" data-pf="off" onclick="plugFilter('off')">已禁用</button>
     <button class="fbtn" data-pf="err" onclick="plugFilter('err')">报错</button>
     <button class="fbtn" style="margin-left:auto" onclick="pickPluginZip()">📦 安装插件包</button>
   </div>
@@ -2325,42 +2346,64 @@ function plugFilter(m){
 function renderPlugGrid(){
   const box = $("plugGrid"); if (!box) return;
   const q = ($("plugSearch") ? $("plugSearch").value : "").trim().toLowerCase();
-  const rows = plFiles.map(f => {
-    const name = f.name.replace(/\.py$/, "");
+  // 数据源用 meta（普通插件 + 系统插件都在里面），再用 files 补「刚放进来、
+  // 还没来得及重载」的 .py —— 否则新插件在列表里根本看不见。
+  const names = new Set(Object.keys(plMeta || {}));
+  (plFiles || []).forEach(f => names.add(String(f.name || "").replace(/\.py$/, "")));
+  const rows = [...names].map(name => {
     const m = plMeta[name] || {};
-    return {file: f.name, name, title: m.title || name, description: m.description || "",
-            chars: m.characters || [], locked: !!m.locked, enabled: !!m.enabled,
-            error: m.error || "", commands: m.commands || 0, hits: m.hits || 0,
-            usage: m.usage || ""};
+    return {name, title: m.title || name, description: m.description || "",
+            system: !!m.system, chars: m.characters || [], locked: !!m.locked,
+            enabled: !!m.enabled, error: m.error || "",
+            commands: m.commands || 0, hits: m.hits || 0,
+            usage: m.usage || "", version: m.version || "1.0",
+            ingress: m.ingress || "", health: m.health || null};
   }).filter(p => {
     // 角色限定插件与角色绑定：不是当前角色的，直接不显示
-    if (p.chars.length && !p.chars.includes(ACTIVE.id)) return false;
-    if (plugMode === "mine" && !(p.chars.includes(ACTIVE.id))) return false;
-    if (plugMode === "general" && p.chars.length) return false;
+    if (!p.system && p.chars.length && !p.chars.includes(ACTIVE.id)) return false;
+    if (plugMode === "limited" && (!p.chars.length || p.system)) return false;
+    if (plugMode === "system" && !p.system) return false;
     if (plugMode === "on" && !p.enabled) return false;
+    if (plugMode === "off" && p.enabled) return false;
     if (plugMode === "err" && !p.error) return false;
     if (q){
-      const hay = (p.name + p.title + p.description + p.usage).toLowerCase();
+      const hay = (p.name + p.title + p.description + p.usage + p.ingress).toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
+  }).sort((a, b) => {
+    // 系统插件永远排前面（它们是「平台」，不是普通功能）
+    if (a.system !== b.system) return a.system ? -1 : 1;
+    return a.title.localeCompare(b.title, "zh");
   });
   if (!rows.length){ box.innerHTML = `<div class="kv">没有匹配的插件</div>`; return; }
   box.innerHTML = rows.map(p => {
-    const owner = !p.chars.length
-      ? "通用"
-      : (p.chars.includes(ACTIVE.id)
-          ? `${PLUG_ICON[ACTIVE.id] || "🎭"} ${esc(ACTIVE.name)}${p.chars.length > 1 ? " · 共享" : ""}`
-          : `${PLUG_ICON[p.chars[0]] || "🎭"} ${esc(p.chars[0])}`);
-    return `<div class="plugcard ${p.file === plSel ? "on" : ""}" onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
+    const owner = p.system
+      ? "系统"
+      : (!p.chars.length
+          ? "通用"
+          : (p.chars.includes(ACTIVE.id)
+              ? `${PLUG_ICON[ACTIVE.id] || "🎭"} ${esc(ACTIVE.name)}${p.chars.length > 1 ? " · 共享" : ""}`
+              : `${PLUG_ICON[p.chars[0]] || "🎭"} ${esc(p.chars[0])}`));
+    const sub = p.system
+      ? `适配器 · ${esc(p.ingress || "只出站")}`
+      : `${esc(p.name)}.py · v${esc(p.version)}`;
+    const ready = p.health && p.health.ok;
+    const why = p.error || (p.health && p.health.error) || "";
+    const foot = p.system
+      ? `<span title="${esc(why)}">${p.error ? "⚠ 加载失败"
+            : (p.enabled ? (ready ? "● 已连接" : "◐ 未连接") : "○ 已停用")}</span>`
+        + (why && p.enabled ? `<span title="${esc(why)}">详情</span>` : "")
+      : `<span>${p.error ? "⚠ 加载失败" : (p.enabled ? "● 已启用" : "○ 已停用")}</span>
+         <span>命令 ${p.commands}</span><span>命中 ${p.hits}</span>`;
+    return `<div class="plugcard ${p.name === plSel ? "on" : ""} ${p.system ? "syscard" : ""}"
+        onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
       <span class="st ${p.error ? "err" : (p.enabled ? "on" : "")}"></span>
-      <div class="top"><span class="ico">${p.chars.length ? (PLUG_ICON[p.chars[0]] || "🎭") : "🧩"}</span>
-        <div><div class="nm">${esc(p.title)}</div><div class="sub">${esc(p.name)}.py · v${esc((plMeta[p.name] || {}).version || "1.0")}</div></div></div>
+      <div class="top"><span class="ico">${p.system ? "🔌" : (p.chars.length ? (PLUG_ICON[p.chars[0]] || "🎭") : "🧩")}</span>
+        <div><div class="nm">${esc(p.title)}</div><div class="sub">${sub}</div></div></div>
       <div class="desc">${esc(p.description || "（没有说明）")}</div>
-      <div class="foot"><span class="lock" style="${p.chars.length ? "" : "color:var(--ink-soft);border-color:var(--line)"}">${owner}</span>
-        <span>${p.error ? "⚠ 加载失败" : (p.enabled ? "● 已启用" : "○ 已停用")}</span>
-        <span>命令 ${p.commands}</span><span>命中 ${p.hits}</span>
-        ${p.error ? `<span style="color:#c0392b">· 加载失败</span>` : ""}</div>
+      <div class="foot"><span class="lock" style="${p.chars.length || p.system ? "" : "color:var(--ink-soft);border-color:var(--line)"}">${owner}</span>
+        ${foot}</div>
     </div>`;
   }).join("");
 }
@@ -3062,12 +3105,10 @@ const CFG_GROUPS = [
      {k:"owner_id", label:"主人 QQ"},
      {k:"feature_prefix", label:"插件命令前缀"},
    ]},
-  {id: "adapter", emoji: "🔌", title: "适配器", open: false,
-   note: "换平台只改这里，插件不用动",
+  {id: "adapter", emoji: "🔌", title: "Webhook 出站", open: false,
+   note: "只对「通用 Webhook」这个系统插件有效；其它平台的参数在插件页各自的卡片里",
    fields: [
-     {k:"adapter", label:"平台适配器", opts:[
-       {v:"onebot11", t:"OneBot 11（QQ / NapCat）"}, {v:"webhook", t:"通用 Webhook"}]},
-     {k:"webhook_url", label:"Webhook 地址", hint:"adapter=webhook 时才用"},
+     {k:"webhook_url", label:"Webhook 地址", hint:"开了「通用 Webhook」才用"},
      {k:"webhook_token", label:"Webhook Token", secret:true},
      {k:"webhook_field", label:"正文字段名", hint:"Bark 用 body，ntfy 用 message"},
    ]},
@@ -3333,14 +3374,23 @@ const CAP_CN = {
   group_member_list: "读群成员", message_lookup: "查历史消息",
   request_approval: "审批好友/入群", recall: "撤回消息",
 };
-function adapterHTML(ad){
+function adaptersHTML(list, primary){
+  if (!list || !list.length){
+    return `<b style="color:var(--red)">还没启用任何系统插件</b><br>
+      <span class="kv">现在只有网页聊天。去 <a href="javascript:go('plugins')">插件 → 系统</a> 开一个平台。</span>`;
+  }
+  return list.map(x => adapterHTML(x, list.length > 1)).join('<div style="height:8px"></div>');
+}
+function adapterHTML(ad, compact){
   if (!ad || !ad.platform) return "读不到适配器信息";
   const caps = ad.capabilities || {};
   const on = Object.keys(caps).filter(k => caps[k]);
   const off = Object.keys(caps).filter(k => !caps[k]);
-  const target = ad.base || ad.url || "—";
+  const target = ad.base || ad.url || ad.ingress || "—";
   // 选 webhook 但没填地址 = 之后一条也发不出去，别让人等到「她怎么不回了」才发现
-  const warn = (ad.platform === "webhook" && !String(ad.url || "").trim())
+  // 只对「主适配器 describe()」判断（列表项里没有 url 字段，别误报）
+  const warn = (ad.platform === "webhook" && ad.url !== undefined
+                && !String(ad.url || "").trim())
     ? '<br><b style="color:var(--red)">还没填 Webhook 地址，消息发不出去</b>' : "";
   return `平台：<b>${esc(ad.title || ad.platform)}</b><br>
     目标：<code style="font-size:11.5px">${esc(target)}</code><br>
@@ -3355,6 +3405,7 @@ async function viewOps(target){
   const [ov, cfg] = await Promise.all([api("/api/overview"), api("/api/config")]);
   const a = ov.adapter || {}, g = ov.gateway || {}, n = ov.napcat || {};
   const ad = (ov.bot && ov.bot.adapter) || null;
+  const ads = (ov.bot && ov.bot.adapters) || [];
   const st = a.stats || {};
   const feats = a.features || [];
   const onN = feats.filter(f => f.enabled).length;
@@ -3371,14 +3422,15 @@ async function viewOps(target){
         <button class="btn tiny" onclick="opsAct('restart_gateway')">重载插件</button>
       </div>
     </div>
-    <div class="card"><h3>💬 QQ 连接</h3>
-      <div class="opsline">连接：<b>${a.connected ? "在线" : "离线"}</b>${a.age == null ? " · 还没收到过消息" : ` · 上次消息 ${ageText(a.age)}`} · 已运行 ${durText(a.uptime)}<br>
+    <div class="card"><h3>💬 消息收发</h3>
+      <div class="opsline">平台：<b>${ads.length ? esc(ads.map(x => x.title || x.platform).join(" · ")) : "未接入（只有网页聊天）"}</b><br>
+        连接：<b>${a.connected ? "在线" : "离线"}</b>${a.age == null ? " · 还没收到过消息" : ` · 上次消息 ${ageText(a.age)}`} · 已运行 ${durText(a.uptime)}<br>
         收到 ${st.events ?? 0} · 发出 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 命令 ${st.commands ?? 0} · 错误 ${st.errors ?? 0}</div>
       ${badF.length ? `<div class="opsline"><b style="color:var(--red)">插件报错：${badF.map(f=>esc(f.name)).join("、")}</b></div>` : ""}
       <div class="opsline">插件：<b>${onN}/${feats.length} 启用</b> · 命中 ${feats.reduce((s,f)=>s+(f.hits||0),0)} 次</div>
     </div>
-    <div class="card"><h3>🔌 适配器 <span class="kv" style="font-family:var(--font-body)">收发消息的平台</span></h3>
-      <div class="opsline">${adapterHTML(ad)}</div>
+    <div class="card"><h3>🔌 系统插件 <span class="kv" style="font-family:var(--font-body)">收发消息的适配器</span></h3>
+      <div class="opsline">${adaptersHTML(ads, ad)}</div>
     </div>
     <div class="card"><h3>🐱 NapCat <span class="kv" style="font-family:var(--font-body)">QQ 协议端</span></h3>
       <div class="opsline">登录：<b>${n.ok ? (n.is_login ? "已登录" : "未登录") : "取不到"}</b>${n.uin ? ` · ${esc(n.uin)}${n.nick ? " " + esc(n.nick) : ""}` : ""}<br>

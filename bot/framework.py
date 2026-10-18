@@ -932,8 +932,11 @@ class FeatureManager:
                 ctx.text = res
         return True
 
-    async def run_event_hooks(self, kind: str, ev: dict) -> list:
+    async def run_event_hooks(self, kind: str, ev: dict, adapter=None) -> list:
         """跑 notice / request 钩子。返回 [(插件名, 返回值)]。
+
+        `adapter` 传「这条事件是从哪个平台来的」视图；不给就用管理器自己的
+        适配器（= 运行时）。多平台并存时插件靠它区分来源。
 
         异常只计数不抛：一个插件写错不该让「提醒主人」也失效。
         """
@@ -941,7 +944,7 @@ class FeatureManager:
             hooks = list(self.hooks_notice if kind == "notice" else self.hooks_request)
         if not hooks:
             return []
-        ctx = EventContext(adapter=getattr(self, "adapter", None), kind=kind,
+        ctx = EventContext(adapter=adapter or getattr(self, "adapter", None), kind=kind,
                            raw=dict(ev or {}))
         out = []
         for hook in hooks:

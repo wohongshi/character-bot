@@ -48,7 +48,7 @@ Character Bot 把这三件事拆成三个独立层，各自可换：
 
 - **🧩 插件即技能** — 插件不只是命令。Agent 会自己查目录、读用法、调用插件，再把结果用自己的口吻说出来。
 - **🎭 一个角色，四件套锁死** — SOUL、知识库、界面主题、专属插件按角色绑定；切换时一起换，不会串味。
-- **🔌 适配器可换** — 内置 OneBot 11（QQ）与通用 Webhook 两个实现；能力表让插件优雅降级，而不是撞 `AttributeError`。
+- **🔌 适配器是「系统插件」** — QQ（NapCat）、QQ 官方机器人、飞书、微信公众号、通用 Webhook 五个实现，默认全关、可多开；能力表让插件优雅降级，而不是撞 `AttributeError`。
 - **🪝 非消息事件也能写插件** — 戳一戳、入群、好友申请通过 `on_notice` / `on_request` 订阅；审批永远是**旁听**，不会替你点头。
 - **📱 手机优先** — 命令面板、插件抽屉、深浅色、PWA；11 种设备 × 8 个页面实测零溢出。
 - **⚡ 1GB 内存的无风扇 ARM 板也能跑** — 首屏 984 ms、传输 299 KB，全部是量出来的，见[性能](#性能与工程)。
@@ -60,13 +60,18 @@ Character Bot 把这三件事拆成三个独立层，各自可换：
 ```mermaid
 flowchart LR
   subgraph P["平台"]
-    QQ["QQ<br/>NapCat"]
-    WH["任意 HTTP 端点<br/>Bark / ntfy / 飞书…"]
+    QQ["QQ<br/>NapCat / 官方机器人"]
+    FS["飞书"]
+    WX["微信公众号"]
+    WH["任意 HTTP 端点<br/>Bark / ntfy / 自建"]
   end
 
-  subgraph A["适配器层 bot/adapters"]
-    OB["OneBotAdapter<br/>onebot11"]
-    WHA["WebhookAdapter<br/>webhook"]
+  subgraph A["系统插件 bot/adapters"]
+    OB["onebot11"]
+    QO["qqofficial"]
+    FE["feishu"]
+    WC["wechat"]
+    WHA["webhook"]
   end
 
   subgraph R["运行时 bot/runtime.py"]
@@ -85,8 +90,14 @@ flowchart LR
   end
 
   QQ <--> OB
+  QQ <--> QO
+  FS <--> FE
+  WX <--> WC
   WH <--> WHA
   OB <--> D
+  QO <--> D
+  FE <--> D
+  WC <--> D
   WHA <--> D
   D --> C --> P1
   D --> AG --> P1
@@ -105,7 +116,7 @@ QQ ←→ NapCat（OneBot 11 HTTP :3101）
         ▼
 server.py :8796 ── 面板 + 机器人本体
   ├─ bot/runtime.py     事件分发：命令 → 钩子 → NLU → 聊天 / Agent
-  ├─ bot/adapters/      适配器抽象 + OneBot 11 + Webhook
+  ├─ bot/adapters/      系统插件：onebot11 / qqofficial / feishu / wechat / webhook
   ├─ bot/framework.py   插件框架：注册 / 热重载 / 能力门控
   ├─ bot/agent.py       OpenAI tools 工具循环
   ├─ bot/features/      119 个插件
@@ -237,7 +248,30 @@ def register(api):
 
 ---
 
-## 框架：换平台不用改插件
+## 系统插件：适配器就是插件
+
+平台接入不再是「一个全局开关」，而是一组**系统插件**：
+
+| 系统插件 | 平台 | 入站 | 能力 |
+|---|---|---|---|
+| `onebot11` | QQ（NapCat / Lagrange） | `POST /onebot/event` | 最全：群成员、撤回、审批、语音 |
+| `qqofficial` | QQ 开放平台官方机器人 | `POST /qqofficial/event` | 文本（Ed25519 验签） |
+| `feishu` | 飞书自建应用 | `POST /feishu/event` | 文本（群聊、单聊） |
+| `wechat` | 微信公众号 | `GET/POST /wechat/event` | 文本（明文模式 + 客服消息） |
+| `webhook` | 任意收 JSON 的 HTTP 端点 | 只出站 | 文本、图片（base64） |
+
+**默认全部关闭**：新装一份仓库，它只是「一个网页聊天 + 面板」，不会偷偷连任何平台。
+在 **插件 → 系统** 里逐个打开，每个卡片点进去填自己的凭据（AppID / Token / Secret）。
+
+可以**同时开多个**：飞书和 QQ 一起开，各平台的消息互不串台 ——
+回复会沿着「这条消息当初从哪个平台进来」原路回去。主动播报（提醒、纪念日）
+走优先级最高的那个（`onebot11 > qqofficial > feishu > wechat > webhook`）。
+
+<p align="center">
+  <img src="docs/img/sys-plugins.webp" width="760" alt="插件页：系统插件卡片与六个筛选">
+</p>
+
+### 换平台不用改插件
 
 适配器只负责传输，运行时只调「动词」——`send_text` / `send_image` / `send_voice` /
 `get_group_member_list` / `recall` / …。加一个平台 = 新建一个文件：
@@ -257,7 +291,8 @@ class TelegramAdapter(BaseAdapter):
         ...  # 调 Telegram API
 ```
 
-配置里把 `adapter` 改成 `telegram`，插件一行都不用动。
+把它写进 `bot/adapters/__init__.py` 的 import 列表，它就会出现在「插件 → 系统」里，
+默认关闭；插件一行都不用动。
 插件判断能力用 `ctx.supports("image")` 而不是 `hasattr`——后者在基类兜底时永远为真。
 
 <p align="center">

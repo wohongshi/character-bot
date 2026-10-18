@@ -21,8 +21,11 @@ from .runtime import BotRuntime
 logger = logging.getLogger("klee.bot")
 
 DEFAULT_CONFIG = {
-    # ---- 适配器（框架层：换平台只改这几项，插件代码不用动）----
-    "adapter": "onebot11",       # onebot11 / webhook
+    # ---- 系统插件（适配器）----
+    # 启用哪些平台：列表，可多开，**默认一个都不开**（新装只有网页聊天）。
+    # 老配置没有这个键时，_load_config 会迁移成 [adapter]，不会把 QQ 停掉。
+    "system_plugins": [],
+    "adapter": "onebot11",       # 单平台模式下的默认项（迁移用；多开看 system_plugins）
     "webhook_url": "",           # adapter=webhook 时的出站地址
     "webhook_token": "",         # 有则带 Authorization: Bearer
     "webhook_field": "text",     # 正文放在哪个 JSON 字段（Bark 用 body、ntfy 用 message）
@@ -30,6 +33,20 @@ DEFAULT_CONFIG = {
     "owner_id": "",             # 主人 QQ（agent/.agent 权限、部分插件命令用）
     "napcat_http": "http://127.0.0.1:3101",
     "napcat_token": "",
+    # ---- 飞书 ----
+    "feishu_app_id": "",
+    "feishu_app_secret": "",
+    "feishu_verification_token": "",
+    "feishu_bot_open_id": "",
+    # ---- 微信公众号 ----
+    "wechat_app_id": "",
+    "wechat_app_secret": "",
+    "wechat_token": "",
+    # ---- QQ 官方机器人 ----
+    "qq_app_id": "",
+    "qq_app_secret": "",
+    "qq_bot_secret": "",
+    "qq_sandbox": False,
     "feature_prefix": ".",
     "split_sentences": True,
     "split_soft_max": 100,
@@ -212,6 +229,12 @@ class BotService:
                 # 一次性迁移：老配置的 agent_tools 早于「插件即技能」存在，补进三个技能工具；
                 # 之后用户手动去掉就真的去掉了（不再覆盖）。
                 legacy_tools = "agent_tools" in disk and "agent_skills" not in disk
+                # 系统插件是后加的：老配置没有这个键时，把原来那个 adapter 迁成
+                # 「已启用」，否则升级一次机器人就静默掉线（用户会以为程序坏了）。
+                legacy_platform = ("system_plugins" not in disk)
+                if legacy_platform:
+                    disk["system_plugins"] = [str(disk.get("adapter") or "onebot11")]
+                    self._config_needs_persist = True
                 # 只接受已知键，陈旧键别带进来
                 cfg.update({k: v for k, v in disk.items()
                             if k in DEFAULT_CONFIG and v is not None})
@@ -367,11 +390,18 @@ class BotService:
             except RuntimeError:
                 logger.warning("bot 循环已停止，插件未重载")
 
-    def submit(self, ev: dict) -> None:
+    def submit(self, ev: dict, *, source: str = "") -> None:
+        """把一条平台事件排进 bot 循环。
+
+        `source` 是它从哪个系统插件（适配器）进来的 —— 运行时靠它决定
+        回复从哪条路出去，以及通知类钩子里的平台名。
+        """
         rt, loop = self.runtime, self.loop
         if not rt or loop is None:
             logger.warning("bot 未启动，丢弃事件")
             return
+        if source and isinstance(ev, dict):
+            ev = {**ev, "_source": source}
         with self._inflight_lock:
             if self._inflight >= 200:                 # 背压：别让事件无限堆积
                 logger.warning("事件积压 %d 条，丢弃一条", self._inflight)

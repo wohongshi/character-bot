@@ -23,10 +23,11 @@ I/O 动词写成**同步**或 `async def` 都行：运行时统一走 `_adapter_
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-__all__ = ["AdapterError", "BaseAdapter", "REGISTRY", "register", "build",
-           "available", "maybe_await"]
+__all__ = ["AdapterError", "BaseAdapter", "Inbound", "REGISTRY", "register",
+           "build", "available", "system_plugins", "maybe_await"]
 
 
 class AdapterError(RuntimeError):
@@ -60,10 +61,37 @@ def available() -> list:
     for pid, cls in sorted(REGISTRY.items()):
         # `"   "` 这种 docstring：strip() 之后是空列表，[0] 会 IndexError，
         # 整个面板的适配器列表就没了。
-        doc = (cls.__doc__ or "").strip()
+        desc = str(getattr(cls, "DESCRIPTION", "") or "").strip()
+        if not desc:
+            doc = (cls.__doc__ or "").strip()
+            desc = doc.splitlines()[0] if doc else ""
         out.append({"id": pid, "name": getattr(cls, "title", pid),
-                    "description": doc.splitlines()[0] if doc else ""})
+                    "description": desc, "system": True,
+                    "ingress": getattr(cls, "INGRESS", None),
+                    "default_off": bool(getattr(cls, "DEFAULT_OFF", True)),
+                    "capabilities": dict(getattr(cls, "CAPABILITIES", {}) or {})})
     return out
+
+
+@dataclass
+class Inbound:
+    """一次入站 HTTP 请求的处理结果。
+
+    适配器不直接写 socket（那是 server.py 的事），只回答三件事：
+
+      · `reply`   —— 立刻回给平台的响应体（`(content_type, bytes)`），
+                    比如飞书的 challenge、微信的 echostr；
+      · `event`   —— 要交给运行时分发的事件（OneBot 11 的 `post_type` 结构）；
+      · `error`/`status` —— 校验不过时回什么状态码。
+
+    为什么要有 `reply` 和 `event` 同时存在：微信/飞书这类平台既要求
+    「立刻回 200」又要求「随后再主动发消息」，两者必须能分开。
+    """
+    event: Optional[dict] = None
+    reply: Optional[tuple[str, bytes]] = None
+    status: int = 200
+    error: str = ""
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 async def maybe_await(value: Any) -> Any:
@@ -89,6 +117,17 @@ class BaseAdapter:
         "group_member_list": False, "message_lookup": False,
         "request_approval": False, "recall": False,
     }
+
+    # ---------- 系统插件元信息（面板「插件」页按这个渲染卡片） ----------
+    #: 一句话说明，面板卡片上显示
+    DESCRIPTION: str = ""
+    VERSION: str = "1.0"
+    #: 系统插件默认全部关闭：新装一份仓库，不配任何凭据时它只是「网页聊天」
+    DEFAULT_OFF: bool = True
+    #: 入站路径（server.py 会把该路径的请求交给本适配器）；None = 只做出站
+    INGRESS: Optional[str] = None
+    #: 面板设置表单：键名必须是 bot_config.json 里的真实键（扁平存放）
+    CONFIG_SCHEMA: Dict[str, dict] = {}
 
     def __init__(self, config: Optional[dict] = None, *,
                  owner_id: str = "", self_id: str = "") -> None:
@@ -141,6 +180,16 @@ class BaseAdapter:
                               approve: bool = False, reason: str = "") -> Any:
         raise AdapterError(f"{self.platform} 不支持入群请求审批")
 
+    # ---------- 入站 ----------
+    def parse_inbound(self, method: str, path: str, query: dict,
+                      headers: dict, body: bytes) -> Inbound:
+        """把平台回调解析成框架事件。
+
+        默认实现 = 不认识这个请求（返回 `Inbound(status=404)`），
+        因为 OneBot 11 的事件体**本来就是**框架事件结构，不需要转换。
+        """
+        return Inbound(status=404, error=f"{self.platform} 不处理入站请求")
+
     # ---------- 生命周期 / 自检 ----------
     def health(self) -> dict:
         """给面板「运维」页用。连不上别抛，返回 ok=False + 原因。"""
@@ -148,8 +197,20 @@ class BaseAdapter:
 
     def describe(self) -> dict:
         return {"platform": self.platform, "title": self.title,
+                "description": self.DESCRIPTION, "version": self.VERSION,
+                "ingress": self.INGRESS, "system": True,
                 "owner_id": self.owner_id, "self_id": self.self_id,
                 "capabilities": dict(self.CAPABILITIES)}
+
+    def system_info(self) -> dict:
+        """系统插件在「插件」页的卡片数据（和普通插件的 meta 同构）。"""
+        return {"name": self.platform, "title": self.title,
+                "description": self.DESCRIPTION, "version": self.VERSION,
+                "system": True, "ingress": self.INGRESS,
+                "capabilities": dict(self.CAPABILITIES),
+                "schema": dict(self.CONFIG_SCHEMA),
+                "locked": False, "characters": [], "commands": 0,
+                "command_list": [], "usage": "", "author": "", "homepage": ""}
 
     def reconfigure(self, config: dict) -> bool:
         """配置热更新。
@@ -174,10 +235,36 @@ class BaseAdapter:
         return f"<{type(self).__name__} platform={self.platform}>"
 
 
-def build(config: Optional[dict] = None, **kw) -> BaseAdapter:
-    """按配置造适配器。`adapter` 缺省 = onebot11（向后兼容老配置）。"""
+def system_plugins() -> list:
+    """所有适配器（= 系统插件）的元信息，按 id 排序。"""
+    out = []
+    for pid, cls in sorted(REGISTRY.items()):
+        inst = cls.__new__(cls)          # 不执行 __init__：只读元信息，别去连网
+        info = BaseAdapter.system_info(inst)
+        desc = str(getattr(cls, "DESCRIPTION", "") or "").strip()
+        if not desc:                      # 没写 DESCRIPTION 就退回 docstring 第一行
+            doc = (cls.__doc__ or "").strip()
+            desc = doc.splitlines()[0] if doc else ""
+        info.update({"name": pid, "title": getattr(cls, "title", pid),
+                     "description": desc,
+                     "version": getattr(cls, "VERSION", "1.0"),
+                     "ingress": getattr(cls, "INGRESS", None),
+                     "default_off": bool(getattr(cls, "DEFAULT_OFF", True)),
+                     "schema": dict(getattr(cls, "CONFIG_SCHEMA", {}) or {}),
+                     "capabilities": dict(getattr(cls, "CAPABILITIES", {}) or {})})
+        out.append(info)
+    return out
+
+
+def build(config: Optional[dict] = None, platform: Optional[str] = None,
+          **kw) -> BaseAdapter:
+    """按配置造适配器。
+
+    `platform` 显式指定就造那一个（多平台并存时逐个构建）；
+    不给则读配置里的 `adapter`，再缺省 onebot11（向后兼容老配置）。
+    """
     cfg = dict(config or {})
-    pid = str(cfg.get("adapter") or "onebot11").strip().lower()
+    pid = str(platform or cfg.get("adapter") or "onebot11").strip().lower()
     cls = REGISTRY.get(pid)
     if cls is None:
         known = ", ".join(sorted(REGISTRY)) or "（无）"

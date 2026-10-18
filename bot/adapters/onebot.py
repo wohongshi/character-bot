@@ -16,7 +16,10 @@ from typing import Any, Optional
 
 from bot.onebot import OneBotError, OneBotHTTP
 
-from .base import AdapterError, BaseAdapter, register
+import json
+
+from .base import AdapterError, BaseAdapter, Inbound, register
+from .http import header_lookup, safe_equal
 
 
 @register
@@ -24,7 +27,17 @@ class OneBotAdapter(BaseAdapter):
     """OneBot 11（HTTP）：QQ 侧最常用的一套协议。"""
 
     platform = "onebot11"
-    title = "OneBot 11（QQ）"
+    title = "OneBot 11（QQ / NapCat）"
+    DESCRIPTION = "接 NapCat / Lagrange 等协议端：功能最全（群成员、撤回、审批）"
+    VERSION = "1.0"
+    INGRESS = "/onebot/event"
+    CONFIG_SCHEMA = {
+        "napcat_http": {"type": "str", "label": "协议端地址", "default": "http://127.0.0.1:3101",
+                        "description": "NapCat 的 HTTP 服务地址（不是 WebUI 端口）"},
+        "napcat_token": {"type": "str", "label": "访问 Token", "default": "",
+                         "secret": True,
+                         "description": "协议端和事件上报都要用同一个 token"},
+    }
     CAPABILITIES = {
         "text": True, "image": True, "voice": True,
         "group_member_list": True, "message_lookup": True,
@@ -36,6 +49,29 @@ class OneBotAdapter(BaseAdapter):
         self.base = str(self.config.get("napcat_http") or "http://127.0.0.1:3101")
         self.token = str(self.config.get("napcat_token") or "")
         self.raw = OneBotHTTP(self.base, self.token)
+
+    # ---------- 入站 ----------
+    def parse_inbound(self, method: str, path: str, query: dict,
+                      headers: dict, body: bytes) -> Inbound:
+        """NapCat 主动 push 过来的事件：校验 token 后原样交给运行时。
+
+        OneBot 11 的事件结构就是这个框架的事件结构，不需要转换 —— 这也是
+        为什么当初选它做第一个适配器。
+        """
+        if method.upper() != "POST":
+            return Inbound(status=405, error="只接受 POST")
+        if not self.token:
+            return Inbound(status=503, error="napcat_token 未配置，拒绝事件")
+        auth = header_lookup(headers, "Authorization")
+        if not (safe_equal(auth, f"Bearer {self.token}") or safe_equal(auth, self.token)):
+            return Inbound(status=403, error="bad token")
+        try:
+            ev = json.loads(body.decode("utf-8") or "{}")
+        except ValueError:
+            return Inbound(status=400, error="请求体不是 JSON")
+        if not isinstance(ev, dict):
+            return Inbound(status=400, error="请求体不是对象")
+        return Inbound(event=ev, reply=("application/json", b'{"ok":true}'))
 
     # ---------- 传输 ----------
     def _wrap(self, fn, *a, **kw):

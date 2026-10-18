@@ -118,7 +118,7 @@ _load_env()
 try:
     from bot import themes as theme_mod
     from bot.characters import CHARACTERS, CharacterStore
-    from bot.framework import merge_plugin_settings
+    from bot.framework import coerce_setting, merge_plugin_settings
     from bot.service import DEFAULT_CONFIG, BotService
     _BOT_IMPORT_ERR = ""
 except Exception as _e:                                            # noqa: BLE001
@@ -1352,8 +1352,106 @@ def _plugin_meta() -> dict:
     return {str(p.get("name")): p for p in snap if isinstance(p, dict)}
 
 
+_HEALTH_CACHE: dict = {}          # platform → (ts, dict)
+
+
+def _adapter_health(ad, max_age: float = 30.0) -> dict:
+    """适配器的自检结果，30 秒缓存。
+
+    `health()` 对飞书/微信/QQ 会去换 access_token（真有网络请求），
+    面板每 8 秒轮询一次会把平台频控打满 —— 所以这里必须缓存。
+    """
+    pid = str(getattr(ad, "platform", "") or "")
+    now = time.time()
+    hit = _HEALTH_CACHE.get(pid)
+    if hit and now - hit[0] < max_age:
+        return hit[1]
+    try:
+        val = ad.health()
+    except Exception as e:                                         # noqa: BLE001
+        val = {"ok": False, "platform": pid, "error": f"{type(e).__name__}: {e}"}
+    _HEALTH_CACHE[pid] = (now, val)
+    return val
+
+
+def _system_enabled() -> list:
+    """当前启用的系统插件（适配器）id 列表。"""
+    if not BOT:
+        return []
+    val = BOT.config.get("system_plugins")
+    if not isinstance(val, (list, tuple)):
+        return [str(BOT.config.get("adapter") or "onebot11")]
+    return [str(x) for x in val]
+
+
+#: 主适配器优先级：多平台同时开启时，「主动播报」用哪一个。
+#: QQ 为主（这个项目起家于 QQ），其余按接入成本排。
+_SYSTEM_ORDER = ["onebot11", "qqofficial", "feishu", "wechat", "webhook"]
+
+
+def _system_meta_rows() -> list:
+    """按固定优先级排好的系统插件元信息。"""
+    try:
+        from bot import adapters as _ad
+        items = {x["name"]: x for x in _ad.system_plugins()}
+    except Exception:                                            # noqa: BLE001
+        return []
+    order = [x for x in _SYSTEM_ORDER if x in items] + sorted(set(items) - set(_SYSTEM_ORDER))
+    return [items[x] for x in order]
+
+
+def _system_meta() -> dict:
+    """系统插件在「插件」页的卡片数据（和普通插件 meta 同构）。"""
+    try:
+        from bot import adapters as _ad
+        items = _ad.system_plugins()
+    except Exception:                                            # noqa: BLE001
+        return {}
+    on = set(_system_enabled())
+    runtime = getattr(BOT, "runtime", None) if BOT else None
+    live = dict(getattr(runtime, "adapters", {}) or {})
+    out = {}
+    for info in (sorted(items, key=lambda x: (_SYSTEM_ORDER.index(x["name"])
+                                              if x["name"] in _SYSTEM_ORDER else 99))):
+        pid = str(info.get("name") or "")
+        ad = live.get(pid)
+        row = dict(info)
+        row.update({
+            "title": info.get("title") or pid,
+            "file": f"{pid}.py",           # 抽屉里显示成「适配器」
+            "enabled": pid in on,
+            "locked": False,
+            "characters": [],
+            "commands": 0, "command_list": [], "hits": 0, "errors": 0,
+            "error": "" if ad is not None or pid not in on else "已启用但实例没建起来",
+        })
+        if ad is not None:
+            # 健康检查失败 ≠ 插件报错：NapCat 没登录、飞书没填 key 都只是「未就绪」，
+            # 塞进 error 会让「报错」筛选里堆满正常离线状态。
+            try:
+                health = _adapter_health(ad)
+                row["health"] = health
+                row["ready"] = bool(health.get("ok"))
+                row["ready_note"] = "" if health.get("ok") else str(health.get("error") or "未就绪")
+            except Exception as e:                                 # noqa: BLE001
+                row["ready"] = False
+                row["ready_note"] = f"{type(e).__name__}: {e}"
+        out[pid] = row
+    return out
+
+
 def _plugin_schema(name: str) -> dict:
-    meta = _plugin_meta().get(Path(name).stem) or {}
+    stem = Path(name).stem
+    sysmeta = _system_meta().get(stem)
+    if sysmeta:
+        schema = sysmeta.get("schema") if isinstance(sysmeta.get("schema"), dict) else {}
+        vals = BOT.config if BOT else {}
+        return {"ok": True, "name": stem, "title": sysmeta.get("title", stem),
+                "usage": "", "author": "", "system": True,
+                "schema": schema,
+                "values": {k: vals.get(k, f.get("default")) for k, f in schema.items()},
+                "has_schema": bool(schema)}
+    meta = _plugin_meta().get(stem) or {}
     schema = meta.get("schema") if isinstance(meta.get("schema"), dict) else {}
     cfg = (_plugins_get().get("config") or {})
     settings = (cfg.get("settings") or {}).get(Path(name).stem) or {}
@@ -1440,8 +1538,15 @@ def _plugins_uncached() -> dict:
             files.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime})
     except OSError:
         pass
+    meta = _plugin_meta()
+    # 系统插件（适配器）和普通插件同构地出现在同一份 meta 里，
+    # 面板就不用为它们写两套渲染逻辑了。
+    sysmeta = _system_meta()
+    for pid, row in sysmeta.items():
+        meta.setdefault(pid, row)
+        meta[pid].update({k: row[k] for k in ("system", "enabled", "title") if k in row})
     return {"ok": True, "config": cfg, "files": files, "dir": str(FEATURES_DIR),
-            "meta": _plugin_meta()}
+            "meta": meta, "system": sorted(sysmeta), "system_enabled": _system_enabled()}
 
 
 # ---------- 消息流（直读会话库） ----------
@@ -1984,6 +2089,22 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return data if isinstance(data, dict) else {}
 
+    def _raw_body(self, max_bytes: int = MAX_BODY) -> bytes:
+        """读原始请求体（适配器自己解析 JSON / XML / 表单）。"""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return b""
+        if n <= 0:
+            return b""
+        if n > max_bytes:
+            self._body_too_big = True
+            return b""
+        try:
+            return self.rfile.read(n)
+        except OSError:
+            return b""
+
     def _guard(self) -> bool:
         """面板写操作鉴权：默认 X-Klee-Studio: 1；设了 KLEE_STUDIO_TOKEN 则再校验它。"""
         if self.headers.get("X-Klee-Studio") != "1":
@@ -2303,24 +2424,52 @@ class Handler(BaseHTTPRequestHandler):
             return
         # NapCat HTTP POST 事件入口（用自己的 token 鉴权，不走面板头）
         # 先验 token 再读 body：未鉴权的客户端不该有机会让服务端分配大块内存。
-        if u.path == "/onebot/event":
-            tok = str((BOT.config.get("napcat_token") if BOT else "") or "")
-            auth = str(self.headers.get("Authorization") or "")
-            if not tok:
-                self._json({"ok": False, "error": "napcat_token 未配置，拒绝事件"}, 503)
-                return
-            if not (hmac.compare_digest(auth, f"Bearer {tok}") or hmac.compare_digest(auth, tok)):
-                self._json({"ok": False, "error": "bad token"}, 403)
-                return
-            if BOT is None:
-                self._json({"ok": False, "error": _BOT_IMPORT_ERR or "bot 未启动"}, 503)
-                return
-            body = self._body(max_bytes=8 * 1024 * 1024)      # 单条事件不会更大
+        # ---------- 平台入站：所有系统插件按 INGRESS 路径分发 ----------
+        # 以前这里写死 `/onebot/event` + NapCat token 校验。现在每个适配器
+        # 自己声明入站路径并自己验签（飞书 challenge、微信 echostr、QQ 的
+        # Ed25519），server 只负责把「路径 → 适配器」对上。
+        rt = getattr(BOT, "runtime", None) if BOT else None
+        adapters = dict(getattr(rt, "adapters", {}) or {})
+        target = next((ad for ad in adapters.values()
+                       if str(getattr(ad, "INGRESS", "") or "") == u.path), None)
+        if target is not None:
+            body = (self._raw_body(max_bytes=8 * 1024 * 1024)
+                    if self.command in ("POST", "PUT") else b"")
             if getattr(self, "_body_too_big", False):
                 self._json({"ok": False, "error": "事件体过大"}, 413)
                 return
-            BOT.submit(body)
+            headers = {k: v for k, v in self.headers.items()}
+            try:
+                res = target.parse_inbound(self.command, u.path,
+                                           parse_qs(u.query), headers, body)
+            except Exception as e:                             # noqa: BLE001
+                logger.exception("适配器 %s 解析入站失败", target.platform)
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}, 500)
+                return
+            if res.event:
+                BOT.submit(res.event, source=target.platform)
+            if res.reply:
+                ctype, payload = res.reply
+                self._send_bytes(payload, ctype, code=res.status or 200)
+                return
+            if res.status >= 400:
+                self._json({"ok": False, "error": res.error or "bad request"}, res.status)
+                return
             self._json({"ok": True})
+            return
+        # 路径属于某个系统插件、但它没启用：明确说，别掉进面板鉴权回 403「缺少头」
+        known_ingress = {}
+        try:
+            from bot import adapters as _adm
+            for item in _adm.system_plugins():
+                if item.get("ingress"):
+                    known_ingress[str(item["ingress"])] = str(item["name"])
+        except Exception:                                          # noqa: BLE001
+            pass
+        if u.path in known_ingress:
+            self._json({"ok": False,
+                        "error": f"{known_ingress[u.path]} 系统插件未启用"
+                                 "（面板 → 插件 → 系统）"}, 503)
             return
 
         body = self._body()
@@ -2514,6 +2663,39 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/api/plugins/config":
+            # 系统插件（适配器）和普通插件共用这个接口：前者的启用状态存在
+            # bot_config.json 的 system_plugins 里，后者在 features/config.json。
+            sys_on = set(_system_enabled())
+            setmap = body.get("set") if isinstance(body.get("set"), dict) else {}
+            sys_names = set(_system_meta())
+            touched = {k: bool(v) for k, v in setmap.items() if k in sys_names}
+            if touched:
+                if not BOT:
+                    self._json({"ok": False, "error": "bot 未启动"}, 503)
+                    return
+                on = set(sys_on)
+                for name, want in touched.items():
+                    (on.add if want else on.discard)(name)
+                # 顺序按适配器注册顺序，保证「主适配器」稳定（提醒/播报走它）
+                order = [x["name"] for x in _system_meta_rows()]
+                ordered = [x for x in order if x in on] + sorted(on - set(order))
+                try:
+                    BOT.save_config({"system_plugins": ordered})
+                except Exception as e:                             # noqa: BLE001
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                    return
+                _OVERVIEW_CACHE.update(ts=0.0, data=None)
+                _PLUG_CACHE.update(ts=0.0, data=None)
+                rest = {k: v for k, v in setmap.items() if k not in sys_names}
+                body = {k: v for k, v in body.items() if k != "set"}
+                if rest:
+                    body["set"] = rest
+                else:
+                    enabled_now = sorted(on)
+                    self._json({"ok": True, "enabled": enabled_now, "system": True,
+                                "count": len(enabled_now),
+                                "note": "已保存，立即生效"})
+                    return
             cfg_path = FEATURES_DIR / "config.json"
             try:
                 cur = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -2578,6 +2760,32 @@ class Handler(BaseHTTPRequestHandler):
             values = body.get("values")
             if not name or not isinstance(values, dict):
                 self._json({"ok": False, "error": "参数不对（要 name + values）"}, 400)
+                return
+            sysrow = _system_meta().get(name)
+            if sysrow:
+                schema = sysrow.get("schema") if isinstance(sysrow.get("schema"), dict) else {}
+                if not schema:
+                    self._json({"ok": False, "error": f"{name} 没有可配置项"}, 400)
+                    return
+                patch = {}
+                for k, f in schema.items():
+                    if k not in values:
+                        continue
+                    try:
+                        patch[k] = coerce_setting(f, values[k])
+                    except ValueError as e:
+                        self._json({"ok": False, "error": f"{k}：{e}"}, 400)
+                        return
+                if not BOT:
+                    self._json({"ok": False, "error": "bot 未启动"}, 503)
+                    return
+                try:
+                    BOT.save_config(patch)
+                except Exception as e:                             # noqa: BLE001
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                    return
+                _OVERVIEW_CACHE.update(ts=0.0, data=None)
+                self._json({"ok": True, "system": True, "saved": sorted(patch)})
                 return
             meta = _plugin_meta().get(name) or {}
             schema = meta.get("schema") if isinstance(meta.get("schema"), dict) else {}

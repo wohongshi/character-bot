@@ -1,12 +1,17 @@
 """适配器包。导入即完成注册，`build()` 按配置造实例。
 
-    from bot.adapters import build, available
-    ad = build(config)          # config["adapter"] 缺省 = onebot11
-    await ad.send_text("group:123", "hi")
-"""
-from .base import (AdapterError, BaseAdapter, REGISTRY, available, build,
-                   maybe_await, register)
-from . import onebot, webhook   # noqa: F401  导入即注册
+`adapters` 也是这个框架的「系统插件」：每个适配器就是一个可以被开关的插件，
+默认全部关闭（`DEFAULT_OFF = True`），在面板「插件」页里选择性开启。
 
-__all__ = ["AdapterError", "BaseAdapter", "REGISTRY", "available", "build",
-           "maybe_await", "register", "onebot", "webhook"]
+    from bot.adapters import build, system_plugins
+    ad = build(cfg, platform="feishu")
+    for item in system_plugins():      # 给面板出卡片
+        ...
+"""
+from .base import (AdapterError, BaseAdapter, Inbound, REGISTRY, available, build,
+                   maybe_await, register, system_plugins)
+from . import onebot, webhook, feishu, wechat, qqofficial   # noqa: F401  导入即注册
+
+__all__ = ["AdapterError", "BaseAdapter", "Inbound", "REGISTRY", "available",
+           "build", "maybe_await", "register", "system_plugins",
+           "onebot", "webhook", "feishu", "wechat", "qqofficial"]

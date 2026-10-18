@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from . import adapters as adapters_mod
+from .adapters.base import AdapterError, BaseAdapter
 from .features_ext import RuntimeFeatures
 from .characters import CharacterStore
 from .framework import FeatureContext, FeatureManager, _Command
@@ -95,6 +96,62 @@ def _segments(message) -> list:
     return out or [{"type": "text", "data": {"text": s}}]
 
 
+class NullAdapter(BaseAdapter):
+    """一个都没开时的占位适配器。
+
+    不是「没适配器就崩」，也不是「偷偷默认 onebot11」：面板要能正常打开、
+    状态页要能说清「当前没有任何平台接入」。
+    """
+
+    platform = "none"
+    title = "未接入"
+    DESCRIPTION = "还没有启用任何系统插件（适配器）"
+    CAPABILITIES = {k: False for k in BaseAdapter.CAPABILITIES}
+
+    def send_text(self, chat_id, text, *, reply_to=None, at_uid=None):
+        raise AdapterError("还没有启用任何平台：面板 → 插件 → 系统插件里开一个")
+
+
+class _RouteView:
+    """插件里 `ctx.adapter` 看到的东西。
+
+    动词（send_image_file / _member_names / tts_enabled …）转发给运行时，
+    但**平台信息来自这条消息的来源适配器** —— 否则多平台并存时，
+    飞书来的消息会让插件以为自己在 QQ 上。
+    """
+
+    __slots__ = ("_rt", "_ad")
+
+    def __init__(self, rt, ad):
+        object.__setattr__(self, "_rt", rt)
+        object.__setattr__(self, "_ad", ad)
+
+    @property
+    def platform(self) -> str:
+        return str(getattr(self._ad, "platform", "") or "none")
+
+    @property
+    def CAPABILITIES(self) -> dict:
+        caps = getattr(self._ad, "CAPABILITIES", None)
+        return dict(caps) if isinstance(caps, dict) else {}
+
+    @property
+    def owner_id(self) -> str:
+        return str(getattr(self._ad, "owner_id", "") or self._rt.owner_id)
+
+    def chat_id_of(self, is_group: bool, group_id: str, user_id: str) -> str:
+        fn = getattr(self._ad, "chat_id_of", None)
+        if callable(fn):
+            return str(fn(is_group, group_id, user_id))
+        return f"group:{group_id}" if is_group else f"private:{user_id}"
+
+    def __getattr__(self, name):
+        return getattr(self._rt, name)
+
+    def __repr__(self) -> str:                                  # pragma: no cover
+        return f"<RouteView platform={self.platform}>"
+
+
 class BotRuntime(RuntimeFeatures):
     """面板自持的运行时：事件分发 + 插件 + 模型/知识库 + 适配器。"""
 
@@ -136,12 +193,12 @@ class BotRuntime(RuntimeFeatures):
         self.vision_max_bytes = int(config.get("vision_max_bytes") or vision_mod.MAX_BYTES)
         self.vision_timeout = float(config.get("vision_timeout") or 60)
 
-        # 适配器：配置里 adapter 缺省 = onebot11（老配置无需改动）。
-        # self.ob 保留成「适配器本身」——框架内部和历史代码都只调 send_text /
-        # send_image / get_msg 这些动词，换平台时这些调用一行都不用改。
-        self.adapter = adapters_mod.build(config, owner_id=self.owner_id,
-                                          self_id=self.self_id)
-        self.ob = self.adapter
+        # ---------- 系统插件（适配器）：可多开，默认全关 ----------
+        # `system_plugins` 是启用列表；老配置没有这个键时由 service 迁移成
+        # `[adapter]`，所以这里只管读。一个都没开 → NullAdapter（面板照常能开）。
+        self.adapters: dict[str, BaseAdapter] = {}
+        self._routes: dict[str, str] = {}        # chat_id → platform（回复走原路）
+        self._build_adapters(config, initial=True)
         self._own_ids: "OrderedDict[str, None]" = OrderedDict()
         self._last_inbound: dict = {}            # chat_id → (message_id, user_id)，引用/@ 的锚点
         self._member_cache: dict = {}
@@ -175,6 +232,80 @@ class BotRuntime(RuntimeFeatures):
         self._register_agent_command()
         logger.info("BotRuntime ready: plugins=%s commands=%s",
                     len(self.mgr.plugins), len(self.mgr.commands))
+
+    # ---------- 系统插件（适配器） ----------
+    def _build_adapters(self, config: dict, *, initial: bool = False) -> None:
+        """按 `system_plugins` 构建适配器集合。
+
+        每次都重建：适配器的连接参数（token/地址）可能刚被改过，
+        逐个 `reconfigure` 要处理「地址变了要换 transport」的分支，
+        不如重建干净 —— 这些适配器都不持有长连接，重建没有代价。
+        """
+        enabled = config.get("system_plugins")
+        if not isinstance(enabled, (list, tuple)):
+            # 兜底：老配置只有 adapter 键
+            enabled = [str(config.get("adapter") or "onebot11")]
+        wanted = []
+        for pid in enabled:
+            pid = str(pid or "").strip().lower()
+            if pid and pid not in wanted and pid in adapters_mod.REGISTRY:
+                wanted.append(pid)
+        built: dict[str, BaseAdapter] = {}
+        for pid in wanted:
+            try:
+                built[pid] = adapters_mod.build(config, platform=pid,
+                                                owner_id=self.owner_id,
+                                                self_id=self.self_id)
+            except Exception as e:                                 # noqa: BLE001
+                logger.warning("系统插件 %s 构建失败：%s", pid, e)
+        if not initial:
+            for pid, old in self.adapters.items():
+                if pid not in built:
+                    try:
+                        old.close()
+                    except Exception:                              # noqa: BLE001
+                        pass
+        self.adapters = built
+        # 主适配器：按构建顺序取第一个；没有就是 NullAdapter
+        self.adapter = next(iter(built.values()), None) or NullAdapter(
+            config, owner_id=self.owner_id, self_id=self.self_id)
+        self.ob = self.adapter
+        # 平台被关掉后，指向它的路由要清掉，否则回复会打到一个已卸载的适配器
+        for chat_id, pid in list(self._routes.items()):
+            if pid not in built:
+                self._routes.pop(chat_id, None)
+        logger.info("系统插件：启用 %s", list(built) or "（无，仅网页聊天）")
+
+    def _adapter_for(self, chat_id: str | None) -> BaseAdapter:
+        """按会话找应该用哪个适配器发消息（回复走原路）。
+
+        没有路由时回落到 `self.ob` 而不是 `self.adapter`：测试与老代码把
+        假适配器挂在 `ob` 上做隔离，绕过它就会真发网络请求（这个坑踩过一次）。
+        """
+        if chat_id:
+            pid = self._routes.get(str(chat_id))
+            if pid and pid in self.adapters:
+                return self.adapters[pid]
+        return getattr(self, "ob", None) or self.adapter
+
+    def _view(self, ad: BaseAdapter | None = None) -> _RouteView:
+        return _RouteView(self, ad or self.adapter)
+
+    @staticmethod
+    def _adapter_row(pid: str, ad: BaseAdapter) -> dict:
+        """面板用的一行：优先用实例的 describe()（带 base/url 这类连接目标）。"""
+        try:
+            row = dict(ad.describe())
+        except Exception:                                          # noqa: BLE001
+            row = {}
+        row.setdefault("platform", pid)
+        row.setdefault("title", getattr(ad, "title", pid))
+        row.setdefault("description", getattr(ad, "DESCRIPTION", ""))
+        row.setdefault("ingress", getattr(ad, "INGRESS", None))
+        if not row.get("ingress"):
+            row["ingress"] = getattr(ad, "INGRESS", None)
+        row["capabilities"] = dict(getattr(ad, "CAPABILITIES", {}) or {})
+        return row
 
     # ---------- 小工具 ----------
     @staticmethod
@@ -392,7 +523,7 @@ class BotRuntime(RuntimeFeatures):
             for i, part in enumerate(parts):
                 try:
                     data = await self._adapter_call(
-                        "send_text", chat_id, part,
+                        "send_text", chat_id, part, chat_id=chat_id,
                         reply_to=(quote if i == 0 else None),
                         at_uid=(at_uid if i == 0 else None))
                     self._remember_own(str((data or {}).get("message_id") or ""))
@@ -419,6 +550,7 @@ class BotRuntime(RuntimeFeatures):
         try:
             async with lock:
                 data = await self._adapter_call("send_image", chat_id, str(path), caption,
+                                                chat_id=chat_id,
                                                 reply_to=quote, at_uid=at_uid)
             self._remember_own(str((data or {}).get("message_id") or ""))
             self.stats["sent"] += 1
@@ -468,8 +600,10 @@ class BotRuntime(RuntimeFeatures):
 
     async def _run_event_hooks(self, kind: str, ev: dict) -> None:
         """让插件旁听 notice / request。钩子出错只记录，不影响内置流程。"""
+        src = str(ev.get("_source") or "")
         try:
-            await self.mgr.run_event_hooks(kind, ev)
+            await self.mgr.run_event_hooks(kind, ev,
+                                           adapter=self._view(self.adapters.get(src)))
         except Exception:                                          # noqa: BLE001
             logger.debug("%s 钩子链异常（已忽略）", kind)
 
@@ -559,7 +693,14 @@ class BotRuntime(RuntimeFeatures):
             quoted = await self._resolve_quoted(reply_ids[0])
             if quoted:
                 chat_text = f"[引用: {quoted}]\n{text}"
-        chat_id = self._chat_id(is_group, group_id, user_id)
+        # 来源平台：server 按入站路径打上的标记。记下 chat_id → 平台，
+        # 之后所有出站（回复、提醒、工具发的图）都从同一个平台回去。
+        src = str(ev.get("_source") or "")
+        chat_id = (self.adapters[src].chat_id_of(is_group, group_id, user_id)
+                   if src in self.adapters
+                   else self._chat_id(is_group, group_id, user_id))
+        if src:
+            self._routes[chat_id] = src
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
         self._log_msg(chat_id, "user", chat_text)
 
@@ -568,7 +709,8 @@ class BotRuntime(RuntimeFeatures):
             return
 
         ctx = FeatureContext(
-            adapter=self, text=dispatch_text, is_group=is_group, group_id=group_id,
+            adapter=self._view(self.adapters.get(src)), text=dispatch_text,
+            is_group=is_group, group_id=group_id,
             user_id=user_id,
             user_name=str(sender.get("card") or sender.get("nickname") or user_id),
             message_id=str(ev.get("message_id") or ""), mentioned=mentioned,
@@ -1018,29 +1160,18 @@ class BotRuntime(RuntimeFeatures):
         self.owner_id = str(cfg.get("owner_id") or self.owner_id)
         self.feature_prefix = str(cfg.get("feature_prefix") or self.feature_prefix)
         self.hist_limit = int(cfg.get("history_messages") or self.hist_limit)
-        # 改 platform 只是改了个字符串是不够的 —— 必须换适配器实例，
-        # 否则面板上选了 webhook、实际还在用 OneBot 发消息（假开关）。
-        want = str(cfg.get("adapter") or "onebot11").strip().lower()
-        if want != str(getattr(self.adapter, "platform", "") or ""):
-            old = self.adapter
-            try:
-                new = adapters_mod.build(cfg, owner_id=self.owner_id, self_id=self.self_id)
-            except Exception as e:                                 # noqa: BLE001
-                logger.warning("切换适配器 %s → %s 失败，继续用 %s：%s",
-                               old.platform, want, old.platform, e)
-            else:
-                self.adapter = new
-                self.ob = new                    # 老代码都走 self.ob，一起换
-                try:
-                    old.close()
-                except Exception:                                  # noqa: BLE001
-                    pass
-                logger.info("适配器已切换：%s → %s", old.platform, new.platform)
+        # 系统插件（适配器）：启用列表变了要增删，参数变了要重建。
+        # 之前只比 `adapter` 一个字符串，面板上换平台是个假开关。
+        want = [str(x) for x in (cfg.get("system_plugins") or [])]
+        have = list(self.adapters)
+        if sorted(p for p in want if p in adapters_mod.REGISTRY) != sorted(have):
+            self._build_adapters(cfg)
         else:
-            try:
-                self.adapter.reconfigure(cfg)      # 同一平台：就地热更新
-            except Exception as e:                                 # noqa: BLE001
-                logger.warning("适配器重配置失败：%s", e)
+            for ad in self.adapters.values():
+                try:
+                    ad.reconfigure(cfg)            # 同一组平台：就地热更新
+                except Exception as e:                             # noqa: BLE001
+                    logger.warning("适配器 %s 重配置失败：%s", ad.platform, e)
         self.setup_extras(cfg, preserve_buckets=True)
 
     # ---------- 状态 ----------
@@ -1083,6 +1214,10 @@ class BotRuntime(RuntimeFeatures):
             "ok": True,
             "self_id": self.self_id,
             "adapter": self._adapter_meta(),
+            # 系统插件（适配器）全景：面板「插件」页和运维页都读这个
+            "adapters": [self._adapter_row(pid, ad)
+                         for pid, ad in self.adapters.items()],
+            "system_plugins": list(self.adapters),
             "character": {"id": self.active_character,
                           "name": self.active_character_info.get("name", ""),
                           "emoji": self.active_character_info.get("emoji", ""),

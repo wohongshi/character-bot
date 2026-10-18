@@ -67,15 +67,56 @@ class TelegramAdapter(BaseAdapter):
 | `health()` 不抛异常 | 面板「运维」页轮询它，抛了就整页错 |
 | 异常统一成 `AdapterError` | 上层只处理一种类型 |
 
+### 适配器 = 系统插件
+
+每个适配器同时是一个**系统插件**：在面板「插件」页以卡片出现，默认关闭，
+可以同时开多个。类上多声明几项即可：
+
+```python
+class TelegramAdapter(BaseAdapter):
+    platform = "telegram"          # 也是系统插件 id
+    title = "Telegram"
+    DESCRIPTION = "Telegram Bot API：群和私聊都能收发"   # 面板卡片上的一句话
+    VERSION = "1.0"
+    DEFAULT_OFF = True             # 系统插件默认关闭（别改成 False）
+    INGRESS = "/telegram/event"    # 入站路径；None = 只出站
+    CONFIG_SCHEMA = {              # 面板设置表单：键必须是 bot_config.json 的键
+        "telegram_bot_token": {"type": "str", "label": "Bot Token",
+                               "default": "", "secret": True,
+                               "description": "BotFather 给的 token"},
+    }
+
+    def parse_inbound(self, method, path, query, headers, body):
+        """平台回调 → 框架事件。验签也在这里做。"""
+        return Inbound(event={...}, reply=("text/plain", b"ok"))
+```
+
+`parse_inbound` 返回的 `Inbound` 有三块：`event`（交给运行时）、`reply`
+（立刻回给平台的响应，比如飞书 challenge、微信 echostr）、`status`（校验失败时
+回什么状态码）。三者可以同时存在 —— 微信要求「先回 200，再主动发消息」。
+
 ### 已内置
 
-| platform | 平台 | 出站 | 入站 |
+| platform | 平台 | 入站 | 能力 |
 |---|---|---|---|
-| `onebot11` | QQ（NapCat / Lagrange / go-cqhttp） | ✅ 文本/图片/语音 | 平台 POST 到 `/onebot/event` |
-| `webhook` | 任意「收 JSON 的 HTTP 端点」 | ✅ 文本/图片(base64) | 同上（自己转 Event 结构） |
+| `onebot11` | QQ（NapCat / Lagrange / go-cqhttp） | `POST /onebot/event` | 文本 / 图片 / 语音 / 群成员 / 撤回 / 审批 |
+| `qqofficial` | QQ 开放平台官方机器人 | `POST /qqofficial/event` | 文本（Ed25519 验签） |
+| `feishu` | 飞书自建应用 | `POST /feishu/event` | 文本（群聊 @ / 单聊） |
+| `wechat` | 微信公众号 | `GET/POST /wechat/event` | 文本（明文模式 + 客服消息） |
+| `webhook` | 任意「收 JSON 的 HTTP 端点」 | 只出站 | 文本 / 图片(base64) |
 
 `webhook` 适配器的存在有个额外作用：**证明抽象是真的**。只有 OneBot 一个实现时，
 `BaseAdapter` 里那些 `chat_id_of` / `CAPABILITIES` / 降级路径全都是摆设。
+
+### 多平台并存怎么路由
+
+- 入站：`server.py` 按 `INGRESS` 路径找到适配器，调它的 `parse_inbound`，
+  再 `submit(event, source=platform)`。
+- 出站：运行时记一张 `chat_id → platform` 路由表，`send()` 按表选适配器 ——
+  **飞书来的消息不会从 QQ 的号发出去**。
+- 没有路由时（提醒、纪念日这类主动播报）用「主适配器」：
+  `onebot11 > qqofficial > feishu > wechat > webhook` 里第一个开着的。
+- 一个都没开：`NullAdapter` —— 面板照常能进，`send()` 返回失败而不是假装成功。
 
 ---
 

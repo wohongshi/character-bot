@@ -1,6 +1,15 @@
 # 插件开放规范（Character Bot）
 
-插件 = `bot/features/<name>.py` + 在 `bot/features/config.json` 的 `enabled` 白名单里登记（角色限定插件不需要登记）。
+面板「插件」页里其实有两种插件，用筛选栏的 **系统 / 限定** 区分：
+
+| 种类 | 是什么 | 放在哪 | 默认 |
+|---|---|---|---|
+| **功能插件** | 命令、钩子、小游戏、工具 —— 机器人「会做什么」 | `bot/features/<name>.py` | 按 `config.json` 的 `enabled` |
+| **系统插件** | 适配器 —— 消息「从哪个平台来」 | `bot/adapters/<platform>.py` | **全部关闭**，在面板里逐个开 |
+
+系统插件的写法见 [FRAMEWORK.md](FRAMEWORK.md#适配器--系统插件)；这一份只讲功能插件。
+
+功能插件 = `bot/features/<name>.py` + 在 `bot/features/config.json` 的 `enabled` 白名单里登记（角色限定插件不需要登记）。
 改完文件后 8 秒内热重载；语法错误会在加载时被记录到该插件的 `error`。面板可在线开关插件、改 `CONFIG_SCHEMA` 里的配置项，但不提供在线改代码。
 
 ## 1. 最小插件
