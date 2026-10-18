@@ -64,6 +64,53 @@
   if (document.readyState === "complete") setTimeout(probe, 250);
   else window.addEventListener("load", function(){ setTimeout(probe, 250); });
 })();
+
+/* 分辨率自适应：把「屏幕有多细 / 窗口有多宽」变成两个 CSS 变量 + 一个状态位。
+   - --fx    小字号系数。1x 屏（老显示器、投影、4K 未缩放）物理像素就是 CSS 像素，
+             9.5px 的说明字在上面几乎看不清；按 DPR 和宽度放大 0–30%。
+             2x/3x 的视网膜屏保持 1，避免把布局撑破。
+   - --vh    1% 的视觉视口高度。iOS/安卓地址栏收起时 100vh 会多算一截，
+             用 --vh 兜底（支持 dvh 的浏览器内部本来就用 dvh）。
+   - data-bp 断点状态位（xs/sm/md/lg/xl），让 JS 和 CSS 用同一套判定。 */
+(function(){
+  var H = document.documentElement;
+  var BPS = [[400, "xs"], [640, "sm"], [900, "md"], [1440, "lg"], [1e9, "xl"]];
+  function apply(){
+    var w = window.innerWidth || 390;
+    var h = (window.visualViewport && window.visualViewport.height) || window.innerHeight || 640;
+    var dpr = window.devicePixelRatio || 1;
+
+    var fx = 1;
+    if (dpr < 1.5) fx *= (w >= 1600 ? 1.22 : w >= 1200 ? 1.12 : 1.04);
+    if (w < 360) fx *= 1.08;                  // 320/360 的窄屏，同样的字更显小
+    fx = Math.min(fx, 1.3);                   // 别和用户自己的字号设置叠乘爆掉
+    H.style.setProperty("--fx", fx.toFixed(3));
+    H.style.setProperty("--vh", (h / 100).toFixed(2) + "px");
+
+    var bp = "xl";
+    for (var i = 0; i < BPS.length; i++){ if (w < BPS[i][0]){ bp = BPS[i][1]; break; } }
+    if (H.dataset.bp !== bp){ H.dataset.bp = bp; }
+    H.dataset.dpr = String(dpr);
+    // 触屏判定：pointer:coarse 在部分 WebView/模拟环境里不可靠，用 maxTouchPoints 兜底
+    var touch = (navigator.maxTouchPoints || 0) > 0
+             || (window.matchMedia && matchMedia("(pointer:coarse)").matches);
+    if (Boolean(H.dataset.touch) !== touch) H.dataset.touch = touch ? "1" : "0";
+  }
+  apply();
+  var t = null;
+  function soon(){ clearTimeout(t); t = setTimeout(apply, 120); }
+  window.addEventListener("resize", soon);
+  window.addEventListener("orientationchange", soon);
+  if (window.visualViewport){
+    window.visualViewport.addEventListener("resize", soon);
+    window.visualViewport.addEventListener("scroll", soon);
+  }
+  // 换屏幕 / 拖到另一台显示器：DPR 会变
+  try{
+    matchMedia("(resolution: " + (window.devicePixelRatio || 1) + "dppx)")
+      .addEventListener("change", soon);
+  }catch(e){}
+})();
 </script>
 <style>
 /* ============ 字体 ============ */
@@ -150,7 +197,7 @@ body::after{
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#f0cdb0;border-radius:99px;border:2px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-thumb:hover{background:#e7b28c;background-clip:content-box}
-#app{display:flex;height:100vh;max-width:1200px;margin:0 auto;position:relative;z-index:1}
+#app{display:flex;height:100vh;height:100dvh;max-width:min(var(--app-max),100vw);margin:0 auto;position:relative;z-index:1}
 /* ============ 侧边栏 ============ */
 aside{width:214px;flex:none;background:linear-gradient(180deg,#fffaf0,#ffeede);
   border-right:2px solid var(--line);display:flex;flex-direction:column;padding:16px 12px 10px;gap:4px}
@@ -159,10 +206,10 @@ aside{width:214px;flex:none;background:linear-gradient(180deg,#fffaf0,#ffeede);
   box-shadow:var(--shadow);transition:transform .2s}
 .brand:hover img{transform:translateY(-3px) rotate(-5deg)}
 .bt{font-family:var(--font-cute);font-size:19px;color:var(--red);letter-spacing:1px;line-height:1.2}
-.bs{font-size:9.5px;color:var(--dim);letter-spacing:2.5px;margin-top:2px}
+.bs{font-size:max(11px, calc(9.5px * var(--fx)));color:var(--dim);letter-spacing:2.5px;margin-top:2px}
 .navgroup{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
-.navlabel{font-size:9.5px;letter-spacing:1.6px;color:var(--ink-soft);padding:2px 12px 3px}
-nav button kbd{margin-left:auto;font-size:9px;color:var(--ink-soft);background:var(--surface-3);
+.navlabel{font-size:max(11px, calc(9.5px * var(--fx)));letter-spacing:1.6px;color:var(--ink-soft);padding:2px 12px 3px}
+nav button kbd{margin-left:auto;font-size:max(11px, calc(9px * var(--fx)));color:var(--ink-soft);background:var(--surface-3);
   border:1px solid var(--glass-line);border-radius:5px;padding:0 4px;line-height:14px}
 nav button.on kbd{color:#fff;background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.35)}
 .cmdkbtn{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:6px;
@@ -325,6 +372,43 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
   #view .seg button{min-height:32px}
   #view .fbtn{min-height:32px}
 }
+/* 触屏设备在桌面断点下也要保持可点：判据是「指针粗不粗」，不是「屏多宽」。
+   iPad 竖屏 768px 走的是桌面布局，但手指和手机一样粗。 */
+@media(pointer:coarse){
+  #view button:not(.x),#view .btn,.drawer button:not(.x),
+  #view .seg button,#view .fbtn,.dock button,.cmdkitem{min-height:32px}
+  #view .btn.tiny,#view button.tiny{min-height:30px}
+  nav button{min-height:40px}
+  #view .chatbar .btn.tiny{min-height:32px;height:auto}
+  #reasonSel{height:32px}
+}
+/* 同一组规则再镜像到 JS 判定（navigator.maxTouchPoints > 0）——
+   有些 WebView / 模拟环境里 (pointer:coarse) 不生效，触屏上按钮就变小了 */
+html[data-touch="1"] #view button:not(.x),
+html[data-touch="1"] #view .btn,
+html[data-touch="1"] .drawer button:not(.x),
+html[data-touch="1"] #view .seg button,
+html[data-touch="1"] #view .fbtn,
+html[data-touch="1"] .dock button,
+html[data-touch="1"] .cmdkitem{min-height:32px}
+html[data-touch="1"] #view .btn.tiny,
+html[data-touch="1"] #view button.tiny{min-height:30px}
+html[data-touch="1"] nav button{min-height:40px}
+html[data-touch="1"] #view .chatbar .btn.tiny{min-height:32px;height:auto}
+html[data-touch="1"] #reasonSel{height:32px}
+/* 文字链（看板的「去运维 →」、供应商的「删除」、面板卡的「切换」）在触屏上
+   只有 16–18px 高，横着够宽但竖着按不准 —— 补到 26px，不改变排版观感 */
+html[data-touch="1"] #view .wl,
+html[data-touch="1"] #view .tag a,
+html[data-touch="1"] #view .opsline a,
+html[data-touch="1"] #view .cmdrow a,
+html[data-touch="1"] #view .kv a{display:inline-flex;align-items:center;min-height:30px;padding:0 6px}
+html[data-touch="1"] #view .tag a{margin:-7px 0}   /* 负边距：撑高点击区但不撑大胶囊 */
+html[data-touch="1"] #view .wl{margin-top:4px}
+/* 顶栏状态胶囊（可点，跳运维）和「重载插件」在触屏上也偏矮 */
+html[data-touch="1"] header#strip .pill{min-height:30px;padding-top:3px;padding-bottom:3px}
+html[data-touch="1"] header#strip .btn{min-height:30px}
+html[data-touch="1"] .cmdkbtn{min-height:36px}
 /* 人格页：官方介绍卡 */
 .posterRow{display:flex;gap:20px;align-items:center}
 .posterRow img{width:102px;border-radius:14px;border:3px solid #fff;
@@ -352,7 +436,7 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .pllist button:hover{background:var(--surface-3)}
 .pllist button.on{background:var(--gold-soft);color:#9a6d15;font-weight:700}
 .pllist button.on::before{color:var(--gold)}
-.badge{font-size:10.5px;border-radius:99px;padding:0 8px;margin-left:auto}
+.badge{font-size:max(11px, calc(10.5px * var(--fx)));border-radius:99px;padding:0 8px;margin-left:auto}
 .badge.on{background:var(--green-soft);color:#487a2e}
 .badge.off{background:#f8e7e2;color:#b25a3c}
 .result{background:var(--surface-3);border:2px dashed #eed7b4;border-radius:16px;padding:12px 14px;margin-top:12px;font-size:13px;max-height:200px;overflow:auto}
@@ -378,7 +462,7 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .fitem .who{flex:none;width:126px;font-size:11.5px;color:var(--dim);line-height:1.5}
 .fitem .txt{flex:1;font-size:13.5px;white-space:pre-wrap;word-break:break-word}
 .fitem.assistant{background:var(--surface-3)}
-.tag{font-size:10.5px;border-radius:99px;padding:1px 8px;background:var(--red-soft);
+.tag{font-size:max(11px, calc(10.5px * var(--fx)));border-radius:99px;padding:1px 8px;background:var(--red-soft);
   color:var(--red-deep);margin-right:4px;display:inline-block}
 .fitem.assistant .tag{background:var(--green-soft);color:var(--green)}
 /* ============ 动效 ============ */
@@ -431,8 +515,26 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
   .hero{flex-direction:column;text-align:center}
   .hbub{transform:rotate(0deg)}
 }
+/* 320/360 上角色卡只有两列，名字占掉左列后右列塞不下两枚徽章，会被省略号
+   截成「1…」「20…」。这里改成三行：名字 / 徽章 / 副标题。
+   选择器要带 html 前缀 —— 主规则写在后面的 @media(max-width:760px) 里，
+   同特异性下后写的赢，不加前缀会被盖回去。 */
+@media(max-width:420px){
+  html .chathero .ch{grid-template-columns:minmax(0,1fr);gap:1px 0}
+  html .chathero .nm{grid-area:1/1}
+  html .chathero .badges{grid-area:2/1;justify-content:flex-start;flex-wrap:wrap;
+    overflow:visible;margin-top:3px;gap:4px}
+  html .chathero .tg{grid-area:3/1}
+  html .chathero .badges .tag{max-width:none;overflow:visible;text-overflow:clip}
+  html .chathero .badges .tag:first-child{display:none}   /* 英文名在窄屏省掉 */
+}
+/* 元信息行（「涂山红红 · 20:36 · 用时 2.4 秒 · 🧠 Agent」）在窄屏会被拆成孤行，
+   统一改成末尾省略，别在中间断开 */
+@media(max-width:420px){
+  html .msg .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+}
 @media(max-width:520px){
-  .bt{display:block;font-size:10.5px;line-height:1.2;max-width:104px;white-space:nowrap;
+  .bt{display:block;font-size:max(11px, calc(10.5px * var(--fx)));line-height:1.2;max-width:104px;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
 }
 
@@ -444,8 +546,8 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
 .cfgrow{display:flex;flex-direction:column;justify-content:flex-end}
 .cfgrow label{font-size:12px;color:var(--dim);display:block;margin-bottom:4px;line-height:1.35;
   min-height:34px}   /* 两行固定高：有 hint 和没 hint 的输入框底边对齐 */
-.cfgrow .hint{display:block;font-size:10.5px;color:var(--ink-soft);margin-top:2px;line-height:1.35}
-.cfgrow .hint{font-size:10.5px;color:var(--ink-soft)}
+.cfgrow .hint{display:block;font-size:max(11px, calc(10.5px * var(--fx)));color:var(--ink-soft);margin-top:2px;line-height:1.35}
+.cfgrow .hint{font-size:max(11px, calc(10.5px * var(--fx)));color:var(--ink-soft)}
 .cfgrow input[type=text],.cfgrow select{width:100%;box-sizing:border-box;height:32px}
 .cfgrow input[type=text],.cfgrow input[type=password]{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 /* 常用配置：折叠分组 */
@@ -464,7 +566,7 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
 .cfggrp>summary:hover{background:var(--surface-2)}
 .cfggrp .cg-ic{font-size:14px}
 .cfggrp .cg-t{font-weight:600;color:var(--ink)}
-.cfggrp .cg-n{font-size:10.5px;color:var(--dim);background:var(--surface-2);
+.cfggrp .cg-n{font-size:max(11px, calc(10.5px * var(--fx)));color:var(--dim);background:var(--surface-2);
   border:1px solid var(--line);border-radius:999px;padding:0 7px;line-height:16px}
 .cfggrp .cg-note{margin-left:auto;font-size:11px;color:var(--ink-soft);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
@@ -488,7 +590,7 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
 .bd-bar{width:100%;max-width:34px;border-radius:6px 6px 2px 2px;
   background:linear-gradient(180deg,#ffb08a,#e8484f);box-shadow:0 2px 6px rgba(232,72,79,.22)}
 .bd-bar.zero{background:#efdfd2;box-shadow:none}
-.bd-lb{font-size:9.5px;color:var(--dim);margin-top:4px;white-space:nowrap;transform-origin:center}
+.bd-lb{font-size:max(11px, calc(9.5px * var(--fx)));color:var(--dim);margin-top:4px;white-space:nowrap;transform-origin:center}
 .bd-kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
 .bd-kpi .b{flex:1;min-width:112px;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
 .bd-kpi .b b{display:block;font-size:21px;color:var(--red-deep);line-height:1.25}
@@ -508,6 +610,12 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
 :root{
   --ui-accent:var(--red); --ui-accent2:var(--gold);
   --ui-radius:20px; --ui-scale:1;
+  /* 分辨率自适应：--fx 是「小字号系数」，由脚本按 DPR 与视口宽度算出来。
+     1x 屏（老显示器 / 投影 / 4K 未缩放）字最小，会放大到 1.2 上下；
+     2x+ 的视网膜屏保持 1，避免布局被撑破。1 是安全默认值。 */
+  --fx:1;
+  --side-w:228px;
+  --app-max:1200px;
   --glass:rgba(255,255,255,.58);
   --glass-line:rgba(255,255,255,.72);
   /* 语义色：所有表面/次级文字都走这几个 token，主题只换 --paper/--ink 即可整套跟着变 */
@@ -519,7 +627,7 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
   --ink-faint:color-mix(in srgb, var(--ink) 72%, var(--paper));
   --comic-shadow:0 10px 30px rgba(120,70,50,.12), 0 2px 0 rgba(255,255,255,.6) inset;
 }
-html{font-size:calc(16px * var(--ui-scale))}
+html{font-size:calc(16px * var(--ui-scale));-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{
   background:
     radial-gradient(1100px 620px at 12% -10%, color-mix(in srgb, var(--ui-accent) 18%, transparent), transparent 62%),
@@ -565,9 +673,37 @@ body[data-effects="true"]::after{
 }
 #app{position:relative;z-index:1}
 
+/* ---------- 分辨率分层：宽屏把多出来的宽度给内容，而不是留白 ---------- */
+@media(min-width:1440px){ :root{--app-max:1320px} }
+@media(min-width:1800px){ :root{--app-max:1480px;--side-w:248px} }
+@media(min-width:2200px){ :root{--app-max:1840px;--side-w:268px} }
+/* 矮窗口（手机横屏 / 分屏小窗）：侧栏收成图标条，把高度留给内容 */
+@media(max-height:520px){
+  :root{--app-max:100vw;--side-w:64px}
+  html aside{padding:0 4px}
+  html aside .brand{padding:8px 0 6px;justify-content:center;gap:0}
+  html aside .brand .bt,html aside .brand .bs,html aside .sidefoot{display:none!important}
+  html nav{padding:4px 2px;gap:2px}
+  html nav button{justify-content:center;padding:9px 4px}
+  html nav button .t,html nav button kbd,html nav .navlabel{display:none}
+  html .content{padding:10px 14px 14px}
+  html h2.page{font-size:20px;margin-bottom:2px}
+  html h2.page::after{width:36px;height:3px;margin-top:3px}
+  /* 横屏只有 ~390px 高：角色大图 + 多行副标题会把对话区挤成一条缝，
+     这里把它压成一行名字，把高度全部让给消息区 */
+  html .chathero{min-height:0;padding:5px 11px;border-radius:12px;align-items:center}
+  html .chathero .nm{font-size:17px;line-height:1.2}
+  html .chathero .tg,html .chathero .badges,html .chathero img.bg{display:none}
+  html .chatbar{margin-bottom:6px;gap:6px}
+  html #msgs{padding:2px;gap:10px}
+  html .chips{margin-top:6px}
+  html #chatWrap{min-height:0;gap:6px}
+  html .card{padding:12px 14px}
+}
+
 /* 侧栏 */
 aside{
-  width:228px;
+  width:var(--side-w);
   background:linear-gradient(180deg, color-mix(in srgb, var(--paper) 88%, white), color-mix(in srgb, var(--red-soft) 55%, white));
   border-right:1px solid var(--glass-line);
   box-shadow:8px 0 40px rgba(140,80,60,.08);
@@ -576,7 +712,7 @@ aside{
 .brand{padding:18px 14px 12px}
 .brand .charava{box-shadow:0 8px 22px color-mix(in srgb, var(--ui-accent) 35%, transparent), 0 0 0 4px rgba(255,255,255,.65)}
 .brand .bt{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:21px;letter-spacing:.5px}
-.brand .bs{font-size:10.5px;letter-spacing:2px;color:var(--ink-soft)}
+.brand .bs{font-size:max(11px, calc(10.5px * var(--fx)));letter-spacing:2px;color:var(--ink-soft)}
 nav{gap:4px;padding:6px 10px}
 nav button{
   border-radius:14px;padding:9px 11px;font-size:13px;color:var(--ink);
@@ -602,7 +738,7 @@ header#strip{
 .pill{border-radius:999px;background:color-mix(in srgb, var(--surface-2) 74%, transparent);border:1px solid var(--glass-line);box-shadow:0 4px 12px rgba(140,90,60,.06)}
 
 /* 内容与卡片 */
-.content{padding:20px 22px 26px;font-size:calc(13px * var(--ui-scale))}
+.content{padding:20px 22px 26px;font-size:calc(13px * var(--ui-scale) * var(--fx))}
 h2.page{
   font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:30px;font-weight:400;letter-spacing:1px;
   margin-bottom:4px;color:var(--ink);
@@ -711,14 +847,14 @@ body[data-bubble="comic"] .msg.me .bub::after{display:none}
 .charitem .artveil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(16,8,8,.02) 12%,rgba(16,8,8,.18) 40%,rgba(16,8,8,.62) 68%,rgba(16,8,8,.88) 100%)}
 .charitem .artbody{position:relative;z-index:1;padding:14px 15px 15px;color:#fff;text-shadow:0 1px 8px rgba(0,0,0,.35)}
 .charitem .artbody .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:26px;margin:0;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.55)}
-.charitem .artbody .en{color:rgba(255,255,255,.88);font-size:10.5px;letter-spacing:2px}
+.charitem .artbody .en{color:rgba(255,255,255,.88);font-size:max(11px, calc(10.5px * var(--fx)));letter-spacing:2px}
 .charitem .artbody .tagline{color:rgba(255,255,255,.86);min-height:0;margin-top:3px}
-.charitem .artbody .meta2{color:rgba(255,255,255,.88);font-size:10.5px;gap:8px}
+.charitem .artbody .meta2{color:rgba(255,255,255,.88);font-size:max(11px, calc(10.5px * var(--fx)));gap:8px}
 .charitem .bigemoji{position:absolute;left:14px;top:12px;z-index:1;font-size:40px;filter:drop-shadow(0 6px 14px rgba(0,0,0,.28))}
 .charitem .stars{position:absolute;right:13px;top:14px;z-index:1;color:#ffe9a8;letter-spacing:2px;font-size:12px;text-shadow:0 1px 6px rgba(0,0,0,.35)}
 .charitem.active{box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-accent) 55%,white), 0 18px 38px rgba(120,70,50,.2)}
 .charitem .charbadge{position:absolute;z-index:2;left:12px;top:54px;background:linear-gradient(135deg,var(--ui-accent),var(--ui-accent2));color:#fff;
-  border-radius:999px;padding:2px 9px;font-size:10px;box-shadow:0 4px 12px rgba(0,0,0,.2)}
+  border-radius:999px;padding:2px 9px;font-size:max(11px, calc(10px * var(--fx)));box-shadow:0 4px 12px rgba(0,0,0,.2)}
 
 /* 插件商店 */
 .plugkpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:8px 0 14px}
@@ -743,13 +879,13 @@ body[data-bubble="comic"] .msg.me .bub::after{display:none}
 .plugcard .ico{width:34px;height:34px;border-radius:12px;display:grid;place-items:center;font-size:18px;
   background:linear-gradient(135deg,color-mix(in srgb,var(--ui-accent) 18%,white),color-mix(in srgb,var(--ui-accent2) 26%,white))}
 .plugcard .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:16px;line-height:1.15}
-.plugcard .sub{font-size:10px;color:var(--ink-soft);letter-spacing:.5px}
+.plugcard .sub{font-size:max(11px, calc(10px * var(--fx)));color:var(--ink-soft);letter-spacing:.5px}
 .plugcard .desc{font-size:11.5px;color:var(--ink-soft);line-height:1.55;flex:1}
-.plugcard .foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--ink-soft)}
+.plugcard .foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:max(11px, calc(10px * var(--fx)));color:var(--ink-soft)}
 .plugcard .st{position:absolute;right:11px;top:11px;width:9px;height:9px;border-radius:99px;background:#d9c9b8;box-shadow:0 0 0 3px rgba(255,255,255,.8)}
 .plugcard .st.on{background:#59b36b;box-shadow:0 0 0 3px rgba(89,179,107,.18)}
 .plugcard .st.err{background:#e05a4f}
-.plugcard .lock{font-size:10px;color:var(--ui-accent);border:1px solid color-mix(in srgb,var(--ui-accent) 30%,transparent);border-radius:999px;padding:1px 7px}
+.plugcard .lock{font-size:max(11px, calc(10px * var(--fx)));color:var(--ui-accent);border:1px solid color-mix(in srgb,var(--ui-accent) 30%,transparent);border-radius:999px;padding:1px 7px}
 body[data-card_style="outline"] .plugcard{background:transparent}
 
 details.card>summary{cursor:pointer;font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:17px;color:var(--red-deep);
@@ -786,12 +922,12 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 .cmdklist{max-height:52vh;overflow:auto;padding:6px}
 .cmdkitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;cursor:pointer;font-size:13px}
 .cmdkitem .ic{width:26px;text-align:center;font-size:16px}
-.cmdkitem .sub{margin-left:auto;font-size:10.5px;color:var(--ink-soft)}
+.cmdkitem .sub{margin-left:auto;font-size:max(11px, calc(10.5px * var(--fx)));color:var(--ink-soft)}
 .cmdkitem.on,.cmdkitem:hover{background:color-mix(in srgb,var(--ui-accent) 12%,white)}
 .cmdkitem .hl{color:var(--ui-accent);font-weight:700}
 .cmdkempty{padding:18px;text-align:center;color:var(--ink-soft);font-size:12.5px}
 .cmdkfoot{display:flex;gap:10px;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--line);
-  font-size:10.5px;color:var(--ink-soft)}
+  font-size:max(11px, calc(10.5px * var(--fx)));color:var(--ink-soft)}
 .cmdkfoot .touch{display:none}
 @media(max-width:760px){
   .cmdk{padding-top:8vh}
@@ -896,7 +1032,7 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
     padding:6px;justify-content:space-around;
   }
   .dock button{border:0;background:transparent;display:flex;flex-direction:column;align-items:center;gap:2px;
-    font-size:10.5px;color:var(--ink-soft);padding:6px 10px;border-radius:14px}
+    font-size:max(11px, calc(10.5px * var(--fx)));color:var(--ink-soft);padding:6px 10px;border-radius:14px}
   .dock button b{font-size:17px;line-height:1}
   .dock button.on{background:color-mix(in srgb,var(--ui-accent) 14%,white);color:var(--ui-accent)}
 }
@@ -932,7 +1068,7 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   .brand .charava{width:30px;height:30px;font-size:15px}
   .brand .bt{font-size:13.5px;letter-spacing:.4px;max-width:none}
   header{padding:4px 10px 5px}
-  .pill{font-size:10.5px;padding:1px 8px}
+  .pill{font-size:max(11px, calc(10.5px * var(--fx)));padding:1px 8px}
   #pGw.ok{display:none}                 /* 正常态不必常驻“面板运行中” */
   header > .btn.tiny{display:none}      /* 重载插件收进运维页 */
   #chatWrap{gap:6px}
@@ -943,19 +1079,19 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   .chathero .ch{gap:0 8px;min-width:0;flex:1;display:grid;
     grid-template-columns:auto minmax(0,1fr);align-items:center}
   .chathero .nm{grid-area:1/1;font-size:22px;line-height:1.15}
-  .chathero .tg{grid-area:2/1/3/3;display:block;font-size:10.5px;max-width:100%;line-height:1.35;
+  .chathero .tg{grid-area:2/1/3/3;display:block;font-size:max(11px, calc(10.5px * var(--fx)));max-width:100%;line-height:1.35;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;-webkit-line-clamp:none}
   .chathero .badges{grid-area:1/2;justify-content:flex-end;margin:0;gap:4px;flex-wrap:nowrap;overflow:hidden}
-  .chathero .badges .tag{font-size:9.5px;padding:1px 6px;white-space:nowrap}
+  .chathero .badges .tag{font-size:max(11px, calc(9.5px * var(--fx)));padding:1px 6px;white-space:nowrap}
   .chatbar{gap:6px;margin-bottom:0;flex-wrap:nowrap}
   .chatbar select{flex:1;min-width:0;height:26px;padding:0 9px;font-size:11.5px;text-overflow:ellipsis}
-  .chatbar .btn.tiny{height:26px;padding:0 9px;font-size:10.5px;white-space:nowrap}
-  #reasonSel{height:26px;padding:0 4px;font-size:10.5px;font-family:var(--font-body);flex:none}
+  .chatbar .btn.tiny{height:26px;padding:0 9px;font-size:max(11px, calc(10.5px * var(--fx)));white-space:nowrap}
+  #reasonSel{height:26px;padding:0 4px;font-size:max(11px, calc(10.5px * var(--fx)));font-family:var(--font-body);flex:none}
   #agentBtn{font-family:var(--font-body)}
   #msgs{gap:11px;padding:10px 8px 2px;
     -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 22px);
             mask-image:linear-gradient(180deg,transparent 0,#000 22px)}
-  .meta{font-size:10px;color:#a8826a}
+  .meta{font-size:max(11px, calc(10px * var(--fx)));color:#a8826a}
   .msg.me .meta{color:var(--dim)}
   #chatInput{gap:6px;padding:6px 6px 6px 12px}
   #chatInput .btn.primary{padding:0;width:42px;min-width:42px;height:42px;border-radius:50%;
@@ -3304,7 +3440,7 @@ async function opsAlerts(){
     const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "")
                     .replace(/[：:\s]+$/, "").trim();
     const msg = cut.length > 34 ? cut.slice(0, 34) + "…" : cut;
-    return `· <b>${esc(e.time || "")}</b> <span class="pill ${bad ? "bad" : "ok"}" style="font-size:10px;padding:1px 7px">${bad ? "掉线" : "恢复"}</span>
+    return `· <b>${esc(e.time || "")}</b> <span class="pill ${bad ? "bad" : "ok"}" style="font-size:max(11px, calc(10px * var(--fx)));padding:1px 7px">${bad ? "掉线" : "恢复"}</span>
       <span title="${esc(full)}">${esc(msg)}</span> <span class="kv">离线 ${dur}</span>`;
   }).join("<br>");
   const rest = list.slice(6).map(e => {
