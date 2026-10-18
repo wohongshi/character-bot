@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -68,6 +69,46 @@ DEFAULT_CONFIG = {
     "log_enabled": True,
     "log_retention_days": 30,
 }
+
+
+def coerce_config(patch: dict) -> dict:
+    """按 DEFAULT_CONFIG 的类型收敛面板传来的字符串。
+
+    面板的下拉/输入框一律回传字符串：`{"quote_reply": "false"}` 直接存进配置后，
+    `bool("false")` 是 True —— 布尔项永远关不掉。这里统一按默认值类型转换。
+    未知键原样保留（由调用方的白名单拦）。
+    """
+    out = {}
+    for k, v in (patch or {}).items():
+        default = DEFAULT_CONFIG.get(k, None)
+        if k == "agent_tools":
+            out[k] = resolve_tools(v)
+            continue
+        if isinstance(default, bool):
+            if isinstance(v, str):
+                out[k] = v.strip().lower() in ("1", "true", "yes", "on", "开")
+            else:
+                out[k] = bool(v)
+        elif isinstance(default, int):
+            try:
+                out[k] = int(float(v))
+            except (TypeError, ValueError):
+                out[k] = default
+        elif isinstance(default, float):
+            try:
+                out[k] = float(v)
+            except (TypeError, ValueError):
+                out[k] = default
+        elif isinstance(default, list):
+            if isinstance(v, str):
+                out[k] = [x.strip() for x in re.split(r"[,，\s]+", v) if x.strip()]
+            elif isinstance(v, (list, tuple)):
+                out[k] = list(v)
+            else:
+                out[k] = default
+        else:
+            out[k] = "" if v is None else str(v)
+    return out
 
 
 class BotService:
@@ -174,9 +215,8 @@ class BotService:
     def save_config(self, patch: dict) -> dict:
         with self._cfg_lock:
             cfg = dict(self.config)                       # 写时复制：读者永远看到完整快照
-            cfg.update({k: v for k, v in (patch or {}).items() if k in DEFAULT_CONFIG})
-            if "agent_tools" in cfg:
-                cfg["agent_tools"] = resolve_tools(cfg["agent_tools"])
+            cfg.update(coerce_config({k: v for k, v in (patch or {}).items()
+                                     if k in DEFAULT_CONFIG}))
             self.config = cfg
             tmp = self.config_path.with_name(
                 f"{self.config_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")

@@ -62,10 +62,11 @@ try:
     from bot import themes as theme_mod
     from bot.characters import CHARACTERS, CharacterStore
     from bot.framework import merge_plugin_settings
-    from bot.service import BotService
+    from bot.service import DEFAULT_CONFIG, BotService
     _BOT_IMPORT_ERR = ""
 except Exception as _e:                                            # noqa: BLE001
     BotService = None                                             # type: ignore[assignment]
+    DEFAULT_CONFIG = {}                                            # type: ignore[assignment]
     _BOT_IMPORT_ERR = f"{type(_e).__name__}: {_e}"
 
 PORT = int(os.environ.get("KLEE_STUDIO_PORT", "8796"))
@@ -91,20 +92,10 @@ CONFIG_YAML = STATE_DIR / "bot_config.json"
 GATEWAY_LOG = STATE_DIR / "bot.log"
 
 # 运维页「常用配置」表单的白名单（全部是 platforms.onebot.extra.* 标量）
-CONFIG_KEYS = [
-    "group_policy",
-    "group_chime_probability", "group_chime_cooldown",
-    "send_interval_min", "send_interval_max",
-    "notify_poke", "greet_on_group_add",
-    "owner_id", "quote_reply", "at_sender", "max_images",
-    "feature_prefix",
-    "tts_enabled", "tts_voice", "tts_max_chars",
-    "rate_limit_per_min", "rate_limit_burst",
-    "vision_enabled", "vision_max_bytes", "vision_timeout",
-    "kb_enabled", "kb_url", "kb_topk", "kb_threshold", "kb_max_chars",
-    "agent_enabled", "agent_owner_only", "agent_max_steps", "agent_timeout", "agent_tools",
-    "agent_skills", "request_notify",
-]
+# 面板「常用配置」可写的键：直接由 DEFAULT_CONFIG 派生（agent_* 走 /api/agent 单独管理）。
+# 以前是手写白名单，和 DEFAULT_CONFIG 一脱节就出现「能改但保存被 skipped」的假选项。
+CONFIG_KEYS = [k for k in DEFAULT_CONFIG
+               if not k.startswith("agent_") and k != "vision_enabled"]
 
 # 本地知识库（klee-kb，:8797）：对话前检索可莉语料，命中就附给她
 KB_URL = "http://127.0.0.1:8797"

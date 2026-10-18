@@ -238,9 +238,9 @@ textarea.code{width:100%;min-height:380px;font:12px/1.6 ui-monospace,Menlo,Conso
   border:2px solid var(--line);border-radius:14px;padding:12px;background:var(--surface-3);color:var(--ink)}
 textarea.code:focus{outline:none;border-color:#f3b0a5}
 label.f{font-family:var(--font-cute);font-size:13px;color:var(--dim);display:block;margin:10px 0 4px}
-input[type=text],input[type=number],textarea,select{font:inherit;border:2px solid var(--line);border-radius:12px;font-family:var(--font-body);background:var(--surface-2);
+input[type=text],input[type=number],input[type=password],textarea,select{font:inherit;border:2px solid var(--line);border-radius:12px;font-family:var(--font-body);background:var(--surface-2);
   padding:6px 11px;background:var(--surface-2);color:var(--ink)}
-input[type=text]:focus,input[type=number]:focus,textarea:focus,select:focus{outline:none;border-color:#f3b0a5}
+input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,textarea:focus,select:focus{outline:none;border-color:#f3b0a5}
 input[type=checkbox]{accent-color:var(--red);width:15px;height:15px}
 input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .check{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ink)}
@@ -347,9 +347,35 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .opsline{font-size:12.5px;color:var(--ink-soft);line-height:1.95}
 .opsline b{color:var(--ink)}
 .cfgform{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px 16px}
-.cfgrow label{font-size:12px;color:var(--dim);display:block;margin-bottom:3px}
+.cfgrow{display:flex;flex-direction:column;justify-content:flex-end}
+.cfgrow label{font-size:12px;color:var(--dim);display:block;margin-bottom:4px;line-height:1.35;
+  min-height:34px}   /* 两行固定高：有 hint 和没 hint 的输入框底边对齐 */
+.cfgrow .hint{display:block;font-size:10.5px;color:var(--ink-soft);margin-top:2px;line-height:1.35}
 .cfgrow .hint{font-size:10.5px;color:var(--ink-soft)}
-.cfgrow input[type=text],.cfgrow select{width:100%;box-sizing:border-box}
+.cfgrow input[type=text],.cfgrow select{width:100%;box-sizing:border-box;height:32px}
+.cfgrow input[type=text],.cfgrow input[type=password]{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+/* 常用配置：折叠分组 */
+.cfggrp{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--surface-3);overflow:hidden}
+.cfggrp>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;
+  padding:9px 12px;font-size:13px;user-select:none}
+.cfggrp>summary::-webkit-details-marker{display:none}
+.cfggrp:not([open])>summary{background:color-mix(in srgb, var(--ui-accent) 6%, transparent)}
+.cfggrp>summary::after{content:"›";margin-left:6px;color:var(--ink);opacity:.55;
+  font-size:20px;font-weight:700;line-height:1;transition:transform .15s}
+.cfggrp>summary:hover::after{opacity:.9}
+.cfggrp[open]>summary::after{transform:rotate(90deg)}
+.cfggrp>summary{cursor:pointer}
+.cfggrp>summary:hover{background:color-mix(in srgb, var(--ui-accent) 10%, transparent)}
+.cfggrp:not([open]):hover{border-color:color-mix(in srgb, var(--ui-accent) 45%, var(--line))}
+.cfggrp>summary:hover{background:var(--surface-2)}
+.cfggrp .cg-ic{font-size:14px}
+.cfggrp .cg-t{font-weight:600;color:var(--ink)}
+.cfggrp .cg-n{font-size:10.5px;color:var(--dim);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:999px;padding:0 7px;line-height:16px}
+.cfggrp .cg-note{margin-left:auto;font-size:11px;color:var(--ink-soft);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.cfggrp .cfgform{padding:10px 12px 12px;border-top:1px dashed var(--line)}
+@media(max-width:760px){.cfggrp .cg-note{display:none}.cfggrp>summary{padding:8px 10px}}
 .logbox{background:#2e2721;color:#f4e8d8;font:11.5px/1.6 ui-monospace,Menlo,Consolas,monospace;
   border-radius:12px;padding:12px;max-height:430px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:4px}
 .plsgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px 16px}
@@ -2465,46 +2491,120 @@ async function viewFeed(target){
 }
 
 /* ================= 运维（原 klee-panel：状态 / 配置 / 日志） ================= */
-const CFG_FIELDS = [
-  {k:"ws_url", label:"WebSocket 地址", ph:"ws://127.0.0.1:3001"},
-  {k:"group_policy", label:"群聊策略", opts:["mention","open","disabled"]},
-  {k:"dm_policy", label:"私聊策略", opts:["open","disabled"]},
-  {k:"group_chime_probability", label:"群随机搭话概率", hint:"0~1；0.3 ≈ 三成消息来搭话"},
-  {k:"group_chime_cooldown", label:"搭话冷却（秒）"},
-  {k:"send_interval_min", label:"连发气泡间隔·最小（秒）"},
-  {k:"send_interval_max", label:"连发气泡间隔·最大（秒）"},
-  {k:"wake_names", label:"唤醒词", hint:"逗号分隔；留空 = 关"},
-  {k:"notify_recall", label:"撤回通知", bool:true},
-  {k:"notify_poke", label:"戳一戳回应", bool:true},
-  {k:"greet_on_group_add", label:"进群问候", bool:true},
-  {k:"owner_id", label:"主人 QQ"},
-  {k:"forward_nickname", label:"转发卡片署名"},
-  {k:"quote_reply", label:"回复带引用", bool:true},
-  {k:"at_sender", label:"回复 @ 提问者", bool:true},
-  {k:"long_reply_mode", label:"长回复模式", opts:["split","forward"]},
-  {k:"forward_threshold", label:"长回复阈值（字）"},
-  {k:"download_voice", label:"下载收到的语音", bool:true},
-  {k:"max_images", label:"单条最多图片"},
-  {k:"vision_max_bytes", label:"图片体积上限（字节）"},
-  {k:"vision_timeout", label:"图片理解超时（秒）"},
-  {k:"feature_prefix", label:"插件命令前缀"},
-  {k:"tts_enabled", label:"语音回复（TTS）", bool:true},
-  {k:"tts_voice", label:"TTS 音色"},
-  {k:"tts_max_chars", label:"单条语音字数上限"},
-  {k:"tts_max_per_msg", label:"每条回复语音条数"},
-  {k:"rate_limit_per_min", label:"每会话每分钟最多发几条", hint:"0 = 不限"},
-  {k:"rate_limit_burst", label:"突发容量（令牌桶）"},
-  {k:"request_notify", label:"好友/入群请求提醒主人", bool:true},
-  {k:"kb_enabled", label:"知识库注入", bool:true},
-  {k:"kb_url", label:"知识库地址"},
-  {k:"kb_topk", label:"知识库取几条"},
-  {k:"kb_threshold", label:"知识库相似度阈值"},
-  {k:"log_enabled", label:"记录运行日志（state/bot.log）", bool:true,
-   hint:"关掉后运维页日志区显示「已关闭」，重开即恢复"},
-  {k:"log_retention_days", label:"流水保留天数",
-   hint:"0 = 永不清理；只清告警 / 消息流 / 知识库命中 / bot.log，不动聊天记录"},
-  {k:"kb_max_chars", label:"知识库注入字数上限"},
+// 常用配置：按用途分组，可折叠；字段全部对应 state/bot_config.json 里的真实键
+// （以前混进 9 个后端根本不读的字段，点了保存也没用 —— 已删）
+const CFG_GROUPS = [
+  {id: "conn", emoji: "🔌", title: "连接与账号", open: true,
+   note: "NapCat 地址 / token、主人 QQ、命令前缀",
+   fields: [
+     {k:"napcat_http", label:"NapCat 地址", ph:"http://127.0.0.1:3101"},
+     {k:"napcat_token", label:"NapCat token", secret:true, hint:"必须和 NapCat 配置里的一致"},
+     {k:"self_id", label:"机器人 QQ", hint:"首次收到事件会自动填"},
+     {k:"owner_id", label:"主人 QQ", hint:"决定 .agent / 管理命令权限"},
+     {k:"feature_prefix", label:"插件命令前缀"},
+   ]},
+  {id: "chatstyle", emoji: "💬", title: "群聊与私聊", open: true,
+   note: "群里怎么回、什么时候搭话、请求怎么处理",
+   fields: [
+     {k:"group_policy", label:"群聊策略", opts:["mention","open","disabled"]},
+     {k:"group_chime_probability", label:"群随机搭话概率", hint:"0~1；0.3 ≈ 三成消息来搭话"},
+     {k:"group_chime_cooldown", label:"搭话冷却（秒）"},
+     {k:"greet_on_group_add", label:"进群问候", bool:true},
+     {k:"notify_poke", label:"戳一戳回应", bool:true},
+     {k:"request_notify", label:"好友/入群请求提醒主人", bool:true},
+   ]},
+  {id: "reply", emoji: "✍️", title: "回复风格", open: false,
+   note: "分段、限长、历史轮数、引用",
+   fields: [
+     {k:"chat_enabled", label:"允许聊天回复", bool:true},
+     {k:"split_sentences", label:"按句拆成多条气泡", bool:true},
+     {k:"split_soft_max", label:"单个气泡软上限（字）"},
+     {k:"send_interval_min", label:"气泡间隔·最小（秒）"},
+     {k:"send_interval_max", label:"气泡间隔·最大（秒）"},
+     {k:"max_reply_chars", label:"单条回复字数上限"},
+     {k:"max_tokens", label:"模型 max_tokens"},
+     {k:"history_messages", label:"带给模型的历史轮数"},
+     {k:"quote_reply", label:"回复带引用", bool:true},
+     {k:"at_sender", label:"回复 @ 提问者", bool:true},
+   ]},
+  {id: "kb", emoji: "📚", title: "知识库", open: false,
+   note: "检索条数、阈值、注入上限",
+   fields: [
+     {k:"kb_enabled", label:"知识库注入", bool:true},
+     {k:"kb_url", label:"知识库地址"},
+     {k:"kb_topk", label:"取几条"},
+     {k:"kb_threshold", label:"相似度阈值", hint:"小语料角色 0.35–0.45"},
+     {k:"kb_max_chars", label:"注入字数上限"},
+   ]},
+  {id: "media", emoji: "🖼️", title: "图片与语音", open: false,
+   note: "看图上限、TTS 音色与条数",
+   fields: [
+     {k:"max_images", label:"单条最多图片"},
+     {k:"vision_max_bytes", label:"图片体积上限（字节）"},
+     {k:"vision_timeout", label:"图片理解超时（秒）"},
+     {k:"tts_enabled", label:"语音回复（TTS）", bool:true},
+     {k:"tts_voice", label:"TTS 音色"},
+     {k:"tts_max_chars", label:"单条语音字数上限"},
+   ]},
+  {id: "limit", emoji: "🛡️", title: "限流与日志", open: false,
+   note: "发送限流、日志开关与保留天数",
+   fields: [
+     {k:"rate_limit_per_min", label:"每会话每分钟最多发几条", hint:"0 = 不限"},
+     {k:"rate_limit_burst", label:"突发容量（令牌桶）"},
+     {k:"log_enabled", label:"记录运行日志（state/bot.log）", bool:true,
+      hint:"关掉后日志区显示「已关闭」，重开即恢复"},
+     {k:"log_retention_days", label:"流水保留天数",
+      hint:"0 = 永不清理；不动聊天记录"},
+   ]},
 ];
+// 保存/遍历用：拍平
+const CFG_FIELDS = CFG_GROUPS.flatMap(g => g.fields);
+
+const CFG_OPEN_KEY = "ks_cfg_open";
+function cfgOpenMap(){
+  try { return JSON.parse(localStorage.getItem(CFG_OPEN_KEY) || "{}") || {}; }
+  catch(e){ return {}; }
+}
+function cfgGroupsHTML(vals){
+  const open = cfgOpenMap();
+  return CFG_GROUPS.map(g => {
+    const isOpen = g.id in open ? !!open[g.id] : !!g.open;
+    return `<details class="cfggrp" data-g="${g.id}" ${isOpen ? "open" : ""}
+        ontoggle="cfgToggle('${g.id}', this.open)">
+      <summary>
+        <span class="cg-ic">${g.emoji}</span>
+        <span class="cg-t">${esc(g.title)}</span>
+        <span class="cg-n">${g.fields.length}</span>
+        <span class="cg-note">${esc(g.note)}</span>
+      </summary>
+      <div class="cfgform">${g.fields.map(f => cfgRow(f, vals || {})).join("")}</div>
+    </details>`;
+  }).join("");
+}
+function cfgPeek(k, btn){
+  const el = $("cfg_" + k); if (!el) return;
+  const hidden = el.type === "password";
+  el.type = hidden ? "text" : "password";
+  if (btn) btn.textContent = hidden ? "隐藏" : "显示";
+}
+function cfgToggle(id, isOpen){
+  const m = cfgOpenMap(); m[id] = !!isOpen;
+  localStorage.setItem(CFG_OPEN_KEY, JSON.stringify(m));
+}
+function cfgFilter(q){
+  const needle = (q || "").trim().toLowerCase();
+  document.querySelectorAll("#cfgGroups .cfggrp").forEach(g => {
+    let hit = 0;
+    g.querySelectorAll(".cfgrow").forEach(row => {
+      const txt = (row.textContent || "").toLowerCase();
+      const show = !needle || txt.includes(needle);
+      row.style.display = show ? "" : "none";
+      if (show) hit++;
+    });
+    g.style.display = hit ? "" : "none";
+    if (needle && hit) g.open = true;          // 有命中就展开
+  });
+}
 
 let logTimer = null;
 let qrTimer = null;
@@ -2713,10 +2813,13 @@ async function viewOps(target){
       <span class="kv" id="reqMsg"></span>
     </div>
   </div>
-  <div class="card" style="margin-bottom:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">写入面板 bot 配置（state/bot_config.json），保存后下一条消息即生效</span></h3>
-    ${cfg.ok ? `<div class="cfgform">${CFG_FIELDS.map(f => cfgRow(f, cfg.values || {})).join("")}</div>
+  <div class="card" style="margin-bottom:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">写入 state/bot_config.json，保存后下一条消息即生效</span></h3>
+    ${cfg.ok ? `<div class="row" style="margin-bottom:10px;flex-wrap:nowrap">
+        <input type="text" id="cfgSearch" placeholder="搜索配置项…" style="flex:1;min-width:120px;height:34px" oninput="cfgFilter(this.value)">
+        <button class="btn primary" style="flex:none" onclick="opsSaveCfg()">保存配置</button>
+      </div>
+      <div id="cfgGroups">${cfgGroupsHTML(cfg.values || {})}</div>
       <div class="row" style="margin-top:12px">
-        <button class="btn primary" onclick="opsSaveCfg()">保存配置</button>
         <span class="kv" id="cfgMsg"></span>
       </div>`
       : `<div class="kv">✗ 读配置失败：${esc(cfg.error || "")}</div>`}
@@ -2852,6 +2955,11 @@ function cfgRow(field, vals){
     ctl = `<select id="cfg_${field.k}"><option value="true" ${val === "true" ? "selected" : ""}>开 / true</option><option value="false" ${val === "false" ? "selected" : ""}>关 / false</option></select>`;
   } else if (field.opts){
     ctl = `<select id="cfg_${field.k}">${field.opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  } else if (field.secret) {
+    ctl = `<div class="row" style="gap:6px;flex-wrap:nowrap">
+      <input type="password" id="cfg_${field.k}" value="${esc(val)}" placeholder="${esc(field.ph || "")}" style="flex:1">
+      <button type="button" class="btn tiny" style="flex:none" onclick="cfgPeek('${field.k}', this)">显示</button>
+    </div>`;
   } else {
     ctl = `<input type="text" id="cfg_${field.k}" value="${esc(val)}" placeholder="${esc(field.ph || "")}">`;
   }
