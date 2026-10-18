@@ -244,6 +244,15 @@ input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,texta
 input[type=checkbox]{accent-color:var(--red);width:15px;height:15px}
 input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .check{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ink)}
+/* 折叠的辅助说明：默认收起，不占版面 */
+.zipspec,.rawErr{margin-top:10px}
+.zipspec>summary,.rawErr>summary{cursor:pointer;font-size:12px;color:var(--ink-soft);
+  display:inline-block;padding:2px 0}
+.zipspec>summary:hover,.rawErr>summary:hover{color:var(--ink)}
+.rawErr{margin-top:4px}
+.rawErr code{display:block;margin-top:6px;padding:8px 10px;border-radius:10px;
+  background:var(--surface-3);color:var(--ink-soft);font-size:11.5px;line-height:1.6;
+  max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-all}
 .pdform{display:flex;flex-direction:column;gap:8px}
 .plrow{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink)}
 .plrow span{color:var(--ink-soft)}
@@ -1026,7 +1035,7 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
     </nav>
     <div class="sidefoot">
       <img class="peek" src="/static/img/klee-hero.webp" alt="" loading="lazy" decoding="async">
-      <p id="sideTag">每个角色都有独立人格与知识库；<br>切换只在面板发生，QQ 里不会换人。</p>
+      <p id="sideTag">切换只在面板发生，QQ 里不会换人</p>
     </div>
   </aside>
   <main>
@@ -1725,23 +1734,20 @@ async function viewCustom(keep){
     <input type="hidden" id="${id}" value="${val}">`;
   $("view").innerHTML = `
   <h2 class="page">✨ 自定义</h2>
-  <p class="tip">这一页只改 <b>${esc(ACTIVE.name)}</b> 的界面外观，保存后在这台设备上立即生效；换角色会换成她自己的配置。
-    内容不会影响 QQ 行为。</p>
   <div class="fgrid">
     <div class="card">
       <h3>🌗 外观</h3>
-      <div class="fld"><label>颜色模式（只影响这台设备）</label>
+      <div class="fld"><label>颜色模式</label>
         <div class="seg" id="themeSeg">
           <button data-v="auto" onclick="setTheme('auto')">跟随系统</button>
           <button data-v="light" onclick="setTheme('light')">浅色</button>
           <button data-v="dark" onclick="setTheme('dark')">深色</button>
         </div>
       </div>
-      <p class="hint" style="margin-top:8px">QQ 里的回复和别的设备都不受影响。</p>
     </div>
     <div class="card">
       <h3>🎨 颜色</h3>
-      <div class="fld"><label>主色（按钮 / 高亮 / 自己的气泡）</label>
+      <div class="fld"><label>主色</label>
         <div class="swatches">${PRESET_ACCENTS.map(c => `<span class="swatch ${c === UI.accent ? "on" : ""}" data-c="${c}" style="background:${c}" onclick="document.getElementById('uiAccent').value='${c}';uiPreview()"></span>`).join("")}</div>
         <input type="text" id="uiAccent" value="${esc(UI.accent || "")}" placeholder="留空 = 用角色主题的 --red" oninput="uiPreview()">
       </div>
@@ -1781,7 +1787,7 @@ async function viewCustom(keep){
     </div>
   </div>
   <div class="card" style="margin-top:14px">
-    <h3>🧱 工作台模块 <span class="kv" style="font-family:var(--font-body)">在「看板」顶部按这个顺序显示；点 ✕ 隐藏</span></h3>
+    <h3>🧱 工作台模块 <span class="kv" style="font-family:var(--font-body)">看板顺序</span></h3>
     <div class="modlist">
       ${uiModules.map((m, i) => {
         const off = m.startsWith("!"); const key = off ? m.slice(1) : m;
@@ -1827,8 +1833,6 @@ async function viewPersona(){
   const meta = (charData && (charData.items.find(c => c.id === cid) || {})) || {};
   $("view").innerHTML = `
   <h2 class="page">🌸 人格 · 知识库</h2>
-  <p class="tip">当前角色：<b>${esc(ACTIVE.name)}</b>。一个角色 = 一套 SOUL + 一套知识库，跟着角色自动切换、不能拆开改；
-    改 SOUL 保存后下一轮生效；不留旧版，改之前想清楚。</p>
   <div class="card posterRow">
     <img class="personaArt" src="${charArt(cid)}" alt="" loading="lazy">
     <div class="pcopy">
@@ -1858,7 +1862,7 @@ async function viewPersona(){
   </div>
   <div id="paneKb" style="display:none">
   <div class="card">
-    <div class="kv" style="margin:0 0 10px">命中相似度 ≥ ${(d.threshold ?? 0.4)} 时作为背景注入，不会说「资料」</div>
+    <div class="kv" style="margin:0 0 10px">≥ ${(d.threshold ?? 0.4)} 才注入</div>
     <div class="statgrid">
       <div class="stat"><b>${d.chunks ?? "—"}</b><span>知识块</span></div>
       <div class="stat"><b>${d.dim ?? "—"}</b><span>向量维度</span></div>
@@ -1913,7 +1917,7 @@ async function savePersona(){
 function renderKbRecent(rows){
   const box = $("kbRecent"); if (!box) return;
   if (!rows.length){
-    box.innerHTML = `<div class="kv">还没有命中记录。聊天时真的用到知识，这里才会出现。</div>`;
+    box.innerHTML = `<div class="kv">还没有命中记录</div>`;
     return;
   }
   box.innerHTML = rows.map(r => {
@@ -1950,8 +1954,6 @@ async function viewPlugins(readonly){
   plFiles = d.files || []; plCfg = d.config || {}; plMeta = d.meta || {};
   $("view").innerHTML = `
   <h2 class="page">🧩 插件</h2>
-  <p class="tip">插件是随角色锁定的：切到谁，就只加载谁的专属插件 + 通用插件。
-    点卡片可以看命令、开关插件、调它的设置（保存后 8 秒内自动重载）。</p>
   <div class="plugbar">
     <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
     <button class="fbtn on" data-pf="all" onclick="plugFilter('all')">全部</button>
@@ -1979,7 +1981,7 @@ async function mountAgentCard(){
   const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || provs[0] || {models: []};
   slot.innerHTML = `
   <div class="card">
-    <h3>🛠️ Agent 能力 <span class="kv" style="font-family:var(--font-body)">开着她就会自己查资料：搜网页 / 读页面 / 翻知识库 / 算数 / 记事</span></h3>
+    <h3>🛠️ Agent 能力 <span class="kv" style="font-family:var(--font-body)">工具循环</span></h3>
     <div class="row">
       <label class="check"><input type="checkbox" id="agEnabled" ${agentCfg.enabled?"checked":""}> 启用工具循环</label>
       <label class="check"><input type="checkbox" id="agOwner" ${agentCfg.owner_only?"checked":""}> 只有主人能用</label>
@@ -1997,19 +1999,18 @@ async function mountAgentCard(){
         ${((agProv.models||[]).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join(""))}
       </select>
     </div>
-    <div class="kv" style="margin-top:10px">可用工具（取消勾选 = 不给模型这个能力）</div>
+    <div class="kv" style="margin-top:10px">可用工具</div>
     <div class="row" id="agTools" style="margin-top:4px">
       ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.name)}</label>`).join("")}
     </div>
     <div class="row" style="margin-top:10px">
       <button class="btn primary" onclick="botSaveAgent()">保存 Agent 设置</button>
-      <span class="kv">主人也可以用 <code>.agent 问题</code> 强制走一次工具循环</span>
     </div>
     <div id="agOut" class="kv" style="margin-top:8px"></div>
   </div>
   </div>
   <div class="card">
-    <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">OpenAI 兼容接口；Key 只从环境变量读，不写进配置文件</span></h3>
+    <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">Key 存 .env</span></h3>
     <div class="row" style="font-size:12px">
       ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${(p.models||[]).length} 个模型 · ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
       <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
@@ -2019,7 +2020,7 @@ async function mountAgentCard(){
         <input id="pvId" placeholder="myapi" style="width:140px"></div>
       <div class="fld"><label>显示名</label>
         <input id="pvName" placeholder="我的中转" style="width:150px"></div>
-      <div class="fld" style="flex:1;min-width:240px"><label>接口地址（OpenAI 兼容，一般以 /v1 结尾）</label>
+      <div class="fld" style="flex:1;min-width:240px"><label>接口地址</label>
         <input id="pvApi" placeholder="https://api.example.com/v1" title="OpenAI 兼容接口地址，一般以 /v1 结尾"
                oninput="pvAuto()" onblur="pvAuto()"></div>
       <div class="fld"><label>Key 环境变量名</label>
@@ -2038,11 +2039,11 @@ async function mountAgentCard(){
       <input id="pvSearch" placeholder="筛选…" style="width:130px;display:none" oninput="pvFilter()">
       <a href="javascript:pvPickAll(1)" id="pvAll" style="display:none;font-size:12px">全选</a>
       <a href="javascript:pvPickAll(0)" id="pvNone" style="display:none;font-size:12px">清空</a>
-      <span class="kv" id="pvFetchOut">填好地址就自动拉取，不用手打模型名</span>
+      <span class="kv" id="pvFetchOut">填地址自动拉取</span>
     </div>
     <div id="pvModelBox" class="mpick" style="display:none"></div>
     <details style="margin-top:8px">
-      <summary class="kv" style="cursor:pointer">手动填写模型名（地址拉不到时用）</summary>
+      <summary class="kv" style="cursor:pointer">手动填写模型名</summary>
       <textarea id="pvModels" rows="3" placeholder="模型名，一行一个" style="width:100%;margin-top:6px;font-family:var(--font-body)"></textarea>
     </details>
     <div class="row" style="margin-top:8px">
@@ -2119,7 +2120,6 @@ async function viewOpsBot(tab){
   const t = opsBotTab;
   $("view").innerHTML = `
   <h2 class="page">⚙️ 运维 · 机器人</h2>
-  <p class="tip">连接状态、日志、账号与模型都在这一页；左边运维、右边机器人。</p>
   <div class="seg" style="margin:2px 0 12px">
     <button class="${t === "ops" ? "on" : ""}" onclick="viewOpsBot('ops')">⚙️ 运维</button>
     <button class="${t === "bot" ? "on" : ""}" onclick="viewOpsBot('bot')">🤖 机器人</button>
@@ -2150,7 +2150,7 @@ async function viewBot(target){
   const stats = (st && st.stats) || {};
   $(T).innerHTML = `
   ${T === "view" ? '<h2 class="page">🤖 机器人</h2>' : ''}
-  <p class="tip">QQ 消息由面板自己收发（OneBot HTTP）。掉线要去 NapCat WebUI（:6099）扫码登录，这里不再放二维码。</p>
+  <p class="tip">登录入口在 NapCat WebUI :6099。</p>
   <div class="card">
     <div class="row">
       ${charAva("sm")}
@@ -2210,7 +2210,7 @@ async function viewBot(target){
     <div id="mpOut" class="kv" style="margin-top:8px"></div>
   </div>
   <div class="card">
-    <h3>👀 看图模型 <span class="kv" style="font-family:var(--font-body)">收到图片时交给它理解；留空 = 只回一句「看不懂」而不报错</span></h3>
+    <h3>👀 看图模型 <span class="kv" style="font-family:var(--font-body)">留空 = 不看图</span></h3>
     <div class="row">
       <select id="mvProv" onchange="botFillVisionModels()" style="min-width:190px">
         <option value="">跟聊天同一个</option>
@@ -2224,7 +2224,7 @@ async function viewBot(target){
     </div>
     <div id="mvOut" class="kv" style="margin-top:8px">${vis.configured
       ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
-      : "当前没配看图模型 —— 有人发图时她会撒个娇让你描述一下，不会瞎编图里有什么。"}</div>
+      : "没配（发图时只会请你描述）"}</div>
   </div>
 `;
 }
@@ -2459,7 +2459,7 @@ async function importZip(){
     const d = await r.json();
     if (!d.ok){ msg.innerHTML = `✗ ${esc(d.error || "导入失败")}`; return; }
     msg.innerHTML = `✓ 已导入 <b>${esc(d.character.name)}</b>（${d.plugins.length} 个插件 / ${d.kb_entries} 条语料）<br>
-      <span class="kv">知识库正在后台建索引（约 1-3 分钟），完成后会自动出现。</span>`;
+      <span class="kv">建索引中，约 1-3 分钟</span>`;
     const cid = d.character.id;
     for (let i = 0; i < 60; i++){
       await new Promise(res => setTimeout(res, 3000));
@@ -2470,7 +2470,7 @@ async function importZip(){
         charData = list; viewChars(); return;
       }
     }
-    msg.innerHTML += "<br><span class=\"kv\">索引还在跑，稍后刷新角色页即可。</span>";
+    msg.innerHTML += "<br><span class=\"kv\">索引中</span>";
   }catch(e){
     msg.textContent = "✗ " + e;
   }
@@ -2485,7 +2485,7 @@ function pickChar(id){
   const nameEl = $("charPlugName"), bodyEl = $("charPlugBody");
   if (cur && nameEl && bodyEl){
     nameEl.innerHTML = `🧩 ${esc(cur.name)} 的专属插件 `
-      + `<span class="kv" style="font-family:var(--font-body)">随角色自动启用 · 不可关闭</span>`;
+      + `<span class="kv" style="font-family:var(--font-body)">不可关闭</span>`;
     bodyEl.innerHTML = (cur.plugins || []).length
       ? cur.plugins.map(p => `<span class="tag">${esc(p.title || p.name)}</span>`).join(" ")
       : "这个角色暂时没有专属插件（通用插件照常可用）";
@@ -2528,20 +2528,19 @@ async function viewChars(){
   const cur = items.find(c => c.id === charSel) || items[0];
   $("view").innerHTML = `
   <h2 class="page">🎭 角色</h2>
-  <p class="tip">一个角色 = 一套 SOUL + 一套知识库 + 一套界面主题 + 一组专属插件，全部随角色锁定；
-    <b>切换只在面板发生</b>，QQ 里不会换人。</p>
   <div class="row" style="margin-bottom:10px">
     <button class="btn primary" onclick="toggleImport()">📦 导入角色 ZIP</button>
-    <span class="kv">一个 zip 装齐：主题 / 限定插件 / 知识库 / SOUL</span>
   </div>
   <div class="card" id="importBox" style="display:none;margin-bottom:14px">
     <h3>📦 导入角色包</h3>
-    <div class="kv" style="line-height:1.9">zip 结构（可全部放在一个顶层目录里）：<br>
+    <details class="zipspec"><summary>zip 结构</summary>
+    <div class="kv" style="line-height:1.9">
       <code>character.json</code> · 名字 / id / emoji / 配色 / 问候语<br>
       <code>SOUL.md</code> · 人格全文<br>
       <code>theme/theme.json + theme.css</code> · 界面主题<br>
       <code>plugins/*.py</code> · 角色限定插件（没写 CHARACTERS 会自动补）<br>
-      <code>kb/*.jsonl</code> · 知识库语料（每行 <code>{"text": "...", "title": "...", "source": "..."}</code>）</div>
+      <code>kb/*.jsonl</code> 语料（每行 <code>{"text":"…","title":"…"}</code>）</div>
+    </details>
     <div class="row" style="margin-top:12px">
       <input type="file" id="zipFile" accept=".zip,application/zip">
       <button class="btn primary" onclick="importZip()">上传并安装</button>
@@ -2577,9 +2576,8 @@ async function viewChars(){
       </div>`).join("")}
   </div>
   <div class="card" style="margin-top:14px">
-    <h3 id="charPlugName">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">随角色自动启用 · 不可关闭</span></h3>
+    <h3 id="charPlugName">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">不可关闭</span></h3>
     <div class="kv" id="charPlugBody" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
-    <div class="kv" style="margin-top:10px">人格在「🌸 人格 · 知识库」页编辑。</div>
   </div>`;
 }
 
@@ -2637,9 +2635,9 @@ async function viewReminders(manual){
   remindHash = rhash;
   if ($("remindList")){                        // 有变化：只更新两栏列表和计数，页面框架/滚动原样保留
     $("remindCount").textContent = items.length;
-    $("remindList").innerHTML = rows || '<div class="kv">还没有待提醒的事～去 QQ 里说「.提醒 10m 喝水」试试</div>';
+    $("remindList").innerHTML = rows || '<div class="kv">还没有提醒</div>';
     $("annCount").textContent = annTotal;
-    $("annList").innerHTML = annRows || '<div class="kv">还没有记着的日子～去 QQ 里说「.纪念日 12-25 圣诞节」试试</div>';
+    $("annList").innerHTML = annRows || '<div class="kv">还没有纪念日</div>';
     if (manual && $("remindMsg")) $("remindMsg").textContent = "更新于 " + hhmmss(Date.now() / 1000);
     return;
   }
@@ -2648,20 +2646,17 @@ async function viewReminders(manual){
     <h2 class="page" style="margin:0">⏰ 提醒·日历</h2>
     <span class="kv" style="margin:0"><span id="remindMsg"></span><button class="btn tiny" style="margin-left:8px" onclick="viewReminders(true)">⟳ 刷新</button></span>
   </div>
-  <p class="tip">她小本本上所有还没响的提醒（数据读自 <code>onebot_features/state/reminders.json</code>）。到点她会在原群/私聊里喊人；要撤销去 QQ 发 <code>.取消提醒 编号</code>。</p>
   <div class="card">
     <div class="row" style="justify-content:space-between">
       <span class="kv" style="margin:0">共 <b id="remindCount">${items.length}</b> 条待提醒 · 每 30 秒自动刷新</span>
     </div>
-    <div style="margin-top:10px" id="remindList">${rows || '<div class="kv">还没有待提醒的事～去 QQ 里说「.提醒 10m 喝水」试试</div>'}</div>
+    <div style="margin-top:10px" id="remindList">${rows || '<div class="kv">还没有提醒</div>'}</div>
   </div>
   <div class="card">
     <div class="row" style="justify-content:space-between">
       <span class="kv" style="margin:0">📅 纪念日小本本 · 共 <b id="annCount">${annTotal}</b> 个日子 · 每 30 秒自动刷新</span>
     </div>
-    <p class="tip" style="margin:8px 0 0">她帮大家记的倒数日（数据读自 <code>onebot_features/state/anniversary.json</code>）；
-      去 QQ 发 <code>.纪念日 12-25 圣诞节</code> 添加、<code>.纪念日</code> 看全部。</p>
-    <div style="margin-top:10px" id="annList">${annRows || '<div class="kv">还没有记着的日子～去 QQ 里说「.纪念日 12-25 圣诞节」试试</div>'}</div>
+    <div style="margin-top:10px" id="annList">${annRows || '<div class="kv">还没有纪念日</div>'}</div>
   </div>`;
   if (remindTimer){ clearInterval(remindTimer); remindTimer = null; }
   remindTimer = setInterval(() => {
@@ -2713,8 +2708,7 @@ async function viewFeed(target){
   feedShown = Math.max(30, Math.min(feedShown, items.length));
   const st = $(T).scrollTop;
   $(T).innerHTML = `
-  ${embed ? '<h3 style="margin:16px 0 8px">📜 消息</h3><p class="tip">她最近在各处的言行（最新在上）。</p>'
-          : '<h2 class="page">📜 消息</h2><p class="tip">她最近在各处的言行（<b>最新在上</b>）。数据直读她的会话库，可以按来源筛选。</p>'}
+          : '<h2 class="page">📜 消息</h2>'}
   <div class="row feedbar" style="margin-bottom:10px">
     <select id="feedSel" title="按来源筛选">${(srcs.length ? srcs : [{value:"",label:"全部来源"}]).map(s=>`<option value="${esc(s.value)}" ${s.value===feedSrc?"selected":""}>${esc(s.label)}</option>`).join("")}</select>
     <button class="btn" onclick="viewFeed()">⟳ 刷新</button>
@@ -2743,16 +2737,16 @@ const CFG_GROUPS = [
    note: "NapCat 地址 / token、主人 QQ、命令前缀",
    fields: [
      {k:"napcat_http", label:"NapCat 地址", ph:"http://127.0.0.1:3101"},
-     {k:"napcat_token", label:"NapCat token", secret:true, hint:"必须和 NapCat 配置里的一致"},
+     {k:"napcat_token", label:"NapCat token", secret:true},
      {k:"self_id", label:"机器人 QQ", hint:"首次收到事件会自动填"},
-     {k:"owner_id", label:"主人 QQ", hint:"决定 .agent / 管理命令权限"},
+     {k:"owner_id", label:"主人 QQ"},
      {k:"feature_prefix", label:"插件命令前缀"},
    ]},
   {id: "chatstyle", emoji: "💬", title: "群聊与私聊", open: true,
    note: "群里怎么回、什么时候搭话、请求怎么处理",
    fields: [
      {k:"group_policy", label:"群聊策略", opts:["mention","open","disabled"]},
-     {k:"group_chime_probability", label:"群随机搭话概率", hint:"0~1；0.3 ≈ 三成消息来搭话"},
+     {k:"group_chime_probability", label:"群随机搭话概率", hint:"0~1"},
      {k:"group_chime_cooldown", label:"搭话冷却（秒）"},
      {k:"greet_on_group_add", label:"进群问候", bool:true},
      {k:"notify_poke", label:"戳一戳回应", bool:true},
@@ -2906,8 +2900,6 @@ async function viewBoard(target){
   const widgets = boardWidgets(ov || {}, pl || {}, ch || {}, d || {});
   $(T).innerHTML = `
   <h2 class="page">📊 看板</h2>
-  <p class="tip">可莉最近过得怎么样，一眼看完。消息量读自 hermes 会话库 <code>state.db</code>，
-  好感度读自 <code>onebot_features/state/affinity.json</code>（等级表直接解析插件源码，和 QQ 里是同一套）。</p>
   ${widgets}
   <div class="card">
     <div class="row" style="justify-content:space-between">
@@ -3016,7 +3008,6 @@ async function viewOps(target){
   const badF = feats.filter(f => f.error);
   $(T).innerHTML = `
   <h2 class="page">⚙️ 运维</h2>
-  <p class="tip">面板 bot / QQ / NapCat 状态、常用配置与日志。QQ 链路已改为面板自持 OneBot 协议。</p>
   <div class="opsgrid">
     <div class="card"><h3>🛰️ 面板 bot</h3>
       <div class="opsline">角色：<b>${esc(ACTIVE.emoji + " " + ACTIVE.name)}</b>
@@ -3042,21 +3033,21 @@ async function viewOps(target){
       </div>
     </div>
   </div>
-  <div class="card" id="alertCard" style="margin-bottom:14px"><h3>🔔 掉线告警 <span class="kv" style="font-family:var(--font-body)">QQ 离线超过 2 分钟自动记一条，恢复也记一条</span></h3>
+  <div class="card" id="alertCard" style="margin-bottom:14px"><h3>🔔 掉线告警 <span class="kv" style="font-family:var(--font-body)">最近 20 条</span></h3>
     <div id="alertBox" class="kv">正在读取…</div>
     <div class="row" style="margin-top:8px">
       <button class="btn tiny" onclick="opsAlerts()">⟳ 刷新</button>
       <span class="kv" id="alertMsg"></span>
     </div>
   </div>
-  <div class="card" id="reqCard" style="margin-bottom:14px"><h3>🙋 好友 / 入群请求 <span class="kv" style="font-family:var(--font-body)">只记录、不自动通过——要同意就点按钮，可莉不会替你做决定</span></h3>
+  <div class="card" id="reqCard" style="margin-bottom:14px"><h3>🙋 好友 / 入群请求 <span class="kv" style="font-family:var(--font-body)">只记录，不自动通过</span></h3>
     <div id="reqBox" class="kv">正在读取…</div>
     <div class="row" style="margin-top:8px">
       <button class="btn tiny" onclick="opsRequests()">⟳ 刷新</button>
       <span class="kv" id="reqMsg"></span>
     </div>
   </div>
-  <div class="card" style="margin-bottom:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">写入 state/bot_config.json，保存后下一条消息即生效</span></h3>
+  <div class="card" style="margin-bottom:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
     ${cfg.ok ? `<div class="row" style="margin-bottom:10px;flex-wrap:nowrap">
         <input type="text" id="cfgSearch" placeholder="搜索配置项…" style="flex:1;min-width:120px;height:34px" oninput="cfgFilter(this.value)">
         <button class="btn primary" style="flex:none" onclick="opsSaveCfg()">保存配置</button>
@@ -3125,19 +3116,36 @@ async function opsAlerts(){
   const d = await api("/api/alerts?n=20");
   if (!d || !d.ok){ box.innerHTML = `<div class="kv">✗ 读取失败</div>`; return; }
   const h = d.health || {};
+  // 上游报错经常整段栈（1000+ 字），面板只留一句人话，全文折叠
+  const raw = String(h.detail || h.reason || "");
+  const brief = !raw ? "" : (raw.length > 60
+    ? (raw.split(/[：:]/)[0] || raw).slice(0, 40) + "…"
+    : raw);
   const head = h.connected
     ? `<b style="color:var(--green)">当前在线</b>`
-    : `<b style="color:var(--red)">当前离线</b> · ${esc(h.detail || h.reason || "")}`;
+    : `<b style="color:var(--red)">当前离线</b>${brief ? " · " + esc(brief) : ""}` +
+      (raw.length > 60 ? ` <details class="rawErr"><summary>详情</summary><code>${esc(raw)}</code></details>` : "");
   const list = (d.alerts || []).slice().reverse();
-  const rows = list.map(e => {
+  const rows = list.slice(0, 6).map(e => {
     const bad = e.kind === "offline";
     const dur = (e.down_s === null || e.down_s === undefined) ? "—" : `${e.down_s}s`;
+    const full = String(e.text || "");
+    // 上游把整段 urlopen 栈塞进 text，这里只留前半句，全文放 title
+    const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "").trim();
+    const msg = cut.length > 34 ? cut.slice(0, 34) + "…" : cut;
     return `· <b>${esc(e.time || "")}</b> <span class="pill ${bad ? "bad" : "ok"}" style="font-size:10px;padding:1px 7px">${bad ? "掉线" : "恢复"}</span>
-      ${esc(e.text || "")} <span class="kv">(离线 ${dur})</span>`;
+      <span title="${esc(full)}">${esc(msg)}</span> <span class="kv">${dur}</span>`;
+  }).join("<br>");
+  const rest = list.slice(6).map(e => {
+    const full = String(e.text || "");
+    const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "").trim();
+    return `· <b>${esc(e.time || "")}</b> ${esc(cut.length > 34 ? cut.slice(0, 34) + "…" : cut)}`;
   }).join("<br>");
   const ahtml = `<div class="opsline">${head}</div>` + (rows
-    ? `<div class="opsline" style="max-height:220px;overflow:auto;line-height:1.9">${rows}</div>`
-    : `<div class="kv">还没有告警记录 —— 要么一直在线，要么掉线还没超过 2 分钟。</div>`);
+    ? `<div class="opsline" style="max-height:220px;overflow:auto;line-height:1.9">${rows}`
+      + (rest ? `<details class="rawErr"><summary>更早 ${list.length - 6} 条</summary><div>${rest}</div></details>` : "")
+      + `</div>`
+    : `<div class="kv">还没有告警</div>`);
   if (ahtml !== alertsHash){                   // 内容没变就不重绘（30 秒一轮不再闪）
     alertsHash = ahtml;
     box.innerHTML = ahtml;
