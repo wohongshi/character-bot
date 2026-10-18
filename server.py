@@ -233,16 +233,40 @@ def _index() -> "MessageIndex":
 
 
 def _index_boot() -> None:
-    """后台把历史补进索引。老库第一次会慢（20 万条约 9 秒），不挡启动。"""
+    """后台把历史补进索引，之后每 20 秒增量同步一次。
+
+    为什么不放在请求里：同步要读文件 + 写 SQLite，繁忙时能到几百毫秒；
+    搜索是「随手查一下」的操作，不该为一个索引跟不上最新 20 秒而卡住。
+    """
     def _run():
-        try:
-            idx = _index()
-            r = idx.sync()
-            if r.get("added"):
-                logger.info("消息索引：补入 %s 条（重建 %s）", r["added"], r.get("rebuilt"))
-        except Exception as e:                                     # noqa: BLE001
-            logger.warning("消息索引构建失败（搜索不可用，其它功能正常）：%s", e)
+        while True:
+            try:
+                idx = _index()
+                r = idx.sync()
+                if r.get("added"):
+                    logger.info("消息索引：+%s 条（重建 %s）", r["added"], r.get("rebuilt"))
+            except Exception as e:                                 # noqa: BLE001
+                logger.warning("消息索引同步失败（搜索仍可用，只是不更新）：%s", e)
+            time.sleep(20)
     threading.Thread(target=_run, name="msg-index", daemon=True).start()
+
+
+def _warm_caches() -> None:
+    """启动后在后台把面板首屏要用的几个接口先算一遍。
+
+    冷启动时 /api/characters 要 81ms、/api/overview 62ms、/api/plugins 48ms
+    （都要读文件 + 读插件快照）。用户第一次打开面板正好撞上这几次冷计算，
+    预热一下就把这 ~190ms 挪到启动后那几秒里了。
+    """
+    def _run():
+        time.sleep(1.0)                      # 让 http 先起来
+        for fn in (_overview, _plugins_get, _characters_get, _dashboard):
+            try:
+                fn()
+            except Exception:                                      # noqa: BLE001
+                pass
+        logger.info("面板缓存已预热")
+    threading.Thread(target=_run, name="cache-warm", daemon=True).start()
 
 
 def _chat_drop_session(session: str, cid: str) -> tuple[int, int]:
@@ -2985,6 +3009,7 @@ def main():
         print(f"[klee-studio] bot runtime 启动失败：{_BOT_IMPORT_ERR}", flush=True)
     threading.Thread(target=_alert_watcher, daemon=True, name="qq-alert-watcher").start()
     _index_boot()          # 后台把历史补进 SQLite（第一次约 9 秒，不挡启动）
+    _warm_caches()         # 预热面板首屏那几个接口，别让第一次打开撞冷计算
     threading.Thread(target=_log_janitor, daemon=True, name="log-janitor").start()
     srv = Server((BIND, PORT), Handler)
     print(f"[klee-studio] http://{BIND}:{PORT}/  (STUDIO_HOME={STUDIO_HOME})", flush=True)

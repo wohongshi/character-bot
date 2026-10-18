@@ -432,6 +432,10 @@ class TelegramAdapter(BaseAdapter):
 | `/api/feed/sources` | **4.6 ms**（207 → 4.6，45×） | 同上 |
 | `/api/dashboard` | **16 ms**（43 → 16） | 插件元信息按 mtime 缓存 |
 | `/` 吞吐（静态页） | 949 rps / p99 74 ms | 20 并发 |
+| **冷启动**（重启 → 可用） | **795 ms**（优化前 1,789） | 124 个插件 + 5 个外部插件 |
+| **点发送 → 看到回复** | **2,267 ms**（优化前 2,677） | 真模型，含轮询延迟 |
+| 面板首屏接口（预热后） | **8–16 ms**（冷算 48–86） | overview / characters / plugins |
+| 常驻内存（studio + edge + NapCat） | **138 MB**（优化前 181） | 外部插件按需启动 |
 
 <details>
 <summary><b>具体做了什么</b></summary>
@@ -443,6 +447,14 @@ class TelegramAdapter(BaseAdapter):
 - **数据量大的接口交给 Go 边缘层**：静态资源 + 两个 feed 接口用 Go 写（613 行，常驻 19MB），其余留给 Python。
 - **低端设备自动降级**：`deviceMemory ≤ 4` 或 `hardwareConcurrency ≤ 4` 时关掉毛玻璃与整屏动画，`?perf=high` 可强制满效果。
 - **缓存与协议**：gzip + ETag/304、keep-alive、`/api/overview` 与 `/api/characters` 2 秒缓存、切后台暂停轮询。
+- **启动后预热**：`/api/overview`、`/api/characters`、`/api/plugins`、`/api/dashboard` 在后台先算一遍，
+  第一次打开面板不再撞冷计算（48–86 ms → 8–16 ms）。
+- **外部插件惰性启动**：命令表缓存在 `state/extmeta/`（按规格文件 mtime + 入口大小失效），
+  开机只读 JSON、不起进程；第一次调用才 spawn。冷启动 1,789 → **795 ms**，常驻内存 −42 MB。
+- **聊天轮询按状态变速**：正在生成时 500 ms 一问（响应只有 0.1 KB），冷场后逐级退到 3–12 秒；
+  以前间隔在开始轮询那一刻就定死，回复好了最多还要等 3.5 秒才显示。
+- **索引永不阻塞请求**：消息索引改由后台线程每 20 秒增量同步，搜索请求用 `try-lock`
+  拿不到锁就直接返回（宁可少看最近 20 秒，也不让一个搜索卡 9 秒）。
 
 为什么只有静态资源和 feed 用 Go：静态是纯 I/O，feed 是唯一「成本随数据量线性增长」的接口。
 真正的热点（PIL 出图、numpy 检索、libwebp 编码）底层本来就是 C，换语言不会更快，只会多一份要同步维护的实现。

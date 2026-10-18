@@ -1761,7 +1761,7 @@ document.querySelectorAll("nav button[data-v]").forEach(b => b.onclick = () => g
 function render(){
   stopOpsTimers();
   if (V !== "chat" && chat.timer){               // 离开对话页：连轮询一起停（原来只是空转）
-    clearInterval(chat.timer); chat.timer = null;
+    clearTimeout(chat.timer); chat.timer = null;
     clearInterval(chat.tick); chat.tick = null;
   }
   $("view").className = "content";
@@ -1784,10 +1784,23 @@ function render(){
 /* ================= 对话 ================= */
 let chat = {session: localStorage.getItem("ks_session") || "studio-main", after: 0,
             char: null, timer: null, tick: null, idle: 0};
+/* 轮询间隔按「当前状态」每轮重算。
+   以前是一次性 setInterval：间隔在「开始轮询那一刻」就定死了，
+   于是正在生成时也按 3500ms 的冷场节奏问，回复好了最多要等 3.5 秒才显示。
+   实测一次回复约 1.4 秒，这个量化误差比后端任何优化都大。 */
+function chatPollDelay(){
+  if (lastRunning) return 500;          // 正在生成：半秒一问（响应只有 ~0.1KB）
+  if (chat.idle > 6) return 12000;
+  if (chat.idle > 2) return 6000;
+  return 3000;
+}
 function armChatPoll(){
-  if (chat.timer) clearInterval(chat.timer);
-  const ms = lastRunning ? 2500 : (chat.idle > 6 ? 12000 : (chat.idle > 2 ? 6000 : 3500));
-  chat.timer = setInterval(() => { if (V === "chat") pollChat(); }, ms);
+  if (chat.timer) clearTimeout(chat.timer);
+  chat.timer = setTimeout(() => {
+    chat.timer = null;
+    if (V !== "chat") return;
+    pollChat();            // pollChat 结束时会自己重新排下一轮
+  }, chatPollDelay());
 }
 function sessLabel(s){
   if (s === "studio-main") return "主对话";
@@ -1939,7 +1952,7 @@ async function pollChat(){
   fresh.forEach(m => box.insertAdjacentHTML("beforeend", bubble(m)));
   chat.after = j.total;
   if (fresh.length || j.running){ chat.idle = 0; } else { chat.idle += 1; }
-  if (chat.idle === 3 || chat.idle === 7) armChatPoll();   // 冷场后逐级降频
+  // 间隔由 armChatPoll 每轮自己算，这里不再手动重排
   lastRunning = j.running;
   $("chatStat").textContent = j.queue > 0 ? `队列里还有 ${j.queue} 条` : "";
   const t = $("typingB");
@@ -1953,6 +1966,7 @@ async function pollChat(){
     box.insertAdjacentHTML("afterbegin", heroHTML());
   if (stick) box.scrollTop = box.scrollHeight;
   updateToBottom();
+  armChatPoll();           // 每轮结束重排：间隔根据「刚看到的 running」现算
 }
 function tickTyping(){
   const t = $("tmeta"); if (!t || !lastRunning) return;
@@ -3695,7 +3709,7 @@ async function opsAct(action){
 let hiddenAt = 0;
 function pauseTimers(){
   clearInterval(stripTimer); stripTimer = null;
-  if (chat.timer){ clearInterval(chat.timer); chat.timer = null; }
+  if (chat.timer){ clearTimeout(chat.timer); chat.timer = null; }
   if (chat.tick){ clearInterval(chat.tick); chat.tick = null; }
   if (feedTimer){ clearInterval(feedTimer); feedTimer = null; }
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }

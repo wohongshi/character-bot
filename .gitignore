@@ -34,3 +34,7 @@ shots/
 # 外部插件编译产物（源码在仓库里，跑 build.sh 生成）
 bot/features/ext/tools/*.bin
 bot/features/ext/tools/classes/
+
+# 外部插件握手缓存（运行时生成，删掉会自动重建）
+state/extmeta/
+bot/features/extmeta/

@@ -105,86 +105,90 @@ class MessageIndex:
     def sync(self, *, force: bool = False, max_rows: int = 20000) -> dict:
         """增量同步。返回 {新行数, 重建的来源}。可被多个线程调用（有锁）。"""
         with self._lock:
-            if self.error:
-                try:
-                    self.ensure()
-                    self.error = ""
-                except Exception as e:                             # noqa: BLE001
-                    self.error = f"{type(e).__name__}: {e}"
-                    return {"added": 0, "rebuilt": [], "error": self.error}
-            added = 0
-            rebuilt: list[str] = []
-            con = self._connect()
+            return self._sync_locked(force=force, max_rows=max_rows)
+
+    def _sync_locked(self, *, force: bool = False, max_rows: int = 20000) -> dict:
+        """已经持锁时的实现。调用方负责加锁。"""
+        if self.error:
             try:
-                for src, path in self.sources.items():
+                self.ensure()
+                self.error = ""
+            except Exception as e:                             # noqa: BLE001
+                self.error = f"{type(e).__name__}: {e}"
+                return {"added": 0, "rebuilt": [], "error": self.error}
+        added = 0
+        rebuilt: list[str] = []
+        con = self._connect()
+        try:
+            for src, path in self.sources.items():
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                off = int(self._offsets.get(src, 0) or 0)
+                if force or size < off:                    # 文件被重写过 → 重建
+                    con.execute("DELETE FROM msg WHERE src=?", (src,))
+                    con.execute("DELETE FROM msg_fts WHERE rowid NOT IN"
+                                " (SELECT id FROM msg)")
+                    off = 0
+                    rebuilt.append(src)
+                if size == off:
+                    continue
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(off)
+                        chunk = f.read()
+                except OSError:
+                    continue
+                end = chunk.rfind(b"\n") + 1 if chunk else 0
+                if end <= 0:
+                    continue
+                consumed = chunk[:end]
+                rows = []
+                for line in consumed.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
                     try:
-                        size = path.stat().st_size
-                    except OSError:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue                            # 坏行跳过，下次也不会重来
+                    if not isinstance(d, dict):
                         continue
-                    off = int(self._offsets.get(src, 0) or 0)
-                    if force or size < off:                    # 文件被重写过 → 重建
-                        con.execute("DELETE FROM msg WHERE src=?", (src,))
-                        con.execute("DELETE FROM msg_fts WHERE rowid NOT IN"
-                                    " (SELECT id FROM msg)")
-                        off = 0
-                        rebuilt.append(src)
-                    if size == off:
+                    text = d.get("text")
+                    if text is None:
+                        text = d.get("content")
+                    if not isinstance(text, str) or not text:
                         continue
+                    ts = d.get("ts") or d.get("time") or 0
                     try:
-                        with open(path, "rb") as f:
-                            f.seek(off)
-                            chunk = f.read()
-                    except OSError:
-                        continue
-                    end = chunk.rfind(b"\n") + 1 if chunk else 0
-                    if end <= 0:
-                        continue
-                    consumed = chunk[:end]
-                    rows = []
-                    for line in consumed.splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            d = json.loads(line)
-                        except ValueError:
-                            continue                            # 坏行跳过，下次也不会重来
-                        if not isinstance(d, dict):
-                            continue
-                        text = d.get("text")
-                        if text is None:
-                            text = d.get("content")
-                        if not isinstance(text, str) or not text:
-                            continue
-                        ts = d.get("ts") or d.get("time") or 0
-                        try:
-                            ts = float(ts)
-                        except (TypeError, ValueError):
-                            ts = 0.0
-                        row = {
-                            "k": self._key(src, {"ts": ts, "session": d.get("session"),
-                                                 "character": d.get("character"),
-                                                 "role": d.get("role"), "text": text}),
-                            "src": src, "ts": ts,
-                            "session": str(d.get("session") or ""),
-                            "character": str(d.get("character") or ""),
-                            "role": str(d.get("role") or ""),
-                            "text": text[:8000],
-                            "elapsed": float(d.get("elapsed") or 0) or None,
-                            "via": str(d.get("via") or ""),
-                        }
-                        rows.append(row)
-                        if len(rows) >= max_rows:
-                            added += self._insert(con, rows)
-                            rows = []
-                    added += self._insert(con, rows)
-                    self._offsets[src] = off + end
-                con.commit()
-                self._save_offsets()
-            finally:
-                con.close()
-            self._last_sync = time.time()
-            return {"added": added, "rebuilt": rebuilt}
+                        ts = float(ts)
+                    except (TypeError, ValueError):
+                        ts = 0.0
+                    row = {
+                        "k": self._key(src, {"ts": ts, "session": d.get("session"),
+                                             "character": d.get("character"),
+                                             "role": d.get("role"), "text": text}),
+                        "src": src, "ts": ts,
+                        "session": str(d.get("session") or ""),
+                        "character": str(d.get("character") or ""),
+                        "role": str(d.get("role") or ""),
+                        "text": text[:8000],
+                        "elapsed": float(d.get("elapsed") or 0) or None,
+                        "via": str(d.get("via") or ""),
+                    }
+                    rows.append(row)
+                    if len(rows) >= max_rows:
+                        added += self._insert(con, rows)
+                        rows = []
+                added += self._insert(con, rows)
+                self._offsets[src] = off + end
+            con.commit()
+            self._save_offsets()
+        finally:
+            con.close()
+        self._last_sync = time.time()
+        return {"added": added, "rebuilt": rebuilt}
 
     @staticmethod
     def _insert(con: sqlite3.Connection, rows: Iterable[dict]) -> int:
@@ -202,14 +206,24 @@ class MessageIndex:
                 n += cur.rowcount
         return n
 
-    def maybe_sync(self, every: float = 20.0) -> None:
-        """给 HTTP 线程用的节流版：太快就不重复扫。"""
+    def maybe_sync(self, every: float = 20.0) -> bool:
+        """给 HTTP 线程用的节流版：太快就不扫；**别人正在扫就直接跳过**。
+
+        为什么必须能跳过：首次建库（20 万条约 9 秒）或删库重建时，
+        `sync()` 会在整个过程中持着 `_lock`。以前搜索请求会老老实实排队等它，
+        于是一个搜索请求能卡 9 秒。搜索宁可少看到最近几秒的新行，也不该卡住。
+        """
         if time.time() - self._last_sync < every:
-            return
+            return False
+        if not self._lock.acquire(blocking=False):      # 有人在同步 → 直接返回
+            return False
         try:
-            self.sync()
+            return bool(self._sync_locked().get("added"))
         except Exception as e:                                     # noqa: BLE001
             self.error = f"{type(e).__name__}: {e}"
+            return False
+        finally:
+            self._lock.release()
 
     # ---------- 查询 ----------
     def search(self, q: str, *, limit: int = 30, character: str = "",
