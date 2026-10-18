@@ -126,12 +126,12 @@ NapCat 官方文档：<https://napneko.github.io/guide/napcat>
 
 重启 NapCat，然后：
 
-1. 打开面板 → **⚙️ 运维 · 机器人**
-2. 点「📷 QQ 扫码登录」，用手机 QQ 扫
+1. 打开 **NapCat WebUI**（默认 `http://<机器 IP>:6099`，token 见 `config/webui.json`）
+2. 选「二维码登录」，用手机 QQ 扫
 3. 登录成功后 `:3101` 才会监听
 
-> 面板会自动显示二维码并每 20 秒刷新。二维码属于敏感接口，需要面板头 `X-Klee-Studio: 1`
-> （浏览器里点按钮自带，脚本调用要手动加）。
+> 面板不再内置二维码 —— 登录统一在 NapCat WebUI 里做。
+> 需要脚本取码时：`GET /api/napcat/qr`，返回 `{b64, url, age_s}`，要带面板头 `X-Klee-Studio: 1`。
 
 ### 3.4 面板里补两项
 
@@ -446,9 +446,9 @@ sudo systemctl restart klee-studio
 按顺序查：NapCat 是否登录 → `:3101` 是否监听 → 面板 `napcat_token` 与 NapCat 配置是否一致 →
 面板「运维」页 QQ 状态是否 `online` → `journalctl -u napcat -n 50`。
 
-**二维码不显示**
-二维码接口要求 `X-Klee-Studio: 1` 头；用浏览器点按钮没问题，脚本要自己加。
-另外 NapCat 已登录时没有二维码，会返回 404。
+**二维码不显示 / 想重新登录**
+面板里已经没有二维码，去 NapCat WebUI（`:6099`）扫码。
+脚本取码用 `GET /api/napcat/qr`（要带 `X-Klee-Studio: 1` 头）；NapCat 已登录时没有码，返回 404。
 
 **日志区显示「已关闭」**
 去「常用配置」把 `log_enabled` 打开。

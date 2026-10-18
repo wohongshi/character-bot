@@ -1963,14 +1963,7 @@ async function mountAgentCard(){
       <span class="kv" id="pvOut"></span>
     </div>
   </div>
-  <div class="card" id="qrCard">
-    <h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫 —— 不用再等人发截图</span></h3>
-    <div id="qrBox" class="kv">正在读取二维码…</div>
-    <div class="row" style="margin-top:8px">
-      <button class="btn tiny" onclick="opsQr(true)">⟳ 刷新二维码</button>
-      <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
-      <span class="kv" id="qrMsg"></span>
-    </div>`;
+`;
   if (pvPending){                        // 保存/删除后卡片重建，把结果补回去
     const o = $("pvOut");
     if (o) o.textContent = pvPending;
@@ -2070,7 +2063,7 @@ async function viewBot(target){
   const stats = (st && st.stats) || {};
   $(T).innerHTML = `
   ${T === "view" ? '<h2 class="page">🤖 机器人</h2>' : ''}
-  <p class="tip">QQ 消息由面板自己收发（OneBot HTTP）。当前角色的人格、知识库和角色插件都跟着她走；切换去「🎭 角色」页。</p>
+  <p class="tip">QQ 消息由面板自己收发（OneBot HTTP）。掉线要去 NapCat WebUI（:6099）扫码登录，这里不再放二维码。</p>
   <div class="card">
     <div class="row">
       ${charAva("sm")}
@@ -2147,12 +2140,6 @@ async function viewBot(target){
       : "当前没配看图模型 —— 有人发图时她会撒个娇让你描述一下，不会瞎编图里有什么。"}</div>
   </div>
 `;
-  // 二维码在机器人页：没登录时才轮询（20 秒换一张，QQ 已登录时没有码）
-  if ($("qrBox")){
-    if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }
-    if (!(st.online === true)) qrTimer = setInterval(() => opsQr(false), 20000);
-    opsQr(false);
-  }
 }
 function botFillModels(){
   const p = (window.__provs || []).find(x => x.id === $("mpProv").value) || {models: []};
@@ -2778,7 +2765,6 @@ function cfgFilter(q){
 }
 
 let logTimer = null;
-let qrTimer = null;
 let alertTimer = null;
 let reqTimer = null;
 let opsCfgPrev = {};
@@ -2927,7 +2913,6 @@ function boardWidgets(ov, pl, ch, dash){
 }
 
 function stopOpsTimers(){
-  if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }
   if (logTimer){ clearInterval(logTimer); logTimer = null; }
   if (alertTimer){ clearInterval(alertTimer); alertTimer = null; }
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
@@ -3071,51 +3056,6 @@ async function opsAlerts(){
     box.innerHTML = ahtml;
   }
   if ($("alertMsg")) $("alertMsg").textContent = "更新于 " + hhmmss(Date.now() / 1000);
-}
-
-/* QQ 被踢下线时，NapCat 会写一张新二维码到缓存 —— 这里就地显示，省掉“截图发给主人”那一环 */
-let qrLastB64 = "";
-async function opsQrOpen(){
-  // 走带鉴权头的 fetch 拿 b64，再开 blob —— 不再裸露 /qr.png
-  const d = await api("/api/napcat/qr");
-  if (!d || !d.ok || !d.b64){ alert("现在没有可打开的二维码"); return; }
-  const a = document.createElement("a");
-  a.href = d.b64; a.target = "_blank"; a.rel = "noreferrer";
-  document.body.appendChild(a); a.click(); a.remove();
-}
-async function opsQr(manual){
-  const box = $("qrBox"); if (!box) return;
-  const d = await api("/api/napcat/qr");
-  if (!d || !d.ok){
-    if (!$("qrErr")){
-      box.innerHTML = `<div class="kv" id="qrErr">${esc((d && d.error) || "没有二维码")}<br>QQ 已经在线时本来就没有码，不用管它。</div>`;
-    }
-    qrLastB64 = "";
-    if (manual && $("qrMsg")) $("qrMsg").textContent = "没有可扫的码";
-    return;
-  }
-  const info = `
-        生成于 <b>${d.age_s}s</b> 前 · ${d.scale}× 重绘${d.decoded ? "（已解出登录链接）" : ""}
-        ${d.stale ? `<br><b style="color:var(--red)">这张可能已被 NapCat 换掉，点「⟳ 刷新二维码」</b>` : ""}
-        ${d.url ? `<br>登录链接：<code style="word-break:break-all">${esc(d.url)}</code>` : ""}
-        <br><br>用<b>手机 QQ</b> 扫左边这张：拿另一台设备打开本页，或点「↗ 在新标签打开大图」。
-        ${qrTimer ? "<br>本页每 20 秒自动换成最新一张。" : ""}`;
-  if ($("qrImg")){
-    if (d.b64 && d.b64 !== qrLastB64){         // 只有码真的换了才换图 —— 20 秒轮询不再闪
-      $("qrImg").src = d.b64;
-      qrLastB64 = d.b64;
-    }
-    $("qrInfo").innerHTML = info;              // 文字块照常更新（结构不动，不闪）
-  } else {
-    qrLastB64 = d.b64 || "";
-    box.innerHTML = `
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <img id="qrImg" src="${d.b64}" alt="QQ 登录二维码" width="260" height="260"
-           style="image-rendering:pixelated;background:#fff;padding:8px;border-radius:10px">
-      <div class="opsline" id="qrInfo" style="max-width:360px">${info}</div>
-    </div>`;
-  }
-  if (manual && $("qrMsg")) $("qrMsg").textContent = "已刷新 " + hhmmss(Date.now() / 1000);
 }
 
 function cfgRow(field, vals){

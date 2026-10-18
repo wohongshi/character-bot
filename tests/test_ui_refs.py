@@ -57,7 +57,8 @@ miss_req = [n for n in REQUIRED if n not in defined]
 check("关键交互函数齐全", not miss_req, str(miss_req))
 
 # 4) 已删掉的东西不许再被引用（防止改回来一半）
-GONE = ["restorePersona", "viewDocs", "openFile", "savePluginFile"]
+GONE = ["restorePersona", "viewDocs", "openFile", "savePluginFile",
+        "opsQr", "opsQrOpen", "qrCard", "qrBox"]   # 面板不再放 QQ 二维码，改去 NapCat WebUI
 referenced = [n for n in GONE if re.search(rf"(?<![\w$.]){re.escape(n)}\s*\(", html)]
 check("已移除的功能不再被引用", not referenced, str(referenced))
 
