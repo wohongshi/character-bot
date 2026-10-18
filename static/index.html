@@ -1304,7 +1304,7 @@ function artFallback(img){
 }
 function go(v){
   V = v;
-  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x.dataset.v === v));
+  document.querySelectorAll("nav button[data-v]").forEach(x => x.classList.toggle("on", x.dataset.v === v));
   const bar = $("bar");
   if (bar){ bar.classList.add("on"); bar.classList.remove("done"); }
   render();
@@ -1333,11 +1333,9 @@ async function strip(){
 async function reloadFeatures(){ const r = await post("/api/action", {action:"reload_features"}); alert(r.msg || r.error || "ok"); }
 
 /* ================= 视图切换 ================= */
-document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
-  V = b.dataset.v;
-  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
-  render();
-});
+// 只有「带 data-v 的导航项」才是切换页面；侧栏底部的搜索按钮（.cmdkbtn）没有 data-v，
+// 以前也被这条循环接管，点下去 V=undefined、命令面板根本打不开 —— 桌面端「搜索没反应」就是这个。
+document.querySelectorAll("nav button[data-v]").forEach(b => b.onclick = () => go(b.dataset.v));
 function render(){
   stopOpsTimers();
   if (V !== "chat" && chat.timer){               // 离开对话页：连轮询一起停（原来只是空转）
@@ -2032,7 +2030,22 @@ async function viewBot(target){
       <button class="btn" onclick="botProvSave()">保存供应商</button>
       <span class="kv" id="pvOut"></span>
     </div>
+  </div>
+  <div class="card" id="qrCard">
+    <h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫 —— 不用再等人发截图</span></h3>
+    <div id="qrBox" class="kv">正在读取二维码…</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn tiny" onclick="opsQr(true)">⟳ 刷新二维码</button>
+      <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
+      <span class="kv" id="qrMsg"></span>
+    </div>
   </div>`;
+  // 二维码在机器人页：没登录时才轮询（20 秒换一张，QQ 已登录时没有码）
+  if ($("qrBox")){
+    if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }
+    if (!(st.online === true)) qrTimer = setInterval(() => opsQr(false), 20000);
+    opsQr(false);
+  }
 }
 function botFillModels(){
   const p = (window.__provs || []).find(x => x.id === $("mpProv").value) || {models: []};
@@ -2433,7 +2446,6 @@ const CFG_FIELDS = [
   {k:"forward_threshold", label:"长回复阈值（字）"},
   {k:"download_voice", label:"下载收到的语音", bool:true},
   {k:"max_images", label:"单条最多图片"},
-  {k:"vision_enabled", label:"图片理解（看图模型）", bool:true},
   {k:"vision_max_bytes", label:"图片体积上限（字节）"},
   {k:"vision_timeout", label:"图片理解超时（秒）"},
   {k:"feature_prefix", label:"插件命令前缀"},
@@ -2443,12 +2455,6 @@ const CFG_FIELDS = [
   {k:"tts_max_per_msg", label:"每条回复语音条数"},
   {k:"rate_limit_per_min", label:"每会话每分钟最多发几条", hint:"0 = 不限"},
   {k:"rate_limit_burst", label:"突发容量（令牌桶）"},
-  {k:"agent_enabled", label:"Agent 工具循环", bool:true},
-  {k:"agent_owner_only", label:"Agent 仅主人可用", bool:true},
-  {k:"agent_max_steps", label:"Agent 最大步数（0-6）"},
-  {k:"agent_timeout", label:"Agent 总超时（秒）"},
-  {k:"agent_tools", label:"Agent 工具（逗号分隔）", hint:"web_search, web_fetch, kb_search, now, calc, list_skills, read_skill, use_skill, remember, recall"},
-  {k:"agent_skills", label:"Agent 可调用技能（插件）", bool:true},
   {k:"request_notify", label:"好友/入群请求提醒主人", bool:true},
   {k:"kb_enabled", label:"知识库注入", bool:true},
   {k:"kb_url", label:"知识库地址"},
@@ -2654,14 +2660,6 @@ async function viewOps(target){
       </div>
     </div>
   </div>
-  <div class="card" id="qrCard" style="margin-bottom:14px"><h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫——不用再等人发截图</span></h3>
-    <div id="qrBox" class="kv">正在读取二维码…</div>
-    <div class="row" style="margin-top:8px">
-      <button class="btn tiny" onclick="opsQr(true)">⟳ 刷新二维码</button>
-      <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
-      <span class="kv" id="qrMsg"></span>
-    </div>
-  </div>
   <div class="card" id="alertCard" style="margin-bottom:14px"><h3>🔔 掉线告警 <span class="kv" style="font-family:var(--font-body)">QQ 离线超过 2 分钟自动记一条，恢复也记一条</span></h3>
     <div id="alertBox" class="kv">正在读取…</div>
     <div class="row" style="margin-top:8px">
@@ -2699,10 +2697,6 @@ async function viewOps(target){
     if ($("logAuto").checked) logTimer = setInterval(logTick, 5000);
   };
   opsCfgPrev = cfg.values || {};
-  if (!(n.ok && n.is_login)){
-    qrTimer = setInterval(() => opsQr(false), 20000);   // 先立定时器：首刷说明里就有「每 20 秒自动换」
-  }
-  opsQr(false);
   logHash = null; logInited = false;                    // 页面重新装好，第一次必须真渲染
   alertsHash = null;
   opsLogs();

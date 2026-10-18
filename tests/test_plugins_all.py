@@ -61,7 +61,7 @@ def manager(cid):
     return fm
 
 
-CHARS = ["klee", "hutao", "citlali", "cyrene", "atri"]
+CHARS = ["klee", "hutao", "citlali", "cyrene", "atri", "honghong"]
 # 需要参数才有意义的命令：给一句话，让分支真的跑起来
 ARGS = {
     "炸弹": "亮晶晶的小石头", "挖宝": "B3", "打油诗": "加班", "蝴蝶签": "明天会更好吗",
@@ -79,7 +79,7 @@ NO_COMMAND = {"nlu", "reincarnation"}
 for cid in CHARS:
     fm = manager(cid)
     own = [n for n, p in fm.plugins.items() if cid in (p.get("characters") or [])]
-    check(f"{cid} 专属插件 ≥12（实际 {len(own)}）", len(own) >= 12)
+    check(f"{cid} 专属插件 ≥20（实际 {len(own)}）", len(own) >= 20)
     for name in sorted(own):
         info = fm.plugins.get(name) or {}
         check(f"{cid}/{name} 装载", not info.get("error"), str(info.get("error"))[:80])

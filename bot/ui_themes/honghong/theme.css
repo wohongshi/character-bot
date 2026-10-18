@@ -1,0 +1,76 @@
+/* 涂山 · 苦情：朱砂、狐火、红绳、苦情树的花瓣 */
+body[data-theme="honghong"]{
+  background-image:
+    radial-gradient(900px 520px at 88% -6%, rgba(217,164,65,.16), transparent 62%),
+    radial-gradient(760px 520px at 0% 28%, rgba(200,50,47,.10), transparent 64%),
+    radial-gradient(circle at 50% 120%, rgba(200,50,47,.10), transparent 55%);
+}
+body[data-theme="honghong"]::after{
+  content:"";position:fixed;right:-120px;bottom:-140px;width:520px;height:520px;border-radius:50%;
+  background:radial-gradient(circle, rgba(255,170,120,.30) 0%, rgba(255,170,120,0) 70%);
+  pointer-events:none;z-index:0;
+}
+body[data-theme="honghong"] aside{
+  background:linear-gradient(180deg,#fff6ef,#ffe6dc);
+  border-right:1px solid #f0cdbd;
+  box-shadow:8px 0 40px rgba(160,60,50,.08);
+}
+body[data-theme="honghong"] nav button{border-radius:10px;letter-spacing:.5px}
+body[data-theme="honghong"] nav button.on{
+  background:linear-gradient(135deg,#c8322f,#8f1f20);
+  box-shadow:0 6px 16px rgba(143,31,32,.28), 0 1px 0 rgba(255,255,255,.35) inset;
+}
+/* 红绳：侧栏顶部一条细金线 */
+body[data-theme="honghong"] .brand{border-bottom:0;position:relative}
+body[data-theme="honghong"] .brand::after{
+  content:"";position:absolute;left:14px;right:14px;bottom:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(217,164,65,.75),transparent);
+}
+body[data-theme="honghong"] .brand .bt{color:#8f1f20;letter-spacing:1px}
+body[data-theme="honghong"] .brand .bs{color:#b07a6c;letter-spacing:3px}
+
+body[data-theme="honghong"] .card,
+body[data-theme="honghong"] .charitem,
+body[data-theme="honghong"] .plugcard,
+body[data-theme="honghong"] .wcard{
+  border-radius:14px;
+  border-color:#f2d6c8;
+  box-shadow:0 10px 26px rgba(150,70,55,.08), 0 1px 0 rgba(255,255,255,.7) inset;
+}
+body[data-theme="honghong"] .bub{
+  border-radius:14px;border-top-left-radius:4px;
+  background:#fffaf5;border-color:#f2d6c8;
+}
+body[data-theme="honghong"] .msg.me .bub{
+  border-radius:14px;border-top-right-radius:4px;
+  background:linear-gradient(180deg,#ffe4dc,#ffd2c6);
+  border-color:#f3b9a8;color:#3a1a16;
+}
+body[data-theme="honghong"] h2.page{color:#8f1f20;letter-spacing:2px;text-shadow:0 2px 0 rgba(255,255,255,.75)}
+body[data-theme="honghong"] h2.page::after{
+  width:64px;height:3px;background:linear-gradient(90deg,#c8322f,#d9a441);
+}
+body[data-theme="honghong"] .pill{border-radius:999px;background:rgba(255,255,255,.78)}
+body[data-theme="honghong"] .chathero{
+  background:linear-gradient(112deg,#ffe7de 0%,#fff6ef 46%,#ffdfd0 100%);
+  border-color:#f3cbb9;
+}
+body[data-theme="honghong"] .chathero .scrim{
+  background:linear-gradient(90deg, rgba(255,247,241,.92), rgba(255,240,232,.45) 56%, transparent 80%);
+}
+body[data-theme="honghong"] .chathero .nm{color:#8f1f20;letter-spacing:1px}
+body[data-theme="honghong"] .chathero .badges .tag{
+  background:rgba(255,255,255,.82);border-color:rgba(217,164,65,.45);color:#8f1f20;
+}
+body[data-theme="honghong"] .chips button{
+  background:#fff8f2;border-color:#f0cdbd;color:#a2543f;
+}
+body[data-theme="honghong"] .chips button::before{content:"❀ ";color:#c8322f}
+body[data-theme="honghong"] .chips button:hover{color:#8f1f20;border-color:#c8322f;background:#ffece5}
+body[data-theme="honghong"] #chatInput{background:rgba(255,255,255,.8);border-color:#f2d6c8}
+body[data-theme="honghong"] .btn.primary,
+body[data-theme="honghong"] button.primary{
+  background:linear-gradient(135deg,#c8322f,#8f1f20);border-color:#7c1a1b;
+}
+body[data-theme="honghong"] .tag{border-color:rgba(217,164,65,.35)}
+body[data-theme="honghong"] ::-webkit-scrollbar-thumb{background:#eebfab;background-clip:content-box}

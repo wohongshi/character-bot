@@ -7,3 +7,4 @@
 - **citlali**: 原图 850×1077 · https://safebooru.org/index.php?page=post&s=view&id=7116594
 - **cyrene**: 原图 850×1214 · https://safebooru.org/index.php?page=post&s=view&id=6253878
 - **atri**: 原图 850×1202 · https://safebooru.org/index.php?page=post&s=view&id=3931971
+- **honghong**: 原图 1240×1754 · https://danbooru.donmai.us/posts/3204481 （tag `tushan_honghong`；红发狐耳、红白短打，画面无文字/水印）

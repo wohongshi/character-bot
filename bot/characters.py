@@ -78,6 +78,14 @@ BUILTIN = [
         "chips": ["听我讲个过去的故事", "你会忘记我吗", "陪我想想以前的事", "说点什么吧"],
     },
     {
+        "id": "honghong", "name": "涂山红红", "en": "Tushan Honghong", "emoji": "🦊",
+        "tagline": "涂山之王 · 红线仙", "color": "#c8322f", "color2": "#ffd9c2",
+        "kb": "honghong", "seed": "honghong.md", "theme": "honghong",
+        "greeting": "涂山，我罩的。……说吧，找我什么事。",
+        "hero_note": "涂山之王，也是替人和妖续缘的红线仙。她的过去比五百年还长。",
+        "chips": ["给我讲讲苦情树", "红线仙是做什么的", "东方月初是谁", "帮我看看这段缘分"],
+    },
+    {
         "id": "atri", "name": "亚托莉", "en": "ATRI", "emoji": "⚙️",
         "tagline": "高性能机器人少女", "color": "#3f7fb8", "color2": "#dcefff",
         "kb": "atri", "seed": "atri.md", "theme": "atri",

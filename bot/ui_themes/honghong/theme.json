@@ -1,0 +1,23 @@
+{
+  "id": "honghong",
+  "name": "涂山 · 苦情",
+  "version": "1.0",
+  "tokens": {
+    "--bg": "#fdf1ea",
+    "--paper": "#fffaf6",
+    "--ink": "#2f1a18",
+    "--dim": "#8d6257",
+    "--line": "#f0d2c4",
+    "--red": "#c8322f",
+    "--red-deep": "#8f1f20",
+    "--red-soft": "#ffe3dc",
+    "--gold": "#d9a441",
+    "--gold-soft": "#fbf0d6",
+    "--sky": "#c98a86",
+    "--sky-soft": "#fbe9e6",
+    "--green": "#6f8a5a",
+    "--green-soft": "#eef3e7",
+    "--shadow": "0 3px 0 rgba(143,31,32,.10), 0 12px 28px rgba(120,50,40,.10)",
+    "--font-cute": "\"ZCOOL KuaiLe\",\"Noto Serif CJK SC\",\"Songti SC\",serif"
+  }
+}
