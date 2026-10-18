@@ -244,6 +244,12 @@ input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,texta
 input[type=checkbox]{accent-color:var(--red);width:15px;height:15px}
 input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .check{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ink)}
+.pdform{display:flex;flex-direction:column;gap:8px}
+.plrow{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink)}
+.plrow span{color:var(--ink-soft)}
+.plrow i{font-style:normal;opacity:.75}
+.plrow input,.plrow select{border-radius:10px;border:2px solid var(--line);background:var(--surface-2);
+  color:var(--ink);padding:6px 9px;font-size:12.5px;font-family:var(--font-body)}
 .mpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:2px 14px;
   max-height:280px;overflow:auto;margin-top:8px;padding:10px 12px;border-radius:12px;
   border:2px solid var(--line);background:var(--surface-2)}
@@ -258,6 +264,14 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
   border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 .mpick::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--ink) 45%,transparent);background-clip:padding-box}
 @media(max-width:700px){.mpick{grid-template-columns:1fr;max-height:300px}}
+/* 手机上的触控目标：22px 高的按钮手指按不准，统一抬到 34px 左右 */
+@media(max-width:760px){
+  #view button:not(.x):not(.chip), #view .btn, .drawer button:not(.x){min-height:34px}
+  #view .btn.tiny, #view button.tiny{min-height:32px;padding-top:5px;padding-bottom:5px;font-size:12px}
+  #view .charcard .btn.tiny, #view .charcard button{min-height:32px}
+  #view .seg button{min-height:32px}
+  #view .fbtn{min-height:32px}
+}
 /* 人格页：官方介绍卡 */
 .posterRow{display:flex;gap:20px;align-items:center}
 .posterRow img{width:102px;border-radius:14px;border:3px solid #fff;
@@ -1043,7 +1057,7 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
       <button class="x" onclick="closePluginDrawer()">✕</button>
     </div>
     <div class="drawerbody" id="pdBody"></div>
-    <div class="drawerfoot"><span class="kv">只读展示；改代码请到仓库（保存后 8 秒内热重载）</span></div>
+    <div class="drawerfoot"><span class="kv">开关改完 8 秒内热重载；角色限定插件跟角色绑定，不能单独关</span></div>
   </div>
 </div>
 <input type="file" id="pluginZip" accept=".zip" style="display:none" onchange="installPluginPack(this)">
@@ -1313,15 +1327,87 @@ function openPluginDrawer(name, meta){
         ${c.aliases && c.aliases.length ? `<span class="h alias">别名：${esc(c.aliases.join(" / "))}</span>` : ""}</div>`).join("")
       : '<div class="kv">这个插件没有注册命令（可能只在消息钩子里工作）。</div>'}
     <h4>状态</h4>
-    <div class="row" style="gap:6px;flex-wrap:wrap">
-      <span class="tag">${m.enabled ? "● 已启用" : "○ 已停用"}</span>
+    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+      <span class="tag" id="pdState">${m.enabled ? "● 已启用" : "○ 已停用"}</span>
       <span class="tag">命中 ${m.hits || 0}</span>
       <span class="tag">错误 ${m.errors || 0}</span>
       ${m.error ? `<span class="tag" style="color:#c0392b">${esc(String(m.error).slice(0, 80))}</span>` : ""}
+      ${m.locked
+        ? '<span class="tag" title="角色限定插件跟角色绑定">🔒 角色限定</span>'
+        : `<button class="btn tiny" id="pdToggle" onclick="plugToggle(${esc(JSON.stringify(name))}, ${!m.enabled})">
+             ${m.enabled ? "停用" : "启用"}</button>`}
+      <span class="kv" id="pdMsg"></span>
     </div>
-    ${Object.keys(m.schema || {}).length ? `<h4>配置项</h4>${Object.entries(m.schema).map(([k, f]) =>
-      `<div class="cmdrow"><code>${esc(k)}</code><span class="h">${esc(f.description || f.type || "")}</span></div>`).join("")}` : ""}`;
+    ${Object.keys(m.schema || {}).length ? `<h4>设置</h4>
+      <div id="pdForm" class="kv">正在读取当前值…</div>
+      <div class="row" style="margin-top:8px"><button class="btn primary tiny" onclick="plugSaveSettings(${esc(JSON.stringify(name))})">保存设置</button>
+        <span class="kv" id="pdSMsg"></span></div>` : ""}`;
   el.classList.add("on");
+  if (Object.keys(m.schema || {}).length) loadPluginSchema(name);
+}
+
+/* ---- 插件开关 / 设置 ---- */
+async function plugToggle(name, on){
+  const btn = $("pdToggle"), msg = $("pdMsg");
+  if (btn){ btn.disabled = true; }
+  const d = await post("/api/plugins/config", {set: {[name]: !!on}});
+  if (!d || !d.ok){
+    if (msg) msg.textContent = "✗ " + ((d && d.error) || "失败");
+    if (btn) btn.disabled = false;
+    return;
+  }
+  // 以服务端返回的 enabled 为准，别用点之前的状态猜（快速连点会来回打脸）
+  const real = Array.isArray(d.enabled) ? d.enabled.includes(name) : !!on;
+  if (msg) msg.textContent = real ? "✓ 已启用，8 秒内生效" : "✓ 已停用，8 秒内生效";
+  const st = $("pdState");
+  if (st) st.textContent = real ? "● 已启用" : "○ 已停用";
+  if (btn){
+    btn.disabled = false;
+    btn.textContent = real ? "停用" : "启用";
+    btn.setAttribute("onclick", `plugToggle(${JSON.stringify(name)}, ${!real})`);
+  }
+  const m = (plMeta || {})[name];
+  if (m) m.enabled = real;
+  renderPlugGrid();
+  // 插件热重载是 ≤8 秒的，太早重新拉 meta 会拿到旧状态、把刚翻的开关又打回去
+  setTimeout(() => { if (V === "plugins") viewPlugins(); }, 10000);
+}
+
+async function loadPluginSchema(name){
+  const box = $("pdForm"); if (!box) return;
+  const d = await api("/api/plugins/schema?name=" + encodeURIComponent(name));
+  if (!d || !d.ok || !d.has_schema){ box.textContent = "这个插件没有声明配置项"; return; }
+  const fields = Object.entries(d.schema || {});
+  box.className = "pdform";
+  box.innerHTML = fields.map(([k, f]) => {
+    const v = d.values ? d.values[k] : f.default;
+    const val = v === null || v === undefined ? "" : String(v);
+    const hint = esc(f.description || "");
+    let ctl;
+    if (f.type === "bool" || typeof f.default === "boolean"){
+      ctl = `<select id="pls_${esc(k)}"><option value="true" ${val === "true" ? "selected" : ""}>开</option>
+             <option value="false" ${val !== "true" ? "selected" : ""}>关</option></select>`;
+    } else if (Array.isArray(f.choices)){
+      ctl = `<select id="pls_${esc(k)}">${f.choices.map(o =>
+        `<option ${String(o) === val ? "selected" : ""}>${esc(String(o))}</option>`).join("")}</select>`;
+    } else {
+      ctl = `<input type="text" id="pls_${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : val)}"
+             placeholder="${esc(String(f.default ?? ""))}">`;
+    }
+    return `<label class="plrow" title="${hint}"><span>${esc(k)}${hint ? ` <i>${hint}</i>` : ""}</span>${ctl}</label>`;
+  }).join("");
+}
+
+async function plugSaveSettings(name){
+  const box = $("pdForm"), msg = $("pdSMsg");
+  if (!box) return;
+  const values = {};
+  box.querySelectorAll("[id^=pls_]").forEach(el => { values[el.id.slice(4)] = el.value; });
+  const d = await post("/api/plugins/settings", {name, values});
+  if (!d || !d.ok){ if (msg) msg.textContent = "✗ " + ((d && d.error) || "失败"); return; }
+  if (msg) msg.textContent = (d.errors && d.errors.length)
+    ? "✓ 已保存（有 " + d.errors.length + " 项被纠正：" + d.errors.slice(0, 2).join("；") + "）"
+    : "✓ 已保存，8 秒内生效";
 }
 function cmdHelpText(c){
   const h = String(c.help || "");
@@ -1446,6 +1532,7 @@ function heroHTML(){
 async function viewChat(){
   if (chat.char !== ACTIVE.id){ chat.char = ACTIVE.id; chat.after = 0; }
   const sessions = (await api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id))).sessions || [];
+  if (chat.session && !sessions.includes(chat.session)) sessions.push(chat.session);   // 新对话还没发消息时也要出现在下拉里
   $("view").innerHTML = `
   <div id="chatWrap" data-char="${esc(ACTIVE.id)}">
     <div class="chathero">
@@ -1864,7 +1951,7 @@ async function viewPlugins(readonly){
   $("view").innerHTML = `
   <h2 class="page">🧩 插件</h2>
   <p class="tip">插件是随角色锁定的：切到谁，就只加载谁的专属插件 + 通用插件。
-    这里只读展示，改动请改仓库文件（保存后 8 秒内自动重载）。</p>
+    点卡片可以看命令、开关插件、调它的设置（保存后 8 秒内自动重载）。</p>
   <div class="plugbar">
     <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
     <button class="fbtn on" data-pf="all" onclick="plugFilter('all')">全部</button>

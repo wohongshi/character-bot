@@ -1363,6 +1363,55 @@ def _plugin_schema(name: str) -> dict:
             "schema": schema, "values": values, "has_schema": bool(schema)}
 
 
+def apply_plugins_config(cur: dict, body: dict, known: set) -> tuple[dict, str]:
+    """把一次开关请求合进 config.json（纯函数，方便单测）。
+
+    三种写法：{enabled:[...]} 全量、{set:{name:bool}} 单点、{config:{...}} 整份替换。
+    返回 (新配置, 错误信息)；错误信息非空时调用方应拒绝写入。
+
+    背景：这个接口原来是「拿 body 里的 config 直接覆盖文件」，
+    一次 `{}` 就能把 118 个插件的启用表清空（还没有备份）。所以改成
+    先校验再合并：插件名必须真实存在，整份替换必须显式带 enabled。
+    """
+    cur = dict(cur) if isinstance(cur, dict) else {}
+    cur.setdefault("enabled", [])
+
+    def bad_names(names):
+        return [str(n) for n in names if str(n) not in known]
+
+    enabled = body.get("enabled")
+    patch = body.get("set")
+    full = body.get("config")
+    if enabled is not None:
+        if not isinstance(enabled, list):
+            return cur, "enabled 必须是数组"
+        names = [str(n).strip() for n in enabled if str(n).strip()]
+        bad = bad_names(names)
+        if bad:
+            return cur, f"没有这些插件：{', '.join(bad[:5])}"
+        cur["enabled"] = sorted(set(names))
+        return cur, ""
+    if isinstance(patch, dict):
+        bad = bad_names([str(k).strip() for k in patch])
+        if bad:
+            return cur, f"没有这些插件：{', '.join(bad[:5])}"
+        on = {str(x) for x in (cur.get("enabled") or [])}
+        for name, flag in patch.items():
+            (on.add if flag else on.discard)(str(name))
+        cur["enabled"] = sorted(on)
+        return cur, ""
+    if isinstance(full, dict):
+        if "enabled" not in full and not body.get("force"):
+            return cur, "config 里没有 enabled 字段；要整份覆盖请带 force:true"
+        if not isinstance(full.get("enabled"), list):
+            return cur, "config.enabled 必须是数组"
+        bad = bad_names(full["enabled"])
+        if bad:
+            return cur, f"没有这些插件：{', '.join(bad[:5])}"
+        return dict(full), ""
+    return cur, "要 enabled / set / config 三者之一"
+
+
 _PLUG_CACHE = {"ts": 0.0, "data": None}
 
 
@@ -1908,16 +1957,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/bot":
             self._json(BOT.status() if BOT else {"ok": False, "error": _BOT_IMPORT_ERR or "bot 未启动"})
             return
-        if u.path == "/api/bot/metrics":
-            if not BOT:
-                self._json({"ok": False, "error": "bot 未启动"}, 503)
-                return
-            st = BOT.status()
-            self._json({"ok": True, "metrics": st.get("metrics") or {},
-                        "features": st.get("features") or {},
-                        "inflight": st.get("inflight", 0),
-                        "uptime_s": st.get("uptime_s")})
-            return
+
         if u.path == "/api/models":
             self._json(_models_get())
             return
@@ -2300,21 +2340,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)[:400]})
             return
 
-        if u.path == "/api/bot/config":
-            if not BOT:
-                self._json({"ok": False, "error": "bot 未启动"}, 503)
-                return
-            cfg = BOT.save_config(body.get("config") or {})
-            self._json({"ok": True, "config": cfg})
-            return
-
-        if u.path == "/api/bot/reload":
-            if not BOT:
-                self._json({"ok": False, "error": "bot 未启动"}, 503)
-                return
-            BOT.reload()
-            self._json({"ok": True, "note": "插件已重载"})
-            return
 
         if u.path == "/api/chat":
             session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or "studio-main"))[:48]
@@ -2427,14 +2452,21 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/api/plugins/config":
-            cfg = body.get("config")
-            if not isinstance(cfg, dict):
-                self._json({"ok": False, "error": "config 必须是对象"}, 400)
-                return
-            tmp = FEATURES_DIR / f"config.json.{os.getpid()}.tmp"
+            cfg_path = FEATURES_DIR / "config.json"
             try:
-                tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-                os.replace(tmp, FEATURES_DIR / "config.json")
+                cur = json.loads(cfg_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cur = {}
+            known = {q.stem for q in FEATURES_DIR.glob("*.py") if not q.name.startswith("_")}
+            merged, err = apply_plugins_config(cur, body, known)
+            if err:
+                self._json({"ok": False, "error": err}, 400)
+                return
+            tmp = cfg_path.with_name(f"config.json.{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(tmp, cfg_path)
+                _PLUG_CACHE.update(ts=0.0, data=None)
                 RELOAD_MARK.touch()
             except OSError as e:
                 try:
@@ -2443,7 +2475,9 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 self._json({"ok": False, "error": str(e)}, 500)
                 return
-            self._json({"ok": True, "note": "已保存并触发重载（≤20 秒）"})
+            self._json({"ok": True, "enabled": merged.get("enabled") or [],
+                        "count": len(merged.get("enabled") or []),
+                        "note": "已保存并触发重载（≤20 秒）"})
             return
 
         if u.path == "/api/requests/action":

@@ -62,7 +62,33 @@ GONE = ["restorePersona", "viewDocs", "openFile", "savePluginFile",
 referenced = [n for n in GONE if re.search(rf"(?<![\w$.]){re.escape(n)}\s*\(", html)]
 check("已移除的功能不再被引用", not referenced, str(referenced))
 
-# 5) 模板里 `${}` 之外的裸括号不该出现在属性值里（常见手误）
+# 5) 导航目标必须真的能落到一个视图上
+#    go("kb") 是 persona 的别名（知识库在人格页里），不算错
+VIEW_ALIAS = {"kb": "persona"}
+views = {m.lower() for m in re.findall(r"async function view(\w+)\s*\(", html)}
+targets = set(re.findall(r"\bgo\(['\"]([a-z]+)['\"]\)", html))
+bad_go = sorted(t for t in targets
+                if t not in views and VIEW_ALIAS.get(t) not in views)
+check("go() 的目标都有对应视图", not bad_go, str(bad_go))
+
+# 6) 服务端不许留「面板永远调不到」的写接口（那些是白送的攻击面）
+srv = (HTML.parent.parent / "server.py").read_text(encoding="utf-8")
+routes = set(re.findall(r'u\.path\s*==\s*"([^"]+)"', srv))
+for grp in re.findall(r"u\.path\s+in\s+\(([^)]+)\)", srv):
+    routes |= set(re.findall(r'"([^"]+)"', grp))
+# 这些是有意保留给脚本 / 测试 / 外部调用方的，不是死接口
+KEEP = {"/api/napcat/qr", "/qr.png", "/qr", "/onebot/event", "/index.html", "/",
+        "/api/docs", "/api/themes", "/api/characters/theme", "/api/logs/meta"}
+dead = sorted(r for r in routes
+              if r.startswith("/api") and r not in KEEP and r not in html)
+check("没有面板调不到的 /api 写接口", not dead, str(dead))
+
+# 7) 插件页必须能开关（曾经只读，「保存」只能去改仓库文件）
+check("插件抽屉里有开关按钮", "function plugToggle(" in html and "pdToggle" in html)
+check("插件抽屉里能改设置", "function plugSaveSettings(" in html and "/api/plugins/settings" in html)
+check("插件页不再是「只读展示」文案", "只读展示" not in html)
+
+# 8) 模板里 `${}` 之外的裸括号不该出现在属性值里（常见手误）
 bad = re.findall(r'onclick="[^"]*\[:\d+\]', html)
 check("内联事件里没有 Python 式切片", not bad, str(bad[:3]))
 
