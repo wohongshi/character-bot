@@ -1,0 +1,9 @@
+{
+  "id": "uuid",
+  "title": "UUID / JSON",
+  "description": "Node 写的：生成 UUID、格式化 JSON",
+  "language": "node",
+  "entry": "tools/uuid.mjs",
+  "timeout": 4,
+  "version": "1.0"
+}

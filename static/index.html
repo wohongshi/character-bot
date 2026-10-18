@@ -314,6 +314,14 @@ button.btn.tabon{background:var(--red-soft);border-color:#f0a99e;color:var(--red
   padding:4px 13px;font-size:12px;cursor:pointer;font-family:var(--font-cute);transition:all .15s}
 .chips button:hover{color:var(--red);border-color:#f0a99e;background:var(--red-soft);
   transform:rotate(-1deg) translateY(-1px)}
+
+/* 历史搜索结果 */
+.qhit{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12.5px}
+.qhit:last-child{border-bottom:0}
+.qhit .qt{flex:none;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+.qhit .qw{flex:none}
+.qhit .qs{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qhit mark{background:color-mix(in srgb,var(--red) 22%,transparent);color:inherit;padding:0 2px;border-radius:3px}
 /* ============ 通用卡 ============ */
 .card{background:var(--paper);border:2px solid var(--line);border-radius:18px;padding:14px 18px;
   box-shadow:var(--shadow);margin-bottom:16px}
@@ -1556,7 +1564,9 @@ function openPluginDrawer(name, meta){
   $("pdTitle").textContent = m.title || name;
   $("pdSub").textContent = m.system
     ? `系统插件（适配器） · v${m.version || "1.0"} · ${m.ingress || "只出站"}`
-    : `${m.file || name + ".py"} · v${m.version || "1.0"}`
+    : (m.external
+        ? `外部插件 · ${m.language || "binary"} · ${m.entry || m.file || ""}`
+        : `${m.file || name + ".py"} · v${m.version || "1.0"}`)
       + (m.author ? " · " + m.author : "")
       + (m.characters && m.characters.length ? " · 角色限定" : " · 通用");
   const cmds = m.command_list || [];
@@ -2357,6 +2367,7 @@ function renderPlugGrid(){
             enabled: !!m.enabled, error: m.error || "",
             commands: m.commands || 0, hits: m.hits || 0,
             usage: m.usage || "", version: m.version || "1.0",
+            external: !!m.external, language: m.language || "",
             ingress: m.ingress || "", health: m.health || null};
   }).filter(p => {
     // 角色限定插件与角色绑定：不是当前角色的，直接不显示
@@ -2387,7 +2398,9 @@ function renderPlugGrid(){
               : `${PLUG_ICON[p.chars[0]] || "🎭"} ${esc(p.chars[0])}`));
     const sub = p.system
       ? `适配器 · ${esc(p.ingress || "只出站")}`
-      : `${esc(p.name)}.py · v${esc(p.version)}`;
+      : (p.external
+          ? `${esc(p.language || "binary")} · ${esc(p.name)} · v${esc(p.version)}`
+          : `${esc(p.name)}.py · v${esc(p.version)}`);
     const ready = p.health && p.health.ok;
     const why = p.error || (p.health && p.health.error) || "";
     const foot = p.system
@@ -2399,7 +2412,9 @@ function renderPlugGrid(){
     return `<div class="plugcard ${p.name === plSel ? "on" : ""} ${p.system ? "syscard" : ""}"
         onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
       <span class="st ${p.error ? "err" : (p.enabled ? "on" : "")}"></span>
-      <div class="top"><span class="ico">${p.system ? "🔌" : (p.chars.length ? (PLUG_ICON[p.chars[0]] || "🎭") : "🧩")}</span>
+      <div class="top"><span class="ico">${p.system ? "🔌"
+        : (p.external ? (LANG_ICON[p.language] || "🧬")
+        : (p.chars.length ? (PLUG_ICON[p.chars[0]] || "🎭") : "🧩"))}</span>
         <div><div class="nm">${esc(p.title)}</div><div class="sub">${sub}</div></div></div>
       <div class="desc">${esc(p.description || "（没有说明）")}</div>
       <div class="foot"><span class="lock" style="${p.chars.length || p.system ? "" : "color:var(--ink-soft);border-color:var(--line)"}">${owner}</span>
@@ -3293,14 +3308,59 @@ async function viewBoard(target){
     ${affs || '<div class="kv">还没有人说过话</div>'}
   </div>
   ${(d.errors && d.errors.length) ? `<div class="card" style="margin-top:14px"><div class="kv" style="color:#c0392b">⚠️ 部分数据读取失败：${esc(d.errors.join("；"))}</div></div>` : ""}
+  <div class="card" style="margin-top:14px" id="qCard">
+    <div class="kv" style="margin:0 0 6px">🔍 历史搜索 <span id="qMeta" class="kv" style="margin:0"></span></div>
+    <div class="row">
+      <input id="qInput" placeholder="搜聊天记录、关键词、某句话…" style="flex:1;min-width:180px"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();doSearch();}">
+      <button class="btn primary tiny" onclick="doSearch()">搜索</button>
+    </div>
+    <div id="qOut" class="kv" style="margin-top:8px">在 SQLite 索引里搜，几十万条也是几毫秒。</div>
+    <div id="qIdx" class="kv" style="margin-top:6px;opacity:.75"></div>
+  </div>
   <div id="feedSlot" style="padding-bottom:12px"></div>`;
   $(T).scrollTop = st;                    // 重绘也保住滚动位置
+  loadIndexInfo();                        // 索引规模（顺手验证 /api/search/stats 可用）
   await viewFeed("feedSlot");
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
   boardTimer = setInterval(() => {
     if (V === "board") viewBoard();
     else { clearInterval(boardTimer); boardTimer = null; }
   }, 60000);
+}
+
+async function loadIndexInfo(){
+  const el = $("qIdx"); if (!el) return;
+  const d = await api("/api/search/stats?days=14");
+  if (!d || !d.ok){ el.textContent = ""; return; }
+  const h = d.health || {};
+  const days = (d.by_day || []).length;
+  const from = d.from ? new Date(Number(d.from) * 1000).toLocaleDateString("zh-CN", {month:"2-digit", day:"2-digit"}) : "—";
+  el.textContent = `索引 ${h.rows || 0} 条 · ${h.error ? "⚠ " + h.error : "正常"} · 最早 ${from} · 覆盖 ${days} 天`;
+}
+
+async function doSearch(){
+  const box = $("qOut"), meta = $("qMeta"), inp = $("qInput");
+  if (!box || !inp) return;
+  const q = inp.value.trim();
+  if (!q){ box.textContent = "先输入要搜的词"; return; }
+  meta.textContent = "搜索中…";
+  const d = await api("/api/search?q=" + encodeURIComponent(q) + "&limit=30");
+  if (!d || !d.ok){
+    meta.textContent = "";
+    box.innerHTML = `<span style="color:var(--red)">${esc((d && d.error) || "搜索失败")}</span>`;
+    return;
+  }
+  meta.textContent = ` ${d.count} 条 · ${d.took_ms} ms · 索引 ${(d.index && d.index.rows) || 0} 条`;
+  if (!d.hits.length){ box.innerHTML = "没搜到。"; return; }
+  box.innerHTML = d.hits.map(h => {
+    const t = new Date(Number(h.ts) * 1000).toLocaleString("zh-CN",
+      {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"});
+    const who = h.role === "user" ? "👤" : "🤖";
+    const sn = esc(h.snippet || h.text || "").replace(/&lt;&lt;/g, "<mark>").replace(/&gt;&gt;/g, "</mark>");
+    return `<div class="qhit"><span class="qt">${esc(t)}</span>
+      <span class="qw">${who}</span><span class="qs">${sn}</span></div>`;
+  }).join("");
 }
 
 function boardWidgets(ov, pl, ch, dash){
@@ -3369,6 +3429,11 @@ function stopOpsTimers(){
 
 /* 适配器卡片：平台 / 目标 / 能力。换适配器是框架能力，运维页要能一眼看到。
    能力键是框架内部名（text / image / group_member_list…），面板上给人话。 */
+// 外部插件按语言给个图标（面板上一眼看出这是别的语言写的）
+const LANG_ICON = {
+  node: "🟩", javascript: "🟨", rust: "🦀", c: "🔵", cpp: "🔷",
+  java: "☕", php: "🐘", python: "🐍", go: "🐹", binary: "⚙️",
+};
 const CAP_CN = {
   text: "发文本", image: "发图片", voice: "发语音",
   group_member_list: "读群成员", message_lookup: "查历史消息",

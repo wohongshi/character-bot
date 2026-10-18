@@ -30,3 +30,7 @@ shots/
 .DS_Store
 .idea/
 .vscode/
+
+# 外部插件编译产物（源码在仓库里，跑 build.sh 生成）
+bot/features/ext/tools/*.bin
+bot/features/ext/tools/classes/

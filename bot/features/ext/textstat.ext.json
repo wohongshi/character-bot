@@ -1,0 +1,9 @@
+{
+  "id": "textstat",
+  "title": "文本统计",
+  "description": "Rust 写的：字符/词/行/字节，原生二进制",
+  "language": "rust",
+  "entry": "tools/textstat.bin",
+  "timeout": 3,
+  "version": "1.0"
+}

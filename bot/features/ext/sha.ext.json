@@ -1,0 +1,18 @@
+{
+  "id": "sha",
+  "title": "SHA-256",
+  "description": "Java 写的：MessageDigest 算摘要（JVM 启动约 0.8 秒）",
+  "language": "java",
+  "run": [
+    "java",
+    "-XX:+UseSerialGC",
+    "-Xss256k",
+    "-cp",
+    "tools/classes"
+  ],
+  "timeout": 8,
+  "version": "1.0",
+  "args": [
+    "Hash"
+  ]
+}

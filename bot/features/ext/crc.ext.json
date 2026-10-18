@@ -1,0 +1,9 @@
+{
+  "id": "crc",
+  "title": "CRC32",
+  "description": "C 写的：CRC32 校验值",
+  "language": "c",
+  "entry": "tools/crc.bin",
+  "timeout": 3,
+  "version": "1.0"
+}

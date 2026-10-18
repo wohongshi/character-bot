@@ -45,6 +45,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .ext import ExtPlugin, load_spec
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,6 +63,25 @@ class _Block:
 BLOCK = _Block()
 
 _PREFIX_ALIASES = {".": "。", "．": None, "!": "！", "！": None}
+
+
+def _plugin_enabled(name: str, enabled_cfg: Any, default_on: bool = True) -> bool:
+    """按 config.json 的 `enabled` 决定一个插件开不开。
+
+    约定（三处共用，别再各写一遍）：
+
+      · `enabled` 缺省（None）→ 看插件自己的 DEFAULT_OFF；
+      · 字符串 → 当成「只启用这一个」的白名单（旧代码曾把它逐字符拆开）；
+      · 其它不可迭代值（int 等）→ 回落默认开关。
+    """
+    if enabled_cfg is None:
+        return default_on
+    if isinstance(enabled_cfg, str):
+        return name == enabled_cfg
+    try:
+        return name in {str(x) for x in enabled_cfg}
+    except TypeError:
+        return default_on
 
 
 def _prefix_chars(prefix: str) -> set:
@@ -530,6 +551,8 @@ class FeatureManager:
         self.dir = Path(raw_dir) if raw_dir else Path(__file__).with_name("features")
         self.prefix_chars = _prefix_chars(getattr(adapter, "feature_prefix", "."))
         self.commands: Dict[str, _Command] = {}     # 小写名/别名 → _Command
+        #: 外部插件（其他语言写的）：name → ExtPlugin。重载时全部关掉重来。
+        self.ext_plugins: Dict[str, Any] = {}
         self.hooks_in: List[_Hook] = []
         self.hooks_out: List[_Hook] = []
         self.hooks_notice: List[_Hook] = []     # 非消息事件（旁听）
@@ -619,6 +642,7 @@ class FeatureManager:
 
         self._register_builtin()
         self._purge_modules()
+        self._ext_close_all()          # 重载前先收掉旧的外部进程，别留下孤儿
 
         files = sorted(p for p in self.dir.glob("*.py") if not p.name.startswith("_"))
         sys_path_added = False
@@ -635,6 +659,9 @@ class FeatureManager:
                 except ValueError:
                     pass
 
+        if not corrupt:
+            self._load_ext(enabled_cfg)
+
         self.hooks_in.sort(key=lambda h: h.priority)
         self.hooks_out.sort(key=lambda h: h.priority)
         self.hooks_notice.sort(key=lambda h: h.priority)
@@ -648,6 +675,104 @@ class FeatureManager:
                     len({id(c) for c in self.commands.values()}),
                     len(self.nlu_rules),
                     len(self.hooks_in), len(self.hooks_out))
+
+    # ---------- 外部插件（Node / Rust / C / C++ / Java / PHP …） ----------
+    def _ext_close_all(self) -> None:
+        for p in list(self.ext_plugins.values()):
+            try:
+                p.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+        self.ext_plugins = {}
+
+    def _load_ext(self, enabled_cfg: Any) -> None:
+        """扫 `features/ext/*.ext.json`，把别的语言写的插件接进来。
+
+        规格文件小到可以手写：
+
+            {"id":"uuid","title":"UUID","language":"node","entry":"tools/uuid.mjs",
+             "timeout":4,"description":"生成 UUID / 格式化 JSON"}
+        """
+        ext_dir = self.dir / "ext"
+        if not ext_dir.is_dir():
+            return
+        for spec_path in sorted(ext_dir.glob("*.ext.json")):
+            name = spec_path.name[: -len(".ext.json")]
+            info = {"description": "", "title": name, "version": "", "enabled": False,
+                    "error": "", "file": spec_path.name, "usage": "", "author": "",
+                    "homepage": "", "schema": {}, "characters": [], "locked": False,
+                    "external": True, "language": "", "entry": "",
+                    "commands": 0, "command_list": []}
+            try:
+                spec = load_spec(spec_path)
+            except Exception as e:                                 # noqa: BLE001
+                info["error"] = f"规格文件读不动：{type(e).__name__}: {e}"
+                self.plugins[name] = info
+                continue
+            spec["id"] = str(spec.get("id") or name).lower()
+            info["title"] = str(spec.get("title") or name)
+            info["description"] = str(spec.get("description") or "")
+            info["version"] = str(spec.get("version") or "1.0")
+            info["language"] = str(spec.get("language") or "binary")
+            info["entry"] = str(spec.get("entry") or "")
+            if not _plugin_enabled(name, enabled_cfg, True):
+                info["enabled"] = False
+                self.plugins[name] = info
+                continue
+            try:
+                plug = ExtPlugin(spec, ext_dir)
+                meta = plug.start()          # 起进程 + 握手（拿到命令表）
+            except Exception as e:                                 # noqa: BLE001
+                info["error"] = f"{type(e).__name__}: {e}"
+                self.plugins[name] = info
+                logger.warning("外部插件 %s 启动失败：%s", name, info["error"])
+                continue
+            cmds = meta.get("commands") if isinstance(meta.get("commands"), list) else []
+            registered = []
+            for c in cmds:
+                if not isinstance(c, dict):
+                    continue
+                cname = str(c.get("name") or "").strip()
+                if not cname:
+                    continue
+                aliases = tuple(str(a) for a in (c.get("aliases") or []) if str(a).strip())
+
+                async def _handler(ctx, _p=plug, _c=cname):
+                    ctxd = {"user_id": ctx.user_id, "user_name": ctx.user_name,
+                            "chat_id": ctx.chat_id, "is_group": ctx.is_group,
+                            # 角色名挂在运行时（ctx.adapter 是路由视图，会转发过去）；
+                            # FeatureContext 本身没有 character_id —— 这里写成
+                            # ctx.character_id 会 AttributeError（踩过一次）。
+                            "character": str(getattr(getattr(ctx, "adapter", None),
+                                                     "active_character", "") or ""),
+                            "platform": ctx.platform,
+                            "raw": str(getattr(ctx, "text", "") or ""),
+                            "message_id": ctx.message_id}
+                    # 传给插件的是「参数部分」，不是整条消息：
+                    # `.json {"a":1}` 里插件该拿到 {"a":1}，带上命令前缀会解析失败。
+                    arg_text = str(getattr(ctx, "arg_text", "") or "")
+                    try:
+                        res = await asyncio.to_thread(
+                            _p.call, _c, list(ctx.args or []), arg_text, ctxd)
+                    except Exception as e:                         # noqa: BLE001
+                        await ctx.reply(f"⚠ {name} 插件出错：{str(e)[:180]}")
+                        return
+                    reply = res.get("reply")
+                    if reply:
+                        await ctx.reply(str(reply)[:1500])
+
+                self.register_command(_Command(
+                    name=cname, handler=_handler, aliases=aliases, scope="both",
+                    permission="all", cooldown=float(c.get("cooldown") or 2),
+                    help=str(c.get("help") or ""), plugin=name, priority=100))
+                registered.append({"name": cname, "aliases": list(aliases),
+                                   "help": str(c.get("help") or "")})
+            self.ext_plugins[name] = plug
+            info.update({"enabled": True, "commands": len(registered),
+                         "command_list": registered})
+            self.plugins[name] = info
+            logger.info("外部插件 %s（%s）就绪：%d 个命令",
+                        name, info["language"], len(registered))
 
     def _purge_modules(self) -> None:
         """清掉 features_dir 下遗留的模块缓存（含插件互相 import 的辅助模块）。"""
@@ -720,20 +845,9 @@ class FeatureManager:
             info["enabled"] = str(self.active_character).strip().lower() in info["characters"]
             info["lock_reason"] = ("当前角色可用" if info["enabled"]
                                    else "仅 " + "/".join(info["characters"]) + " 可用")
-        elif enabled_cfg is None:
-            info["enabled"] = not bool(getattr(module, "DEFAULT_OFF", False))
         else:
-            # 字符串 = 单插件简写（旧代码把它当可迭代逐字符拆开 → 白名单静默全失效，OCR 四轮 #2）；
-            # 其它不可迭代值（int 等）→ 回落默认开关。
-            if isinstance(enabled_cfg, str):
-                allowed = {enabled_cfg}
-            else:
-                try:
-                    allowed = {str(x) for x in enabled_cfg}
-                except TypeError:
-                    allowed = None
-            info["enabled"] = (not bool(getattr(module, "DEFAULT_OFF", False))
-                               if allowed is None else name in allowed)
+            info["enabled"] = _plugin_enabled(
+                name, enabled_cfg, not bool(getattr(module, "DEFAULT_OFF", False)))
 
         self.plugins[name] = info
         if not info["enabled"]:
@@ -989,8 +1103,13 @@ class FeatureManager:
     def _fingerprint(self) -> tuple:
         items = []
         try:
-            for p in sorted(self.dir.iterdir()):
-                if p.suffix == ".py" or p.name in ("config.json", ".reload"):
+            candidates = list(self.dir.iterdir())
+            ext_dir = self.dir / "ext"
+            if ext_dir.is_dir():
+                candidates += list(ext_dir.glob("*.ext.json"))
+            for p in sorted(candidates):
+                if p.suffix == ".py" or p.name in ("config.json", ".reload") \
+                        or p.name.endswith(".ext.json"):
                     try:
                         st = p.stat()
                     except OSError:
@@ -1042,7 +1161,11 @@ class FeatureManager:
                  "hits": int(hits.get(n, 0)), "errors": int(errors.get(n, 0)),
                  "commands": int(cmd_count.get(n, 0)),
                  "command_list": sorted(cmd_list.get(n, []), key=lambda x: x["name"]),
-                 "file": p.get("file", "")}
+                 "file": p.get("file", ""),
+                 # 外部插件（其他语言）：面板上要显示语言徽章与入口
+                 "external": bool(p.get("external")),
+                 "language": p.get("language", "") or "",
+                 "entry": p.get("entry", "") or ""}
                 for n, p in sorted(items)
             ],
             "commands": commands,

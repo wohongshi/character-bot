@@ -1,0 +1,9 @@
+{
+  "id": "sort",
+  "title": "排序",
+  "description": "C++ 写的：数字升序（std::sort）",
+  "language": "cpp",
+  "entry": "tools/sort.bin",
+  "timeout": 3,
+  "version": "1.0"
+}

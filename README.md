@@ -51,6 +51,8 @@ Character Bot 把这三件事拆成三个独立层，各自可换：
 - **🔌 适配器是「系统插件」** — QQ（NapCat）、QQ 官方机器人、飞书、微信公众号、通用 Webhook 五个实现，默认全关、可多开；能力表让插件优雅降级，而不是撞 `AttributeError`。
 - **🪝 非消息事件也能写插件** — 戳一戳、入群、好友申请通过 `on_notice` / `on_request` 订阅；审批永远是**旁听**，不会替你点头。
 - **📱 手机优先** — 命令面板、插件抽屉、深浅色、PWA；11 种设备 × 8 个页面实测零溢出。
+- **🧬 插件可以用别的语言写** — NDJSON 协议，Node / Rust / C / C++ / Java 示例全部跑通；Rust 写的插件启动 5.7 ms、常驻 1.7 MB。
+- **🔍 20 万条历史也能毫秒搜** — SQLite + FTS5 做索引（JSONL 仍是真相），搜索快 29×、按会话取最近 50 条快 276×。
 - **⚡ 1GB 内存的无风扇 ARM 板也能跑** — 首屏 984 ms、传输 299 KB，全部是量出来的，见[性能](#性能与工程)。
 
 ---
@@ -224,6 +226,62 @@ def register(api):
 
 也可以用面板「插件 → 📦 安装插件包」上传 ZIP（校验文件名、语法、`CHARACTERS` 角色 id）。
 **覆盖即替换，不留旧版。** 详见 **[docs/PLUGINS.md](docs/PLUGINS.md)**。
+
+---
+
+## 多语言
+
+核心是 Python，但**不是只有 Python**：
+
+| 位置 | 语言 | 为什么 |
+|---|---|---|
+| 面板前端 | JavaScript（单文件，无构建） | 改完刷新就生效 |
+| 边缘层 `edge/` | Go | 静态资源 + 两个 feed 接口，常驻 19 MB |
+| 消息索引 | SQL（SQLite + FTS5） | 让历史可搜索，见下 |
+| 外部插件 | Node / Rust / C / C++ / Java | 同一套 NDJSON 协议，示例都能跑 |
+
+外部插件就是一个常驻子进程，一行一个 JSON：
+
+```
+宿主 → {"op":"hello","v":1}
+插件 → {"ok":true,"name":"uuid","commands":[{"name":"uuid","help":"…"}]}
+宿主 → {"op":"call","id":1,"cmd":"uuid","text":"用户的参数","ctx":{…}}
+插件 → {"id":1,"ok":true,"reply":"要发回去的话"}
+```
+
+本机实测（RK3399 / arm64 / 1GB）：
+
+| 语言 | 示例命令 | 启动 | 常驻 | 一次调用 |
+|---|---|---:|---:|---:|
+| Rust | `.统计` | **5.7 ms** | **1.7 MB** | 1.5 ms |
+| C | `.crc` | **4.3 ms** | **1.4 MB** | 1.4 ms |
+| C++ | `.排序` | 8.1 ms | 3.1 MB | 1.5 ms |
+| Node | `.uuid` / `.json` | 146 ms | 48.6 MB | 2.4 ms |
+| Java | `.sha` | 212–363 ms | 43 MB | 103–172 ms |
+
+一次编译全部：`bash bot/features/ext/tools/build.sh`（缺工具链会跳过并说明）。
+C# 与 PHP：本机没装运行时，**没有实测**，所以没放示例——协议本身与语言无关。
+
+写一个插件 30 行就够，教程见 **[docs/POLYGLOT.md](docs/POLYGLOT.md)**。
+
+### SQL：让历史可搜索
+
+`state/messages.db`（SQLite + FTS5）是 `state/*.jsonl` 的**索引**，不是真相：
+删掉会自动重建，JSONL 少一行它也跟着少。20 万条 / 42 MB 实测：
+
+| 场景 | JSONL 扫描 | SQLite | 加速 |
+|---|---:|---:|---:|
+| 关键词搜索 | 362.8 ms | **12.7 ms** | 29× |
+| 某会话最近 50 条 | 331.3 ms | **1.2 ms** | 276× |
+| 按天 × 角色聚合 | 5.1 s | **484 ms** | 11× |
+| 追加一条 | **0.1 ms** | 8.1 ms | — |
+
+最后一行是故意的：**写还是走 JSONL**（纯 append，0.1 ms），SQLite 只负责读。
+
+<p align="center">
+  <img src="docs/img/search.webp" width="820" alt="看板里的历史搜索：命中高亮、耗时、索引规模">
+</p>
+<p align="center"><sub>看板 → 🔍 历史搜索：中文走 FTS，没命中自动退回 LIKE；结果按秒级时间去重</sub></p>
 
 ---
 
@@ -443,6 +501,7 @@ bash tests/run.sh          # 28 套 / 1338 项断言，rc=0 才算过
 | [INSTALL.md](INSTALL.md) | 安装、NapCat 对接、反向代理、开机自启、排错 |
 | [docs/FRAMEWORK.md](docs/FRAMEWORK.md) | 适配器与事件模型，怎么加一个新平台 |
 | [docs/PLUGINS.md](docs/PLUGINS.md) | 插件生命周期、`CONFIG_SCHEMA`、钩子语义 |
+| [docs/POLYGLOT.md](docs/POLYGLOT.md) | 多语言插件协议、各语言实测、SQL 索引 |
 | [docs/CHARACTERS.md](docs/CHARACTERS.md) | 角色定义字段、角色包格式、知识库绑定 |
 | [docs/THEMES.md](docs/THEMES.md) | 主题只决定色相，表面与文字用语义变量 |
 | [docs/FONTS.md](docs/FONTS.md) | 展示字体为什么可以裁到 197 KB |

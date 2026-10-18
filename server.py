@@ -119,6 +119,7 @@ try:
     from bot import themes as theme_mod
     from bot.characters import CHARACTERS, CharacterStore
     from bot.framework import coerce_setting, merge_plugin_settings
+    from bot.store import MessageIndex
     from bot.service import DEFAULT_CONFIG, BotService
     _BOT_IMPORT_ERR = ""
 except Exception as _e:                                            # noqa: BLE001
@@ -133,6 +134,7 @@ STATIC = STUDIO_HOME / "static"
 STATE_DIR = STUDIO_HOME / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 CHAT_JSONL = STATE_DIR / "chat.jsonl"
+MSG_DB = STATE_DIR / "messages.db"          # SQLite 索引（可随时删除重建）
 MSG_JSONL = STATE_DIR / "messages.jsonl"           # 面板自有消息流（QQ + 网页）
 STATE_DB = STATE_DIR / "legacy-state.db"           # 已弃用（保留常量避免旧引用炸）
 FEATURES_DIR = STUDIO_HOME / "bot" / "features"    # 面板自持的插件目录
@@ -214,6 +216,33 @@ def _append_jsonl(path: Path, entry: dict) -> None:
     with _lock:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+_INDEX: "MessageIndex | None" = None
+_INDEX_LOCK = threading.Lock()
+
+
+def _index() -> "MessageIndex":
+    """消息索引单例。JSONL 仍是真相，这个库删掉会自动重建。"""
+    global _INDEX
+    with _INDEX_LOCK:
+        if _INDEX is None:
+            _INDEX = MessageIndex(MSG_DB, {"chat": CHAT_JSONL, "messages": MSG_JSONL},
+                                  STATE_DIR / "index.offsets.json")
+        return _INDEX
+
+
+def _index_boot() -> None:
+    """后台把历史补进索引。老库第一次会慢（20 万条约 9 秒），不挡启动。"""
+    def _run():
+        try:
+            idx = _index()
+            r = idx.sync()
+            if r.get("added"):
+                logger.info("消息索引：补入 %s 条（重建 %s）", r["added"], r.get("rebuilt"))
+        except Exception as e:                                     # noqa: BLE001
+            logger.warning("消息索引构建失败（搜索不可用，其它功能正常）：%s", e)
+    threading.Thread(target=_run, name="msg-index", daemon=True).start()
 
 
 def _chat_drop_session(session: str, cid: str) -> tuple[int, int]:
@@ -373,6 +402,14 @@ def _read_config_keys() -> dict:
             v = ",".join(str(x) for x in v)
         out[k] = v
     return {"ok": True, "values": out}
+
+
+def _q1(q: dict, name: str, default: str = "") -> str:
+    """GET 查询参数取单值（server 这边一律是 {k: [v]} 形状）。"""
+    v = (q or {}).get(name)
+    if isinstance(v, (list, tuple)):
+        return str(v[0]) if v else default
+    return default if v is None else str(v)
 
 
 def _int_param(q: dict, key: str, default: int,
@@ -2001,7 +2038,7 @@ _SENSITIVE_GET = frozenset({
     "/api/chat/sessions", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
-    "/api/kb/recent",
+    "/api/kb/recent", "/api/search",
 })
 
 
@@ -2242,6 +2279,35 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/persona":
             self._json(_persona_get((q.get("character") or [""])[0]))
             return
+        if u.path == "/api/search":
+            term = _q1(q, "q").strip()
+            limit = _int_param(q, "limit", 30, lo=1, hi=200)
+            idx = _index()
+            t0 = time.perf_counter()
+            try:
+                idx.maybe_sync(20.0)
+                hits = idx.search(term, limit=limit,
+                                  character=_q1(q, "character"),
+                                  session=_q1(q, "session"),
+                                  role=_q1(q, "role"))
+                err = ""
+            except Exception as e:                                 # noqa: BLE001
+                hits, err = [], f"{type(e).__name__}: {e}"
+            self._json({"ok": not err, "error": err, "q": term,
+                        "hits": hits, "count": len(hits),
+                        "took_ms": round((time.perf_counter() - t0) * 1000, 1),
+                        "index": idx.health()})
+            return
+        if u.path == "/api/search/stats":
+            idx = _index()
+            try:
+                idx.maybe_sync(20.0)
+                self._json({"ok": True, **idx.stats(_int_param(q, "days", 14, lo=1, hi=365)),
+                            "health": idx.health()})
+            except Exception as e:                                 # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+            return
+
         if u.path == "/api/plugins":
             self._json(_plugins_get())
             return
@@ -2586,6 +2652,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "这个会话正在生成，等它说完再删"}, 409)
                 return
             removed, left = _chat_drop_session(session, cid)
+            try:
+                _index().drop_session(session, cid)     # 索引里别留残影
+            except Exception:                                       # noqa: BLE001
+                pass
             self._json({"ok": True, "removed": removed, "left": left, "session": session})
             return
 
@@ -2911,6 +2981,7 @@ def main():
     else:
         print(f"[klee-studio] bot runtime 启动失败：{_BOT_IMPORT_ERR}", flush=True)
     threading.Thread(target=_alert_watcher, daemon=True, name="qq-alert-watcher").start()
+    _index_boot()          # 后台把历史补进 SQLite（第一次约 9 秒，不挡启动）
     threading.Thread(target=_log_janitor, daemon=True, name="log-janitor").start()
     srv = Server((BIND, PORT), Handler)
     print(f"[klee-studio] http://{BIND}:{PORT}/  (STUDIO_HOME={STUDIO_HOME})", flush=True)

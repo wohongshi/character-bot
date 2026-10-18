@@ -118,7 +118,12 @@
     "weather_mt",
     "wine",
     "wish",
-    "xiehouyu"
+    "xiehouyu",
+    "uuid",
+    "textstat",
+    "crc",
+    "sort",
+    "sha"
   ],
   "settings": {
     "keyword": {
