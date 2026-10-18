@@ -599,6 +599,9 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
     在 worker 线程里同步执行（命令 handler 是 async，用独立小循环跑）。
     """
     import asyncio as _aio
+    # 测试桩 / 半初始化的 runtime 没有 mgr：直接退回纯聊天，别把 worker 弄挂
+    if not hasattr(rt, "mgr") or getattr(rt, "mgr", None) is None or not hasattr(rt, "config"):
+        return None
     text = str(text or "").strip()
     if not text or not text.startswith(str(rt.config.get("feature_prefix") or ".")):
         # 没带前缀：试试 NLU（自然语言路由到命令），没路由就直接聊天

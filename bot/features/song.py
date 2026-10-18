@@ -1,11 +1,11 @@
-"""亚托莉 · 唱歌：.唱歌
+"""亚托莉 · 哼歌：.哼歌
 
 她唱歌。调子从第二句开始逃跑，但她唱得很认真。
 """
 import random
 
-NAME = "唱歌"
-DESCRIPTION = "听亚托莉唱一段（会走调）：.唱歌"
+NAME = "哼歌"
+DESCRIPTION = "听亚托莉哼一段（会走调）：.哼歌"
 VERSION = "1.0"
 CHARACTERS = ("atri",)
 
@@ -31,4 +31,4 @@ def register(api):
             "——……调子对吗？"
         )
 
-    api.on_command("唱歌", sing, help=".唱歌 —— 听她唱一段（会走调）", cooldown=6)
+    api.on_command("哼歌", sing, aliases=("唱首歌",), help=".哼歌 —— 听她哼一段（会走调）", cooldown=6)
