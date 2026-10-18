@@ -44,9 +44,24 @@ class FakeModels:
 
 from bot.characters import CharacterStore                       # noqa: E402
 CHAR_STATE = TMP / "chars"
+class _FakeRuntime:
+    """网页分发用的最小 runtime：没有 mgr/配置 → 分发直接跳过，只剩纯聊天。"""
+    active_character = "atri"
+    config = {}
+    models = FakeModels()
+    state_dir = CHAR_STATE
+
+    class _Mgr:
+        nlu_rules = []
+        def nlu_match(self, t): return None
+        async def run_message_hooks(self, ctx): return True
+        async def handle_command(self, ctx): return False
+    mgr = _Mgr()
+
+
 S.BOT = SimpleNamespace(models=FakeModels(),
                         characters=CharacterStore(CHAR_STATE, seeds_dir=STUDIO / "bot" / "character_seeds"),
-                        runtime=SimpleNamespace(active_character="atri"))
+                        runtime=_FakeRuntime())
 S.BOT.characters.set_active("atri")     # 测试固定角色，不依赖当前线上选择
 
 print("[1] 辅助函数存在且可用（防误删）")

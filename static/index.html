@@ -823,6 +823,8 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   .chatbar{gap:6px;margin-bottom:0;flex-wrap:nowrap}
   .chatbar select{flex:1;min-width:0;height:26px;padding:0 9px;font-size:11.5px;text-overflow:ellipsis}
   .chatbar .btn.tiny{height:26px;padding:0 9px;font-size:10.5px;white-space:nowrap}
+  #reasonSel{height:26px;padding:0 4px;font-size:10.5px;font-family:var(--font-body);flex:none}
+  #agentBtn{font-family:var(--font-body)}
   #msgs{gap:11px;padding:10px 8px 2px;
     -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 22px);
             mask-image:linear-gradient(180deg,transparent 0,#000 22px)}
@@ -1423,6 +1425,14 @@ async function viewChat(){
       <select id="sessSel" title="会话">${sessions.map(s=>`<option value="${esc(s)}" ${s===chat.session?"selected":""}>${esc(sessLabel(s))}</option>`).join("")}</select>
       <button class="btn tiny" onclick="newConv()">＋ 新对话</button>
       <button class="btn tiny" onclick="delConv()" title="删除当前会话" aria-label="删除当前会话">删</button>
+      <button class="btn tiny ${chatOpts.agent ? "tabon" : ""}" id="agentBtn" title="Agent 工具循环：让她自己查资料/翻知识库/算数（参照「插件」页的 Agent 设置）"
+              onclick="chatOpts.agent=!chatOpts.agent;this.classList.toggle('tabon',chatOpts.agent);localStorage.setItem('ks_agent',chatOpts.agent?'1':'0');flash(chatOpts.agent?'Agent 已开：她会自己查资料':'Agent 已关')">🧠 Agent</button>
+      <select id="reasonSel" title="推理强度：让模型多想一会儿再答" onchange="chatOpts.reasoning=this.value;localStorage.setItem('ks_reasoning',this.value)">
+        <option value="default" ${chatOpts.reasoning==="default"?"selected":""}>🪶 常规</option>
+        <option value="low" ${chatOpts.reasoning==="low"?"selected":""}>⚡ 快</option>
+        <option value="medium" ${chatOpts.reasoning==="medium"?"selected":""}>🪶 中</option>
+        <option value="high" ${chatOpts.reasoning==="high"?"selected":""}>🧠 Max</option>
+      </select>
       <span class="kv" id="chatStat"></span>
     </div>
     <div id="msgs" onscroll="updateToBottom()"></div>
@@ -1446,6 +1456,10 @@ async function viewChat(){
     const k = "ks_draft_" + ACTIVE.id;
     if (el.value.trim()) localStorage.setItem(k, el.value); else localStorage.removeItem(k);
   });
+  const ab = $("agentBtn");
+  if (ab) ab.classList.toggle("tabon", chatOpts.agent);
+  const rs = $("reasonSel");
+  if (rs) rs.value = chatOpts.reasoning;
   const _draft = localStorage.getItem("ks_draft_" + ACTIVE.id);
   if (_draft){ const el = $("chatBox"); el.value = _draft; el.dispatchEvent(new Event("input")); }
   chat.after = 0; $("msgs").innerHTML = "";
@@ -1471,12 +1485,17 @@ function newConv(){
   viewChat();
 }
 function quick(t){ $("chatBox").value = t; sendMsg(); }
+let chatOpts = {
+  agent: localStorage.getItem("ks_agent") === "1",
+  reasoning: localStorage.getItem("ks_reasoning") || "default",
+};
 async function sendMsg(){
   const box = $("chatBox"); const text = box.value.trim();
   if (!text) return;
   box.value = ""; box.style.height = "auto";
   localStorage.removeItem("ks_draft_" + ACTIVE.id);
-  await post("/api/chat", {session: chat.session, text, character: ACTIVE.id});
+  await post("/api/chat", {session: chat.session, text, character: ACTIVE.id,
+                           agent: chatOpts.agent, reasoning: chatOpts.reasoning});
   await pollChat();
 }
 function bubble(m){
@@ -1485,7 +1504,7 @@ function bubble(m){
       <div class="meta">${hhmm(m.ts)}</div></div></div>`;
   const err = m.error ? `<div class="meta">⚠ ${esc(m.error)}</div>` : "";
   return `<div class="msg klee">${charAva()}<div><div class="bub">${fmt(m.text || "(没接上话……再试一次？)")}</div>
-    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 跑了 ${m.elapsed}s` : ""}</div>${err}</div></div>`;
+    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 跑了 ${m.elapsed}s` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}</div>${err}</div></div>`;
 }
 let lastRunning = null;
 function updateToBottom(){
@@ -1814,10 +1833,82 @@ async function viewPlugins(readonly){
     <button class="fbtn" data-pf="err" onclick="plugFilter('err')">报错</button>
     <button class="fbtn" style="margin-left:auto" onclick="pickPluginZip()">📦 安装插件包</button>
   </div>
-  <div class="pluggrid" id="plugGrid"></div>`;
+  <div class="pluggrid" id="plugGrid"></div>
+  <div id="agentCardSlot"></div>`;
   renderPlugGrid();
+  mountAgentCard();
 }
 
+async function mountAgentCard(){
+  const slot = $("agentCardSlot"); if (!slot) return;
+  const [md, ag] = await Promise.all([api("/api/models"), api("/api/agent")]);
+  const provs = (md && md.providers) || [];
+  window.__provs = provs;
+  const act = (md && md.active) || {};
+  const agentCfg = (ag && ag.ok) ? ag : {enabled:false, owner_only:true, max_steps:3,
+    timeout:120, tools:[], available_tools:[], model:{}};
+  const agModel = agentCfg.model || {};
+  const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || provs[0] || {models: []};
+  slot.innerHTML = `
+  <div class="card">
+    <h3>🛠️ Agent 能力 <span class="kv" style="font-family:var(--font-body)">开着她就会自己查资料：搜网页 / 读页面 / 翻知识库 / 算数 / 记事</span></h3>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="agEnabled" ${agentCfg.enabled?"checked":""}> 启用工具循环</label>
+      <label class="check"><input type="checkbox" id="agOwner" ${agentCfg.owner_only?"checked":""}> 只有主人能用</label>
+      <label class="check"><input type="checkbox" id="agSkills" ${agentCfg.skills!==false?"checked":""}> 允许调用技能（插件）</label>
+      <span class="kv">最大步数</span><input id="agSteps" type="number" min="0" max="6" value="${agentCfg.max_steps}" style="width:70px">
+      <span class="kv">超时（秒）</span><input id="agTimeout" type="number" min="10" max="600" value="${agentCfg.timeout}" style="width:90px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span class="kv">Agent 模型</span>
+      <select id="agProv" onchange="botFillAgentModels()" style="min-width:190px">
+        ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===(agModel.provider||act.provider)?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
+      </select>
+      <select id="agModel" style="min-width:240px">
+        <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
+        ${((agProv.models||[]).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join(""))}
+      </select>
+    </div>
+    <div class="kv" style="margin-top:10px">可用工具（取消勾选 = 不给模型这个能力）</div>
+    <div class="row" id="agTools" style="margin-top:4px">
+      ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.name)}</label>`).join("")}
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn primary" onclick="botSaveAgent()">保存 Agent 设置</button>
+      <span class="kv">主人也可以用 <code>.agent 问题</code> 强制走一次工具循环</span>
+    </div>
+    <div id="agOut" class="kv" style="margin-top:8px"></div>
+  </div>
+  </div>
+  <div class="card">
+    <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">OpenAI 兼容接口；Key 只从环境变量读，不写进配置文件</span></h3>
+    <div class="row" style="font-size:12px">
+      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${esc(p.api||"")} ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
+      <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="pvId" placeholder="id（字母/数字/_-）" style="width:150px">
+      <input id="pvName" placeholder="显示名" style="width:150px">
+      <input id="pvApi" placeholder="https://api.example.com/v1" style="min-width:260px">
+      <input id="pvKeyEnv" placeholder="KEY_ENV（环境变量名）" style="width:180px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <textarea id="pvModels" rows="3" placeholder="模型名，一行一个" style="flex:1;min-width:260px;font-family:var(--font-body)"></textarea>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" onclick="botProvSave()">保存供应商</button>
+      <span class="kv" id="pvOut"></span>
+    </div>
+  </div>
+  <div class="card" id="qrCard">
+    <h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫 —— 不用再等人发截图</span></h3>
+    <div id="qrBox" class="kv">正在读取二维码…</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn tiny" onclick="opsQr(true)">⟳ 刷新二维码</button>
+      <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
+      <span class="kv" id="qrMsg"></span>
+    </div>`;
+}
 let plugMode = "all";
 const PLUG_ICON = {klee:"💥",hutao:"🦋",citlali:"🔮",cyrene:"🪶",atri:"⚙️"};
 let plugSearchTimer = null;
@@ -1987,75 +2078,7 @@ async function viewBot(target){
       ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
       : "当前没配看图模型 —— 有人发图时她会撒个娇让你描述一下，不会瞎编图里有什么。"}</div>
   </div>
-  <div class="card">
-    <h3>🛠️ Agent 能力 <span class="kv" style="font-family:var(--font-body)">开着她就会自己查资料：搜网页 / 读页面 / 翻知识库 / 算数 / 记事</span></h3>
-    <div class="row">
-      <label class="check"><input type="checkbox" id="agEnabled" ${agentCfg.enabled?"checked":""}> 启用工具循环</label>
-      <label class="check"><input type="checkbox" id="agOwner" ${agentCfg.owner_only?"checked":""}> 只有主人能用</label>
-      <label class="check"><input type="checkbox" id="agSkills" ${agentCfg.skills!==false?"checked":""}> 允许调用技能（插件）</label>
-      <span class="kv">最大步数</span><input id="agSteps" type="number" min="0" max="6" value="${agentCfg.max_steps}" style="width:70px">
-      <span class="kv">超时（秒）</span><input id="agTimeout" type="number" min="10" max="600" value="${agentCfg.timeout}" style="width:90px">
-    </div>
-    <div class="row" style="margin-top:8px">
-      <span class="kv">Agent 模型</span>
-      <select id="agProv" onchange="botFillAgentModels()" style="min-width:190px">
-        ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===(agModel.provider||act.provider)?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
-      </select>
-      <select id="agModel" style="min-width:240px">
-        <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
-        ${((agProv.models||[]).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join(""))}
-      </select>
-    </div>
-    <div class="kv" style="margin-top:10px">可用工具（取消勾选 = 不给模型这个能力）</div>
-    <div class="row" id="agTools" style="margin-top:4px">
-      ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.name)}</label>`).join("")}
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button class="btn primary" onclick="botSaveAgent()">保存 Agent 设置</button>
-      <span class="kv">主人也可以用 <code>.agent 问题</code> 强制走一次工具循环</span>
-    </div>
-    <div id="agOut" class="kv" style="margin-top:8px"></div>
-  </div>
-  <div class="card">
-    <h3>🧩 技能目录 <span class="kv" style="font-family:var(--font-body)">插件即技能：agent 先读用法，再按命令调用；权限/作用域与手动敲命令一致</span></h3>
-    ${skills.length ? skills.map(sk => `
-      <details style="margin:6px 0">
-        <summary style="cursor:pointer"><b>${esc(sk.title)}</b>
-          <span class="kv">${esc(sk.name)} · ${sk.commands.length} 个命令</span></summary>
-        <div class="kv" style="margin:6px 0 4px">${esc(sk.description || "（没有描述）")}</div>
-        <div class="row">${sk.commands.map(c => `<span class="tag" title="${esc(c.help || "")}">.${esc(c.name)}${c.permission !== "all" ? " 🔒" : ""}</span>`).join("")}</div>
-      </details>`).join("")
-      : `<div class="kv">还没读到技能目录（bot 未启动或插件未加载）。</div>`}
-  </div>
-  <div class="card">
-    <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">OpenAI 兼容接口；Key 只从环境变量读，不写进配置文件</span></h3>
-    <div class="row" style="font-size:12px">
-      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${esc(p.api||"")} ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
-      <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <input id="pvId" placeholder="id（字母/数字/_-）" style="width:150px">
-      <input id="pvName" placeholder="显示名" style="width:150px">
-      <input id="pvApi" placeholder="https://api.example.com/v1" style="min-width:260px">
-      <input id="pvKeyEnv" placeholder="KEY_ENV（环境变量名）" style="width:180px">
-    </div>
-    <div class="row" style="margin-top:8px">
-      <textarea id="pvModels" rows="3" placeholder="模型名，一行一个" style="flex:1;min-width:260px;font-family:var(--font-body)"></textarea>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button class="btn" onclick="botProvSave()">保存供应商</button>
-      <span class="kv" id="pvOut"></span>
-    </div>
-  </div>
-  <div class="card" id="qrCard">
-    <h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫 —— 不用再等人发截图</span></h3>
-    <div id="qrBox" class="kv">正在读取二维码…</div>
-    <div class="row" style="margin-top:8px">
-      <button class="btn tiny" onclick="opsQr(true)">⟳ 刷新二维码</button>
-      <button class="btn tiny" onclick="opsQrOpen()">↗ 在新标签打开大图</button>
-      <span class="kv" id="qrMsg"></span>
-    </div>
-  </div>`;
+`;
   // 二维码在机器人页：没登录时才轮询（20 秒换一张，QQ 已登录时没有码）
   if ($("qrBox")){
     if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }

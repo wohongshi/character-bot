@@ -545,6 +545,98 @@ def _tail_log(n: int, grep: str) -> list:
         return ["(读不到日志)"]
 
 
+def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dict:
+    """网页端的 agent 工具循环：直接用 bot 的 agent 配置（工具白名单/步数/超时）。"""
+    import asyncio as _aio
+    from bot import agent as agent_mod
+
+    cfg = (rt.config or {})
+    tools = agent_mod.resolve_tools(cfg.get("agent_tools"))
+    if not cfg.get("agent_skills", True):
+        tools = [t for t in tools if t not in ("list_skills", "read_skill", "use_skill")]
+    kw = {}
+    if reasoning and reasoning != "default":
+        kw["temperature"] = 0.4 if reasoning == "high" else 0.7
+    return agent_mod.run(
+        rt.models, msgs,
+        provider="", model="",
+        tools=tools,
+        skills=(rt.skills if cfg.get("agent_skills", True) else None),
+        chat={"adapter": None, "is_group": False, "group_id": "",
+              "user_id": "panel", "user_name": "主人", "role": "owner",
+              "is_owner": True, "loop": None, "loop_thread": None},
+        max_steps=int(cfg.get("agent_max_steps") or 3),
+        timeout=float(cfg.get("agent_timeout") or 120),
+        max_tokens=int(cfg.get("max_tokens") or 800),
+        kb_url=str(cfg.get("kb_url") or ""),
+        state_dir=rt.state_dir,
+        scope="web:panel",
+        character=cid,
+        **kw,
+    )
+
+
+# ---------- 网页端插件分发（与 QQ 同一套命令/钩子/NLU） ----------
+class _WebAdapter:
+    """给 FeatureContext 用的假适配器：reply 捕获进列表，不再真的发消息。"""
+
+    def __init__(self, rt, cid: str):
+        self._rt = rt
+        self._cid = cid
+        self.owner_id = str((BOT.config if BOT else {}).get("owner_id") or "")
+        self.owner_id = self.owner_id or "1"          # 网页端视为操作者本人
+        self.features_dir = ""
+        self.feature_prefix = str(rt.config.get("feature_prefix") or ".")
+
+    def _chat_id(self, is_group, group_id, user_id):
+        return f"web:{user_id or 'panel'}"
+
+
+def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
+    """网页消息先走插件层：命中命令/NLU 就直接用插件的回复。
+
+    返回 str = 插件已回复；None = 没命中，继续普通聊天。
+    在 worker 线程里同步执行（命令 handler 是 async，用独立小循环跑）。
+    """
+    import asyncio as _aio
+    text = str(text or "").strip()
+    if not text or not text.startswith(str(rt.config.get("feature_prefix") or ".")):
+        # 没带前缀：试试 NLU（自然语言路由到命令），没路由就直接聊天
+        hit = rt.mgr.nlu_match(text) if text else None
+        if not hit:
+            return None
+        text = str(rt.config.get("feature_prefix") or ".") + hit.lstrip("./／")
+
+    from bot.framework import FeatureContext
+    adapter = _WebAdapter(rt, cid)
+    ctx = FeatureContext(adapter=adapter, text=text, is_group=False,
+                         group_id="", user_id="panel", user_name="主人",
+                         message_id="", mentioned=True, role="owner")
+    captured: list[str] = []
+
+    async def _fake_reply(t, **kw):
+        for line in str(t).split("\n"):
+            if line.strip():
+                captured.append(line)
+
+    ctx.reply = _fake_reply
+
+    loop = _aio.new_event_loop()
+    try:
+        # 先跑入站钩子（违禁词等），再跑命令
+        ok = loop.run_until_complete(rt.mgr.run_message_hooks(ctx))
+        if ok:
+            ok = loop.run_until_complete(rt.mgr.handle_command(ctx))
+    except Exception:                                        # noqa: BLE001
+        logger.exception("网页插件分发失败")
+        return None
+    finally:
+        loop.close()
+    if not captured:
+        return None
+    return "\n".join(captured)
+
+
 # ---------- 对话：队列 + worker ----------
 def _chat_worker() -> None:
     while True:
@@ -560,8 +652,31 @@ def _chat_worker() -> None:
         try:
             if BOT is None:
                 raise RuntimeError(_BOT_IMPORT_ERR or "面板 bot 未启动")
+            rt = BOT.runtime
+
+            # ---- 网页端也走插件层：命令 / 钩子 / NLU 与 QQ 同一套 ----
+            # 以前网页聊天只会「纯聊天」，.祈愿 这类命令在面板里永远不命中。
+            raw = str(job.get("text") or "")
+            if rt is not None:
+                web_reply = _web_plugin_dispatch(rt, job, raw, cid)
+                if web_reply is not None:
+                    _append_jsonl(MSG_JSONL, {"ts": time.time(),
+                                              "chat_id": "web:" + job["session"],
+                                              "role": "assistant", "text": str(web_reply)[:800]})
+                    _append_jsonl(CHAT_JSONL, {
+                        "ts": time.time(), "session": job["session"], "character": cid,
+                        "role": "assistant", "text": str(web_reply),
+                        "elapsed": round(time.time() - t0, 1),
+                        "via": "plugin",
+                    })
+                    with _lock:
+                        _chat_state["running"] = None
+                    continue
+
             persona = _persona_text(cid)
             cname = (_char_store().get(cid) or {}).get("name") or cid
+            reasoning = str(job.get("reasoning") or "default")
+            use_agent = bool(job.get("agent")) and rt is not None
             msgs = [{"role": "system", "content": persona +
                      f"\n\n【对话场景】你现在在网页面板里和主人聊天，你就是{cname}。像手机聊天一样说短句，别用 Markdown。"}]
             kb_ctx = _kb_context(job["text"], cid)
@@ -584,7 +699,39 @@ def _chat_worker() -> None:
                 if e.get("role") in ("user", "assistant"):
                     msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
             msgs.append({"role": "user", "content": job["text"]})
-            text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
+
+            # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
+            if use_agent:
+                try:
+                    res = _web_agent_call(rt, msgs, cid, reasoning)
+                    reply_agent = str(res.get("text") or "").strip()
+                    if reply_agent:
+                        text = reply_agent
+                        tool_calls = len(res.get("tool_calls") or [])
+                        _append_jsonl(MSG_JSONL, {"ts": time.time(),
+                                                  "chat_id": "web:" + job["session"],
+                                                  "role": "assistant", "text": text[:800]})
+                        _append_jsonl(CHAT_JSONL, {
+                            "ts": time.time(), "session": job["session"], "character": cid,
+                            "role": "assistant", "text": text,
+                            "elapsed": round(time.time() - t0, 1),
+                            "tools": tool_calls, "via": "agent",
+                        })
+                        with _lock:
+                            _chat_state["running"] = None
+                        continue
+                except Exception as e:                             # noqa: BLE001
+                    logger.warning("网页 agent 失败，回退普通聊天: %s", e)
+
+            kw = {}
+            if reasoning and reasoning != "default":
+                # 推理强度：映射到常见参数；不认识的原样透传
+                kw["reasoning_effort"] = reasoning
+            try:
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, **kw)
+            except TypeError:
+                # 模型层不认 reasoning_effort 就不带它
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
             _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + job["session"],
                                       "role": "assistant", "text": text[:800]})
         except Exception as e:                                 # noqa: BLE001
@@ -2104,7 +2251,9 @@ class Handler(BaseHTTPRequestHandler):
                                       "chat_id": "web:" + (session or "studio-main"),
                                       "role": "user", "text": text[:800]})
             _chat_q.put({"session": session or "studio-main", "text": text[:4000],
-                         "character": cid, "eid": eid})
+                         "character": cid, "eid": eid,
+                         "agent": bool(body.get("agent")),
+                         "reasoning": str(body.get("reasoning") or "default")[:16]})
             self._json({"ok": True, "queued": True,
                         "position": _chat_q.qsize(),
                         "note": "可莉正在从蒙德赶过来（约 35 秒）"})

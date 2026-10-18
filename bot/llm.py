@@ -217,7 +217,8 @@ class ModelStore:
     def complete_raw(self, messages: list, *, model: str | None = None,
                      provider: str | None = None, timeout: float = 90,
                      temperature: float = 0.85, max_tokens: int = 800,
-                     tools: list | None = None, tool_choice: str | None = None) -> dict:
+                     tools: list | None = None, tool_choice: str | None = None,
+                     extra_body: dict | None = None) -> dict:
         """调一次 chat/completions，返回 {text, tool_calls, finish_reason}。
 
         `tool_calls` 已归一化成 [{id, name, arguments}]；没有工具调用就是 []。
@@ -245,6 +246,10 @@ class ModelStore:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
+        if extra_body:                       # reasoning_effort 等可选参数（不认识的模型会忽略）
+            for k, v in extra_body.items():
+                if v is not None:
+                    payload[k] = v
         req = urllib.request.Request(
             f"{api}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -297,9 +302,12 @@ class ModelStore:
 
     def chat(self, messages: list, *, model: str | None = None, provider: str | None = None,
              timeout: float = 90,
-             temperature: float = 0.85, max_tokens: int = 800) -> str:
+             temperature: float = 0.85, max_tokens: int = 800,
+             reasoning_effort: str | None = None) -> str:
+        extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else None
         res = self.complete_raw(messages, model=model, provider=provider, timeout=timeout,
-                                temperature=temperature, max_tokens=max_tokens)
+                                temperature=temperature, max_tokens=max_tokens,
+                                extra_body=extra)
         text = str(res.get("text") or "").strip()
         if not text:
             raise RuntimeError("模型返回空内容")
