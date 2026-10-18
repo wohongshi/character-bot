@@ -7,7 +7,7 @@ import random
 from _plugstore import chat_key, db_get, db_set, state_path
 
 NAME = "藏宝图"
-DESCRIPTION = "可莉画藏宝图，你来挖：.藏宝图、.挖宝 B3"
+DESCRIPTION = "她画藏宝图，你来挖：.藏宝图、.挖宝 B3"
 VERSION = "1.0"
 CHARACTERS = ("klee",)
 

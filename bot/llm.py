@@ -37,7 +37,7 @@ DEFAULT_PROVIDERS = [
     },
     {
         "id": "mimo",
-        "name": "MiMo 本地(8080)",
+        "name": "MiMo 本地（8080）",
         "api": "http://127.0.0.1:8080/v1",
         "key_env": "MIMO_API_KEY",
         "models": ["mimo-v2.5-tts"],

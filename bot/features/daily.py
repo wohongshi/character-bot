@@ -157,7 +157,7 @@ def render_daily(db: dict, d: _dt.date, out_path, when: str = "今天") -> bool:
         # 头部
         dr.text((34, 36), f"素材小抄", font=f_title, fill=GOLD)
         dr.text((36, 90), f"{when}（{date_cn}）", font=f_sub, fill=LIGHT)
-        hint = "周日全开——想刷什么刷什么！" if sunday else "可莉帮你看好啦，按地区排的～"
+        hint = "周日全开——想刷什么刷什么！" if sunday else "按地区排好了～"
         dr.text((36, 116), hint, font=f_tag, fill=MUTED)
         dr.line([(34, 152), (W - 34, 152)], fill=GOLD_DIM, width=2)
 
@@ -191,7 +191,7 @@ def render_daily(db: dict, d: _dt.date, out_path, when: str = "今天") -> bool:
         dr.line([(34, fy), (W - 34, fy)], fill=(72, 66, 118), width=1)
         dr.text((34, fy + 12), "轮换：一/四 · 二/五 · 三/六，周日全开", font=f_foot, fill=MUTED)
         dr.text((34, fy + 38), "数据：biligame 原神 WIKI", font=f_foot, fill=(120, 114, 158))
-        dr.text((W - 130, fy + 38), "可莉 bot", font=f_brand, fill=GOLD_DIM)
+        dr.text((W - 130, fy + 38), "素材日历", font=f_brand, fill=GOLD_DIM)
 
         _cardimg.save_img(canvas, out_path)
         return True
@@ -236,11 +236,11 @@ def register(api):
                 key = _cardimg.rcache_key("daily", DAILY_CACHE_V, db.get("updated"), d.isoformat(), when)
                 if await asyncio.to_thread(_cardimg.rcache_render, settings, BASE, "daily", key, out,
                                            lambda: render_daily(db, d, out, when)):
-                    caption = f"🌸 可莉的素材小抄（{d.month}月{d.day}日 周{WEEK_CN[d.weekday()]}·{when}）"
+                    caption = f"🌸 每日素材小抄（{d.month}月{d.day}日 周{WEEK_CN[d.weekday()]}·{when}）"
                     if await _cardimg.send_card(ctx, out, caption, pattern="daily-*.png"):
                         return
         await ctx.reply(fmt_daily(d, db, when))
 
     api.on_command("每日素材", daily_cmd, aliases=("今日素材", "素材", "今日秘境", "每日秘境"),
                    cooldown=8,
-                   help=".每日素材 [明天] —— 今天/明天该刷哪个天赋书、武器突破秘境（可莉帮你查好）")
+                   help=".每日素材 [明天] —— 今天/明天该刷哪个天赋书、武器突破秘境（她帮你查好）")

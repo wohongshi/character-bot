@@ -1,4 +1,4 @@
-"""纪念日：``.纪念日 12-25 圣诞节`` —— 记一个日子，可莉帮你数着还有几天。
+"""纪念日：``.纪念日 12-25 圣诞节`` —— 记一个日子，她帮你数着还有几天。
 
 用法：
   ``.纪念日 12-25 圣诞节``        # 每年重复（也认 ``12月25日``）
@@ -24,7 +24,7 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 NAME = "纪念日"
-DESCRIPTION = "纪念日倒数：.纪念日 12-25 圣诞节 记一个日子，可莉帮你数天数"
+DESCRIPTION = "纪念日倒数：.纪念日 12-25 圣诞节 记一个日子，她帮你数天数"
 VERSION = "1.1"
 
 MAX_PER_CHAT = 30
@@ -234,7 +234,7 @@ async def announce_once(api, now: Optional[datetime] = None) -> int:
             continue                                          # 今天已经播过
         names = "、".join(f"「{_safe(it.get('name', '?'), _NAME_MAX)}」" for it in items)
         try:
-            await _deliver(api, chat, f"🎉 今天就是 {names} 呀！可莉一直记着的，一起过吧[表情:呲牙]")
+            await _deliver(api, chat, f"🎉 今天就是 {names} 呀！她一直记着的，一起过吧[表情:呲牙]")
         except Exception as e:                                # noqa: BLE001
             logger.warning("纪念日：播报 %s 失败（稍后自动重试）— %s: %s",
                            chat, type(e).__name__, e)
@@ -287,8 +287,8 @@ def register(api):
             # QQ 上看到的会是「3 圣诞节…」。用「3.」这种点号编号才是所见即所得。
             lines.append(f"  {int(it.get('id', 0))}. {mark}{it.get('name', '?')}"
                          f"（{date_label(it)}）—— {describe(it)}")
-        head = f"📅 可莉的纪念日小本本（最近 {within} 天）：" if within is not None \
-            else "📅 可莉的纪念日小本本："
+        head = f"📅 她的纪念日小本本（最近 {within} 天）：" if within is not None \
+            else "📅 她的纪念日小本本："
         await ctx.reply(head + "\n" + "\n".join(lines))
 
     async def add(ctx, raw: str):
@@ -321,7 +321,7 @@ def register(api):
         d["items"].append(item)
         _save(d)
         when = date_label(item) + ("（每年）" if parsed["year"] is None else "（一次性）")
-        await ctx.reply(f"记好啦！{when}「{name}」—— {describe(item)}，可莉会帮你数着的[表情:呲牙]")
+        await ctx.reply(f"记好啦！{when}「{name}」—— {describe(item)}，她会帮你数着的[表情:呲牙]")
 
     async def delete(ctx, arg: str) -> None:
         arg = _safe(arg.strip(), _LABEL_MAX)

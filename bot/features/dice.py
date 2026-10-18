@@ -20,7 +20,7 @@ def register(api):
         if not m and norm:
             m = _EXPR_HEAD.match(norm)          # 「.r 2d6 来一发」：认开头的表达式，尾巴忽略
         if not m:
-            await ctx.reply("诶，格式可莉看不懂啦——写成「.r 2d6+1」好不好？（2 颗六面骰再加 1）")
+            await ctx.reply("诶，格式她看不懂啦——写成「.r 2d6+1」好不好？（2 颗六面骰再加 1）")
             return
         count = max(1, min(int(m.group(1) or 1), 20))
         sides = max(2, min(int(m.group(2)), 10000))
@@ -33,6 +33,6 @@ def register(api):
         if bonus:
             detail += f" {'+' if bonus > 0 else '−'} {abs(bonus)}"
         total = sum(rolls) + bonus
-        await ctx.reply(f"🎲 可莉帮你摇：{count}d{sides}{bonus_s} → {detail} = 【{total}】")
+        await ctx.reply(f"🎲 她帮你摇：{count}d{sides}{bonus_s} → {detail} = 【{total}】")
 
     api.on_command("r", roll, aliases=("roll", "骰子", "dice"), help=".r 2d6+1 —— 掷骰子")

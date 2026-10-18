@@ -11,7 +11,7 @@ import random
 import time
 
 NAME = "复读机"
-DESCRIPTION = "群里连续同样的消息，可莉会跟着说一遍"
+DESCRIPTION = "群里连续同样的消息，她会跟着说一遍"
 VERSION = "1.0"
 
 _DEFAULTS = {"threshold": 3, "cooldown": 180.0, "chance": 0.9}

@@ -1,8 +1,8 @@
-"""成语接龙：``.接龙`` 开局 → 可莉出题，你发 ``.接 <成语>`` 接下去；接不上 ``.认输``。
+"""成语接龙：``.接龙`` 开局 → 她出题，你发 ``.接 <成语>`` 接下去；接不上 ``.认输``。
 
 规则（同字接龙）：
-* 你发的成语必须四个汉字、且**首字等于可莉上一个成语的末字**；
-* 可莉再从自己小本本里挑一个以你末字开头的成语接回去；挑不到就认输（你赢）；
+* 你发的成语必须四个汉字、且**首字等于她上一个成语的末字**；
+* 她再从自己小本本里挑一个以你末字开头的成语接回去；挑不到就认输（你赢）；
 * 用过的成语不再重复用；群里大家都能接（同一局共享）。
 
 状态放 api.state（内存，按聊天独立）；超过 2 小时没动静的残局下次开局自动作废。
@@ -20,7 +20,7 @@ STALE_AFTER = 2 * 3600
 TAIL_LINES = [
     "接不上就 .认输 嘛～",
     "（不会的话 .认输 也可以的哦）",
-    "嘿嘿，可莉可是成语小达人！",
+    "嘿嘿，她可是成语小达人！",
 ]
 
 # 常用四字成语（同字接龙的词库；要保证全四个字，测试里有断言）
@@ -95,8 +95,8 @@ def register(api):
         first = _seed()
         games[ctx.chat_id] = {"last": first, "used": [first], "ts": now,
                               "starter": ctx.user_id, "rounds": 0}
-        await ctx.reply(f"来玩成语接龙啦！可莉先来一个：\n  ✨ {first}\n"
-                        f"你要接「{first[-1]}」开头的那四个字哦～发「.接 <成语>」给可莉吧！\n"
+        await ctx.reply(f"来玩成语接龙啦！她先来一个：\n  ✨ {first}\n"
+                        f"你要接「{first[-1]}」开头的那四个字哦～发「.接 <成语>」给她吧！\n"
                         f"{random.choice(TAIL_LINES)}")
 
     async def chain_cmd(ctx):
@@ -125,13 +125,13 @@ def register(api):
         nxt = options_for(word[-1], set(g["used"]))
         if not nxt:
             del games[ctx.chat_id]
-            await ctx.reply(f"「{word}」……可莉接不上「{word[-1]}」开头的了，这局你赢啦！🎉\n"
+            await ctx.reply(f"「{word}」……她接不上「{word[-1]}」开头的了，这局你赢啦！🎉\n"
                             f"（一共接了 {g['rounds']} 轮，好厉害～再来一局就说 .接龙）")
             return
         pick = random.choice(nxt)
         g["used"].append(pick)
         g["last"] = pick
-        await ctx.reply(f"可莉接：✨ {pick}\n轮到你啦——接「{pick[-1]}」开头的！")
+        await ctx.reply(f"她接：✨ {pick}\n轮到你啦——接「{pick[-1]}」开头的！")
 
     async def quit_cmd(ctx):
         games = _games(api)
@@ -139,11 +139,11 @@ def register(api):
         if not g:
             await ctx.reply("现在没有进行中的接龙哦～")
             return
-        await ctx.reply(f"好，这局算可莉赢！刚才接到「{g['last']}」，一共 {g.get('rounds') or 0} 轮～\n"
+        await ctx.reply(f"好，这局算她赢！刚才接到「{g['last']}」，一共 {g.get('rounds') or 0} 轮～\n"
                         f"再来就说 .接龙")
 
     api.on_command("接龙", start_cmd, aliases=("成语接龙", "idiom"), cooldown=3,
-                   help=".接龙 —— 和可莉玩成语接龙（.接 <成语> / .认输）")
+                   help=".接龙 —— 和她玩成语接龙（.接 <成语> / .认输）")
     api.on_command("接", chain_cmd, cooldown=0,
                    help=".接 <成语> —— 接上一个成语（首字要匹配）")
     api.on_command("认输", quit_cmd, aliases=("不接了",), cooldown=3,

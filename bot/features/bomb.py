@@ -8,7 +8,7 @@ import random
 from _plugstore import clip
 
 NAME = "炸弹工坊"
-DESCRIPTION = "可莉的炸弹配方与炸鱼战报：.炸弹 [材料]、.炸鱼"
+DESCRIPTION = "炸弹配方与炸鱼战报：.炸弹 [材料]、.炸鱼"
 VERSION = "1.0"
 CHARACTERS = ("klee",)
 

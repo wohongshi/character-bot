@@ -31,8 +31,8 @@ CONFIG_SCHEMA = {
     "timeout": {"type": "int", "default": 90, "min": 10, "max": 300, "description": "生图接口超时（秒）"},
 }
 
-NAME = "可莉画画"
-DESCRIPTION = "让可莉画一张图：.画画 <提示词>（云端文生图）"
+NAME = "画画"
+DESCRIPTION = "让她画一张图：.画画 <提示词>（云端文生图）"
 VERSION = "1.1"
 
 # 角色限定：只有这些角色启用；空 = 通用插件（可在面板关闭）

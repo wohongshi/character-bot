@@ -1,4 +1,4 @@
-"""帮我选：``.帮我选 火锅 烧烤 面条`` —— 选择困难症交给可莉。
+"""帮我选：``.帮我选 火锅 烧烤 面条`` —— 选择困难症交给她。
 
 用法：
   ``.帮我选 火锅 烧烤 面条``      # 空格分
@@ -7,14 +7,14 @@
 
 - 2~8 个选项；选项里的引号会去掉、方括号会洗掉（防 ``[CQ:at,qq=all]`` 那类出站富文本注入）
 - 无状态、纯离线（不写任何文件），所以干跑/测试天然干净
-- 随机挑选 + 可莉味理由；冷却 3 秒，不满意可以再点
+- 随机挑选 + 她味理由；冷却 3 秒，不满意可以再点
 """
 
 import random
 import re
 
 NAME = "帮我选"
-DESCRIPTION = "选择困难？.帮我选 火锅 烧烤 面条 —— 可莉帮你挑一个"
+DESCRIPTION = "选择困难？.帮我选 火锅 烧烤 面条 —— 她帮你挑一个"
 VERSION = "1.0"
 
 MAX_OPTIONS = 8
@@ -45,10 +45,10 @@ def _trim_wrappers(s: str) -> str:
 
 REASONS = (
     "闭上眼睛随便指一个，就是它了。",
-    "可莉把骰子丢进火花里，蹦出来的就是它！",
+    "她把骰子往空中一丢，蹦出来的就是它！",
     "嗯……感觉今天特别适合这个。",
     "蹦蹦炸弹的弹道算过了，就它啦。",
-    "可莉数了三下，数到它。",
+    "她数了三下，数到它。",
     "别的都先放放，今天就它吧。",
 )
 
@@ -99,12 +99,12 @@ def register(api):
                             f"（多写几个我才好挑：.帮我选 {opts[0]} 别的）")
             return
         if len(opts) > MAX_OPTIONS:
-            await ctx.reply(f"选项太多啦（{len(opts)} 个），可莉最多比 {MAX_OPTIONS} 个～"
+            await ctx.reply(f"选项太多啦（{len(opts)} 个），她最多比 {MAX_OPTIONS} 个～"
                             f"先砍掉几个再来？")
             return
         picked = pick(opts)
-        await ctx.reply(f"可莉帮你想好啦：**{picked}**\n{random.choice(REASONS)}\n"
+        await ctx.reply(f"她帮你想好啦：**{picked}**\n{random.choice(REASONS)}\n"
                         f"（从 {len(opts)} 个里挑的：{'、'.join(opts)}）")
 
     api.on_command("帮我选", cmd, aliases=("选择", "帮我决定", "决定", "选", "choose"),
-                   cooldown=3, help=".帮我选 a b c —— 选择困难交给可莉（2~8 个选项）")
+                   cooldown=3, help=".帮我选 a b c —— 选择困难交给她（2~8 个选项）")

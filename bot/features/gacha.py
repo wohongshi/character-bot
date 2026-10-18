@@ -21,7 +21,7 @@ import _cardimg  # noqa: E402
 logger = logging.getLogger(__name__)
 
 NAME = "抽卡"
-DESCRIPTION = "可莉牌十连开箱：.抽卡（发一张小卡片图）"
+DESCRIPTION = "十连开箱：.抽卡（发一张小卡片图）"
 VERSION = "1.1"
 
 # 角色限定：只有这些角色启用；空 = 通用插件（可在面板关闭）

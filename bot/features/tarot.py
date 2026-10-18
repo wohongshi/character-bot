@@ -20,7 +20,7 @@ import _cardimg  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-NAME = "可莉塔罗"
+NAME = "塔罗"
 DESCRIPTION = "塔罗占卜：.塔罗 [问的事] —— 抽一张大阿卡纳（发小卡片）"
 VERSION = "1.0"
 

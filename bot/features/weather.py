@@ -30,7 +30,7 @@ CONFIG_SCHEMA = {
     "timeout": {"type": "int", "default": 10, "min": 3, "max": 60, "description": "取数超时（秒）"},
 }
 
-NAME = "可莉天气"
+NAME = "天气"
 DESCRIPTION = "查天气：.天气 北京（wttr.in，出小卡片）"
 VERSION = "1.2"
 

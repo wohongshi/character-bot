@@ -6,8 +6,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-NAME = "可莉画廊"
-DESCRIPTION = "随机发一张可莉的图"
+NAME = "画廊"
+DESCRIPTION = "随机发一张她的图"
 VERSION = "1.0"
 
 # 角色限定：只有这些角色启用；空 = 通用插件（可在面板关闭）

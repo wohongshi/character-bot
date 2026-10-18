@@ -1,7 +1,7 @@
 """说给你听：.说 <文本> —— 用可莉的声音念一句（MIMO TTS，走适配器 [语音:] 管线）。"""
 
 NAME = "语音说说"
-DESCRIPTION = "让可莉用语音念一句话"
+DESCRIPTION = "让她用语音念一句话"
 VERSION = "1.0"
 
 CHARACTERS = ('klee',)

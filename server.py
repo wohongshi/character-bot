@@ -280,7 +280,7 @@ def qq_health(state_path: Path | None = None) -> dict:
         return {"connected": True, "age": age, "reason": "", "detail": ""}
     if BOT is None or not getattr(BOT, "runtime", None):
         return {"connected": False, "age": None, "reason": "no_bot",
-                "detail": _BOT_IMPORT_ERR or "面板 bot 运行时未启动"}
+                "detail": _BOT_IMPORT_ERR or "面板 Bot 没跑起来"}
     try:
         st = BOT.runtime.ob.get_status()
         if st.get("online") is False or st.get("good") is False:
@@ -333,7 +333,7 @@ def alert_tick(now: float | None = None, health: dict | None = None,
             down_s = round(now - st["down_since"]) if st["down_since"] else None
             ev = {"ts": round(now, 1), "time": _hhmmss(now), "kind": "recovered",
                   "down_s": down_s,
-                  "text": f"QQ 已恢复连接（本次离线约 {down_s}s）" if down_s else "QQ 已恢复连接"}
+                  "text": f"QQ 已恢复连接（这次离线 {down_s} 秒）" if down_s else "QQ 已恢复连接"}
         st["down_since"], st["alerted"], st["last_seen_up"] = None, False, now
         if ev:
             _append_jsonl(target, ev)
@@ -347,7 +347,7 @@ def alert_tick(now: float | None = None, health: dict | None = None,
         ev = {"ts": round(now, 1), "time": _hhmmss(now), "kind": "offline",
               "down_s": round(down), "reason": h.get("reason") or "qq_offline",
               "detail": h.get("detail") or "",
-              "text": f"QQ 掉线已超过 {round(down)}s：{h.get('detail') or h.get('reason') or '未知原因'}"}
+              "text": f"QQ 掉线已超过 {round(down)} 秒：{h.get('detail') or h.get('reason') or '未知原因'}"}
         _append_jsonl(target, ev)
         return ev
     return None
@@ -702,7 +702,7 @@ def _chat_worker() -> None:
         cid = str(job.get("character") or _active_cid())
         try:
             if BOT is None:
-                raise RuntimeError(_BOT_IMPORT_ERR or "面板 bot 未启动")
+                raise RuntimeError(_BOT_IMPORT_ERR or "面板 Bot 没跑起来")
             rt = BOT.runtime
 
             # ---- 网页端也走插件层：命令 / 钩子 / NLU 与 QQ 同一套 ----
@@ -1756,6 +1756,14 @@ def _models_get() -> dict:
             "data": safe}
 
 
+# 工具在面板上的中文名（内部 id 只放 title，别让用户对着 web_search 猜）
+_TOOL_LABELS = {
+    "web_search": "搜网页", "web_fetch": "读网页", "kb_search": "查知识库",
+    "now": "看时间", "calc": "算数", "list_skills": "列技能",
+    "read_skill": "读技能", "use_skill": "用技能", "remember": "记事情", "recall": "想起来",
+}
+
+
 def _agent_get() -> dict:
     from bot.agent import ALL_TOOL_NAMES, TOOLS, resolve_tools
     cfg = BOT.config
@@ -1767,7 +1775,8 @@ def _agent_get() -> dict:
         "timeout": float(cfg.get("agent_timeout") or 120),
         "tools": resolve_tools(cfg.get("agent_tools")),
         "available_tools": [
-            {"name": n, "description": TOOLS[n]["spec"]["function"]["description"]}
+            {"name": n, "label": _TOOL_LABELS.get(n, n),
+             "description": TOOLS[n]["spec"]["function"]["description"]}
             for n in ALL_TOOL_NAMES],
         "model": BOT.models.agent() if hasattr(BOT.models, "agent") else {},
         "skills": bool(cfg.get("agent_skills", True)),
@@ -2612,7 +2621,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == "restart_gateway":
                 if BOT:
                     BOT.reload()
-                self._json({"ok": True, "msg": "面板 bot 插件已重载（不依赖 Hermes 网关）"})
+                self._json({"ok": True, "msg": "插件已重载（不影响 QQ 连接）"})
             elif action == "reload_features":
                 RELOAD_MARK.touch()
                 self._json({"ok": True, "msg": "已触发重载（≤20 秒）"})

@@ -10,7 +10,7 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-NAME = "可莉一言"
+NAME = "一言"
 DESCRIPTION = "随机来一句名言：.一言（hitokoto，断网有兜底）"
 VERSION = "1.0"
 

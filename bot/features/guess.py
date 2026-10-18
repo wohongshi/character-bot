@@ -36,7 +36,7 @@ def register(api):
             return
         games[ctx.chat_id] = {"target": _new_target(), "left": TRIES,
                               "ts": now, "starter": ctx.user_id}
-        await ctx.reply(f"来猜数字啦！可莉心里想了一个 1~100 的数字，"
+        await ctx.reply(f"来猜数字啦！她心里想了一个 1~100 的数字，"
                         f"给大家 {TRIES} 次机会～\n用「.猜 42」这样告诉我！")
 
     async def guess_cmd(ctx):

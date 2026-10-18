@@ -7,19 +7,19 @@ settings 可配：``bad_words``（列表）、``reply``（回复文案）、``co
 import time
 
 NAME = "屏蔽词"
-DESCRIPTION = "屏蔽词过滤：settings.bad_words 命中即拦下（默认空表 = 不启用）"
+DESCRIPTION = "屏蔽词过滤：命中就拦下来不回。词表空着就等于没开"
 VERSION = "1.0"
 
 # 面板「插件 → 设置」按这个 schema 自动出表单（AstrBot _conf_schema 风格）
 CONFIG_SCHEMA = {
     "bad_words": {"type": "list", "default": [], "description": "屏蔽词，一行一个（空 = 不启用）"},
-    "reply": {"type": "str", "default": "琴团长会生气的！可莉不听这些～",
+    "reply": {"type": "str", "default": "这些不聊啦～换个话题吧",
               "description": "命中后回复的文案", "max_len": 200},
     "cooldown": {"type": "int", "default": 60, "min": 0, "max": 3600,
                  "description": "冷却（秒）：冷却期内静默拦截，不回复"},
 }
 
-DEFAULT_REPLY = "琴团长会生气的！可莉不听这些～"
+DEFAULT_REPLY = "这些不聊啦～换个话题吧"
 
 
 def register(api):

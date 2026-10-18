@@ -546,7 +546,7 @@ TOOLS = {
             "type": "function",
             "function": {
                 "name": "kb_search",
-                "description": "检索本地知识库（原神设定、可莉语料等）。回答设定/背景类问题时先查它。",
+                "description": "检索这个角色的知识库（设定、台词、语料）。回答设定类问题时先查它。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -608,7 +608,7 @@ TOOLS = {
             "type": "function",
             "function": {
                 "name": "list_skills",
-                "description": "列出可用的机器人技能（=插件：原神查询/抽卡/塔罗/每日素材/角色卡……），可按关键词过滤。",
+                "description": "列出可用技能（其实就是插件：查设定、抽卡、塔罗、角色卡……），可按关键词过滤。",
                 "parameters": {
                     "type": "object",
                     "properties": {"query": {"type": "string", "description": "关键词；空 = 全部"}},

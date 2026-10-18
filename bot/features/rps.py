@@ -1,4 +1,4 @@
-"""猜拳：``.猜拳 石头`` —— 和可莉来一局；战绩记在 state/rps.json。
+"""猜拳：``.猜拳 石头`` —— 和她来一局；战绩记在 state/rps.json。
 
 - 出法：石头/剪刀/布，也认 ✊✌️🖐️ 和 rock/scissors/paper
 - 支持「.猜拳 石头」直接出；不写就出用法
@@ -15,7 +15,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 NAME = "猜拳"
-DESCRIPTION = "和可莉猜拳：.猜拳 石头 / 剪刀 / 布（还记战绩）"
+DESCRIPTION = "和她猜拳：.猜拳 石头 / 剪刀 / 布（还记战绩）"
 VERSION = "1.0"
 
 BASE = Path(__file__).resolve().parent / "state"
@@ -33,18 +33,18 @@ NORM = {
 }
 
 WIN_LINES = [
-    "诶——可莉的{klee}被你的{user}包住啦，这局你赢！",
-    "哒哒哒！你赢了，可莉的{klee}打不过你的{user}，呜。",
-    "你赢啦！可莉不服，再来一局嘛——（记在小本本上了）",
+    "诶——她的{klee}被你的{user}包住啦，这局你赢！",
+    "哒哒哒！你赢了，她的{klee}打不过你的{user}，呜。",
+    "你赢啦！她不服，再来一局嘛——（记在小本本上了）",
 ]
 LOSE_LINES = [
-    "嘻嘻，可莉的{klee}赢过你的{user}啦！再来再来！",
-    "这局可莉赢！蹦蹦炸弹的手气今天也很棒哦～",
-    "耶！可莉赢啦～你要不要试试点心贿赂可莉？",
+    "嘻嘻，她的{klee}赢过你的{user}啦！再来再来！",
+    "这局她赢！今天手气很棒哦～",
+    "耶！她赢啦～你要不要试试点心贿赂她？",
 ]
 DRAW_LINES = [
     "唔，都是{user}，平局！再来一次嘛～",
-    "平局呢……可莉和你想一块儿去了，嘿嘿。",
+    "平局呢……她和你想一块儿去了，嘿嘿。",
 ]
 
 
@@ -89,7 +89,7 @@ def register(api):
         raw = (ctx.arg_text or "").strip().split()[0] if (ctx.arg_text or "").strip() else ""
         choice = NORM.get(raw.lower()) or NORM.get(raw)
         if not choice:
-            await ctx.reply("跟可莉猜拳呀！出法：.猜拳 石头 / .猜拳 剪刀 / .猜拳 布\n"
+            await ctx.reply("跟她猜拳呀！出法：.猜拳 石头 / .猜拳 剪刀 / .猜拳 布\n"
                             "（✊✌️🖐️ 也认哦）")
             return
         klee = random.choice(CHOICES)
@@ -105,9 +105,9 @@ def register(api):
             line = random.choice(LOSE_LINES).format(klee=ke, user=ku)
         else:
             line = random.choice(DRAW_LINES).format(klee=ke, user=ku)
-        await ctx.reply(f"你出 {ku}{choice}，可莉出 {ke}{klee}——{line}\n"
+        await ctx.reply(f"你出 {ku}{choice}，她出 {ke}{klee}——{line}\n"
                         f"📒 {ctx.user_name} 的战绩：{rec['w']} 胜 {rec['l']} 负 {rec['d']} 平"
-                        + ("" if saved else "\n（呜，战绩本本暂时写不进去……可莉下次再记）"))
+                        + ("" if saved else "\n（呜，战绩本本暂时写不进去……她下次再记）"))
 
     api.on_command("猜拳", rps_cmd, aliases=("rps", "划拳"), cooldown=3,
-                   help=".猜拳 石头 —— 和可莉猜拳（石头/剪刀/布，战绩累计）")
+                   help=".猜拳 石头 —— 和她猜拳（石头/剪刀/布，战绩累计）")

@@ -18,7 +18,7 @@ import re
 import time
 
 NAME = "关键词回复"
-DESCRIPTION = "关键词自动回复：settings.keyword.rules 配置（contains/exact/regex）"
+DESCRIPTION = "关键词自动回复：有人说到这个词，她就回一句。在「插件 → 设置」里配规则"
 VERSION = "1.0"
 
 

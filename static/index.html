@@ -1114,6 +1114,26 @@ function mdLite(h){
 function fmt(t){ return mdLite(faces(t)); }
 function hhmm(ts){ const d = new Date(ts*1000); return d.toTimeString().slice(0,5); }
 function hhmmss(ts){ const d = new Date(ts*1000); return d.toTimeString().slice(0,8); }
+/* 秒数 → 人话：45 秒 / 3 分 12 秒 / 2 小时 5 分 / 3 天 4 小时 */
+function durText(sec){
+  if (sec === null || sec === undefined || isNaN(sec)) return "—";
+  const n = Math.max(0, Math.round(Number(sec)));
+  if (n < 60) return n + " 秒";
+  if (n < 3600) return Math.floor(n / 60) + " 分 " + (n % 60) + " 秒";
+  if (n < 86400) return Math.floor(n / 3600) + " 小时 " + Math.floor((n % 3600) / 60) + " 分";
+  return Math.floor(n / 86400) + " 天 " + Math.floor((n % 86400) / 3600) + " 小时";
+}
+const ageText = durText;
+
+/* NapCat 登录阶段：内部枚举值不直接给用户看。
+   取值来自 NapCat 前端：waiting_qrcode / qrcode / ready / reconnecting。 */
+const PHASE_TEXT = {
+  waiting_qrcode: "等待扫码", qrcode: "等待扫码", waiting_scan: "等待扫码",
+  waiting_confirm: "等待手机确认", waiting_bind: "等待绑定",
+  ready: "已登录", online: "已登录", login_ready: "已登录",
+  reconnecting: "重连中", offline: "离线", stopped: "已停止",
+};
+function phaseText(ph){ return PHASE_TEXT[ph] || (ph ? "未知阶段" : "—"); }
 const _apiInflight = new Map();
 async function api(path){
   // 同一 URL 并发只发一次（切页/轮询重叠时很常见）
@@ -1242,12 +1262,12 @@ function closeSheet(){ document.getElementById("sheet").classList.remove("on"); 
 /* ================= 命令面板（Ctrl+K） ================= */
 const PAGES = [
   ["chat", "💬", "对话", "和当前角色聊天"],
-  ["chars", "🎭", "角色", "切换出演 / 导入角色包"],
+  ["chars", "🎭", "角色", "切换角色 / 导入角色包"],
   ["board", "📊", "看板", "消息、走势、好感度"],
   ["persona", "🌸", "人格 · 知识库", "SOUL 与检索"],
   ["plugins", "🧩", "插件", "当前角色专属 + 通用"],
   ["reminders", "⏰", "提醒", "提醒与纪念日"],
-  ["ops", "⚙️", "运维 · 机器人", "连接、二维码、模型"],
+  ["ops", "⚙️", "运维 · 机器人", "连接、配置、模型"],
   ["custom", "✨", "自定义", "配色、气泡、模块"],
 ];
 let cmdItems = [], cmdIdx = 0, cmdPluginCache = null, cmdPluginTs = 0;
@@ -1273,7 +1293,7 @@ function cmdkBuild(q){
   });
   ((charData && charData.items) || []).forEach(c => {
     if (!needle || (c.name + c.en + c.tagline).toLowerCase().includes(needle))
-      out.push({ic: c.emoji || "🎭", title: "切换到 " + c.name, sub: c.active ? "当前出演" : "角色",
+      out.push({ic: c.emoji || "🎭", title: "切换到 " + c.name, sub: c.active ? "当前角色" : "角色",
                 run: async () => {
                   if (c.active) return go("chars");
                   const r = await post("/api/characters/switch", {id: c.id});
@@ -1334,7 +1354,7 @@ function openPluginDrawer(name, meta){
     ${cmds.length ? cmds.map(c => `<div class="cmdrow"><code>.${esc(c.name)}</code>
         <span class="h">${esc(cmdHelpText(c))}</span>
         ${c.aliases && c.aliases.length ? `<span class="h alias">别名：${esc(c.aliases.join(" / "))}</span>` : ""}</div>`).join("")
-      : '<div class="kv">这个插件没有注册命令（可能只在消息钩子里工作）。</div>'}
+      : '<div class="kv">这个插件没有命令，只在消息里自动触发</div>'}
     <h4>状态</h4>
     <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
       <span class="tag" id="pdState">${m.enabled ? "● 已启用" : "○ 已停用"}</span>
@@ -1392,6 +1412,7 @@ async function loadPluginSchema(name){
     const v = d.values ? d.values[k] : f.default;
     const val = v === null || v === undefined ? "" : String(v);
     const hint = esc(f.description || "");
+    const label = hint || esc(k);          // 中文说明优先，没有才退回键名
     let ctl;
     if (f.type === "bool" || typeof f.default === "boolean"){
       ctl = `<select id="pls_${esc(k)}"><option value="true" ${val === "true" ? "selected" : ""}>开</option>
@@ -1403,7 +1424,7 @@ async function loadPluginSchema(name){
       ctl = `<input type="text" id="pls_${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : val)}"
              placeholder="${esc(String(f.default ?? ""))}">`;
     }
-    return `<label class="plrow" title="${hint}"><span>${esc(k)}${hint ? ` <i>${hint}</i>` : ""}</span>${ctl}</label>`;
+    return `<label class="plrow" title="${esc(k)}"><span>${label}</span>${ctl}</label>`;
   }).join("");
 }
 
@@ -1521,7 +1542,7 @@ function armChatPoll(){
   chat.timer = setInterval(() => { if (V === "chat") pollChat(); }, ms);
 }
 function sessLabel(s){
-  if (s === "studio-main") return "工作室主对话";
+  if (s === "studio-main") return "主对话";
   if (s === "studio-smoke") return "工作室试音";
   const m = /^studio-(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(s);
   return m ? `对话 ${m[1]}-${m[2]} ${m[3]}:${m[4]}` : s;
@@ -1533,8 +1554,8 @@ function heroHTML(){
       <img src="${charArt(ACTIVE.id)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:50% 16%" onerror="artFallback(this)">
       <div style="position:absolute;left:10px;bottom:8px;font-size:28px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))">${ACTIVE.emoji}</div>
     </div>
-    <div class="hbub">${esc(ACTIVE.greeting || (ACTIVE.name + "在这里哦～"))}<br>想聊点什么呀？
-      <small>${esc(ACTIVE.hero_note || ("人格与知识库都属于 " + ACTIVE.name + "；切换角色请到「角色」页。"))}</small>
+    <div class="hbub">${esc(ACTIVE.greeting || (ACTIVE.name + "在这里"))}<br>说点什么吧
+      <small>${esc(ACTIVE.hero_note || "切换角色去「角色」页")}</small>
     </div>
   </div>`;
 }
@@ -1552,7 +1573,7 @@ async function viewChat(){
         <span class="tg">${esc(ACTIVE.tagline || ACTIVE.hero_note || "")}</span>
         <span class="badges">
           <span class="tag">${esc(ACTIVE.emoji)} ${esc(ACTIVE.en || ACTIVE.id)}</span>
-          <span class="tag">📚 ${(ACTIVE.kb && ACTIVE.kb.chunks) ? ACTIVE.kb.chunks + " 块记忆" : "知识库"}</span>
+          <span class="tag">📚 ${(ACTIVE.kb && ACTIVE.kb.chunks) ? ACTIVE.kb.chunks + " 块知识" : "知识库"}</span>
           <span class="tag">🧩 ${(ACTIVE.plugins || []).length} 个专属插件</span>
         </span>
       </div>
@@ -1564,10 +1585,10 @@ async function viewChat(){
       <button class="btn tiny ${chatOpts.agent ? "tabon" : ""}" id="agentBtn" title="Agent 工具循环：让她自己查资料/翻知识库/算数（参照「插件」页的 Agent 设置）"
               onclick="chatOpts.agent=!chatOpts.agent;this.classList.toggle('tabon',chatOpts.agent);localStorage.setItem('ks_agent',chatOpts.agent?'1':'0');flash(chatOpts.agent?'Agent 已开：她会自己查资料':'Agent 已关')">🧠 Agent</button>
       <select id="reasonSel" title="推理强度：让模型多想一会儿再答" onchange="chatOpts.reasoning=this.value;localStorage.setItem('ks_reasoning',this.value)">
-        <option value="default" ${chatOpts.reasoning==="default"?"selected":""}>🪶 常规</option>
+        <option value="default" ${chatOpts.reasoning==="default"?"selected":""}>🪶 默认</option>
         <option value="low" ${chatOpts.reasoning==="low"?"selected":""}>⚡ 快</option>
-        <option value="medium" ${chatOpts.reasoning==="medium"?"selected":""}>🪶 中</option>
-        <option value="high" ${chatOpts.reasoning==="high"?"selected":""}>🧠 Max</option>
+        <option value="medium" ${chatOpts.reasoning==="medium"?"selected":""}>🧠 中</option>
+        <option value="high" ${chatOpts.reasoning==="high"?"selected":""}>🧠 深思</option>
       </select>
       <span class="kv" id="chatStat"></span>
     </div>
@@ -1640,7 +1661,7 @@ function bubble(m){
       <div class="meta">${hhmm(m.ts)}</div></div></div>`;
   const err = m.error ? `<div class="meta">⚠ ${esc(m.error)}</div>` : "";
   return `<div class="msg klee">${charAva()}<div><div class="bub">${fmt(m.text || "(没接上话……再试一次？)")}</div>
-    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 跑了 ${m.elapsed}s` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}</div>${err}</div></div>`;
+    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 用时 ${m.elapsed} 秒` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}</div>${err}</div></div>`;
 }
 let lastRunning = null;
 function updateToBottom(){
@@ -1749,10 +1770,10 @@ async function viewCustom(keep){
       <h3>🎨 颜色</h3>
       <div class="fld"><label>主色</label>
         <div class="swatches">${PRESET_ACCENTS.map(c => `<span class="swatch ${c === UI.accent ? "on" : ""}" data-c="${c}" style="background:${c}" onclick="document.getElementById('uiAccent').value='${c}';uiPreview()"></span>`).join("")}</div>
-        <input type="text" id="uiAccent" value="${esc(UI.accent || "")}" placeholder="留空 = 用角色主题的 --red" oninput="uiPreview()">
+        <input type="text" id="uiAccent" value="${esc(UI.accent || "")}" placeholder="留空 = 跟角色配色" oninput="uiPreview()">
       </div>
       <div class="fld" style="margin-top:10px"><label>辅色（渐变第二色）</label>
-        <input type="text" id="uiAccent2" value="${esc(UI.accent2 || "")}" placeholder="留空 = 用角色主题的 --gold" oninput="uiPreview()">
+        <input type="text" id="uiAccent2" value="${esc(UI.accent2 || "")}" placeholder="留空 = 跟角色配色" oninput="uiPreview()">
       </div>
       <div class="fld" style="margin-top:10px"><label>背景花纹</label>
         ${seg("uiBg", UI.bg, [["aurora","极光"],["sakura","樱色"],["grid","网格"],["plain","纯色"]])}
@@ -1850,7 +1871,7 @@ async function viewPersona(){
     <h3>📝 人格（SOUL.md）</h3>
     <div class="statgrid">
       <div class="stat"><b id="pChars">—</b><span>字符数</span></div>
-      <div class="stat"><b id="pTok">—</b><span>预估 token</span></div>
+      <div class="stat"><b id="pTok">—</b><span>预估 Token</span></div>
       <div class="stat"><b id="pAge">—</b><span>上次修改</span></div>
     </div>
     <textarea class="code" id="soul" spellcheck="false">${esc(p.soul || "")}</textarea>
@@ -1862,7 +1883,7 @@ async function viewPersona(){
   </div>
   <div id="paneKb" style="display:none">
   <div class="card">
-    <div class="kv" style="margin:0 0 10px">≥ ${(d.threshold ?? 0.4)} 才注入</div>
+    <div class="kv" style="margin:0 0 10px">注入条件：相似度 ≥ ${(d.threshold ?? 0.4)}</div>
     <div class="statgrid">
       <div class="stat"><b>${d.chunks ?? "—"}</b><span>知识块</span></div>
       <div class="stat"><b>${d.dim ?? "—"}</b><span>向量维度</span></div>
@@ -1881,7 +1902,7 @@ async function viewPersona(){
       })()}
     </div>
     <div class="row" style="margin-top:8px">
-      <input type="text" id="kbQ" placeholder="检索试验：比如「她最在意什么」" style="flex:1;min-width:220px">
+      <input type="text" id="kbQ" placeholder="试检索，比如「她最在意什么」" style="flex:1;min-width:220px">
       <button class="btn primary" onclick="kbSearch()">检索</button>
     </div>
     <div id="kbOut" style="margin-top:10px"></div>
@@ -1981,7 +2002,7 @@ async function mountAgentCard(){
   const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || provs[0] || {models: []};
   slot.innerHTML = `
   <div class="card">
-    <h3>🛠️ Agent 能力 <span class="kv" style="font-family:var(--font-body)">工具循环</span></h3>
+    <h3>🛠️ 工具能力 <span class="kv" style="font-family:var(--font-body)">让她自己查资料、记事</span></h3>
     <div class="row">
       <label class="check"><input type="checkbox" id="agEnabled" ${agentCfg.enabled?"checked":""}> 启用工具循环</label>
       <label class="check"><input type="checkbox" id="agOwner" ${agentCfg.owner_only?"checked":""}> 只有主人能用</label>
@@ -2001,7 +2022,7 @@ async function mountAgentCard(){
     </div>
     <div class="kv" style="margin-top:10px">可用工具</div>
     <div class="row" id="agTools" style="margin-top:4px">
-      ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.name)}</label>`).join("")}
+      ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.label || t.name)}</label>`).join("")}
     </div>
     <div class="row" style="margin-top:10px">
       <button class="btn primary" onclick="botSaveAgent()">保存 Agent 设置</button>
@@ -2012,7 +2033,7 @@ async function mountAgentCard(){
   <div class="card">
     <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">Key 存 .env</span></h3>
     <div class="row" style="font-size:12px">
-      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${(p.models||[]).length} 个模型 · ${p.has_key===false?"⚠ 缺 key":"✓ key"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
+      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${(p.models||[]).length} 个模型 · ${p.has_key===false?"缺 Key":"Key 已设置"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
       <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
     </div>
     <div class="row" style="margin-top:10px;align-items:flex-end">
@@ -2093,7 +2114,7 @@ function renderPlugGrid(){
     }
     return true;
   });
-  if (!rows.length){ box.innerHTML = `<div class="kv">没有匹配的插件。</div>`; return; }
+  if (!rows.length){ box.innerHTML = `<div class="kv">没有匹配的插件</div>`; return; }
   box.innerHTML = rows.map(p => {
     const owner = !p.chars.length
       ? "通用"
@@ -2107,7 +2128,7 @@ function renderPlugGrid(){
       <div class="desc">${esc(p.description || "（没有说明）")}</div>
       <div class="foot"><span class="lock" style="${p.chars.length ? "" : "color:var(--ink-soft);border-color:var(--line)"}">${owner}</span>
         <span>${p.error ? "⚠ 加载失败" : (p.enabled ? "● 已启用" : "○ 已停用")}</span>
-        <span>⌘ ${p.commands}</span><span>· 命中 ${p.hits}</span>
+        <span>命令 ${p.commands}</span><span>命中 ${p.hits}</span>
         ${p.error ? `<span style="color:#c0392b">· 加载失败</span>` : ""}</div>
     </div>`;
   }).join("");
@@ -2115,7 +2136,7 @@ function renderPlugGrid(){
 /* ================= 运维 · 机器人（合并页） ================= */
 let opsBotTab = "ops";
 async function viewOpsBot(tab){
-  if (tab && tab !== opsBotTab) stopOpsTimers();   // 换子页先把旧二维码/日志定时器停掉
+  if (tab && tab !== opsBotTab) stopOpsTimers();   // 换子页先把旧日志/告警定时器停掉
   if (tab) opsBotTab = tab;
   const t = opsBotTab;
   $("view").innerHTML = `
@@ -2171,7 +2192,7 @@ async function viewBot(target){
     </div>
     <div class="row" style="margin-top:10px;font-size:12px">
       <span class="tag">模型 ${esc((act.provider||"—")+" / "+(act.model||"—"))}</span>
-      <span class="tag">${st.last_event_age_s == null ? "还没收到事件" : "上次事件 "+st.last_event_age_s+"s 前"}</span>
+      <span class="tag">${st.last_event_age_s == null ? "还没收到消息" : "上次消息 "+st.last_event_age_s+"s 前"}</span>
       ${st.error ? `<span class="tag">${esc(st.error)}</span>` : ""}
       ${feat.errors && feat.errors.length ? `<span class="tag">插件报错 ${esc(feat.errors.join(","))}</span>` : ""}
     </div>
@@ -2180,7 +2201,7 @@ async function viewBot(target){
   <div class="card">
     <h3>📈 运行时指标 <span class="kv" style="font-family:var(--font-body)">最近 60 秒 / 5 分钟</span></h3>
     <div class="statgrid">
-      <div class="stat"><b>${st.metrics.events_60s ?? 0}</b><span>近 60s 消息</span></div>
+      <div class="stat"><b>${st.metrics.events_60s ?? 0}</b><span>近 60 秒消息</span></div>
       <div class="stat"><b>${st.metrics.events_5m ?? 0}</b><span>近 5 分钟</span></div>
       <div class="stat"><b>${st.metrics.commands ?? 0}</b><span>命令</span></div>
       <div class="stat"><b>${st.metrics.errors ?? 0}</b><span>错误</span></div>
@@ -2476,7 +2497,7 @@ async function importZip(){
   }
 }
 
-/* 角色卡：选中（只高亮，不切换） / 切换出演（真的换人格） */
+/* 角色卡：选中（只高亮，不切换） / 切换角色（真的换人格） */
 function pickChar(id){
   charSel = id;
   document.querySelectorAll("#view .charitem").forEach(el =>
@@ -2490,7 +2511,7 @@ function pickChar(id){
       ? cur.plugins.map(p => `<span class="tag">${esc(p.title || p.name)}</span>`).join(" ")
       : "这个角色暂时没有专属插件（通用插件照常可用）";
   }
-  if (cur && !cur.active) flash(`已选中「${cur.name}」——点「切换出演」才会真的换人`);
+  if (cur && !cur.active) flash(`已选中「${cur.name}」——点「切换角色」才会真的换人`);
 }
 
 async function switchChar(id){
@@ -2529,7 +2550,7 @@ async function viewChars(){
   $("view").innerHTML = `
   <h2 class="page">🎭 角色</h2>
   <div class="row" style="margin-bottom:10px">
-    <button class="btn primary" onclick="toggleImport()">📦 导入角色 ZIP</button>
+    <button class="btn primary" onclick="toggleImport()">📦 导入角色包</button>
   </div>
   <div class="card" id="importBox" style="display:none;margin-bottom:14px">
     <h3>📦 导入角色包</h3>
@@ -2556,21 +2577,21 @@ async function viewChars(){
         <div class="artveil"></div>
         <span class="bigemoji">${esc(c.emoji)}</span>
         <span class="stars">${"★".repeat(5)}</span>
-        ${c.active ? `<span class="charbadge">✦ 当前出演</span>` : ""}
+        ${c.active ? `<span class="charbadge">✦ 当前角色</span>` : ""}
         <div class="artbody">
           <div class="nm">${esc(c.name)}</div>
           <div class="en">${esc(c.en || c.id)}</div>
           <div class="tagline">${esc(c.tagline)}</div>
           <div class="meta2">
-            <span>🧩 ${c.plugins.length} 专属</span>
-            <span>📚 ${c.kb && c.kb.chunks != null ? c.kb.chunks : "—"} 块</span>
+            <span>🧩 插件 ${c.plugins.length}</span>
+            <span>📚 知识 ${c.kb && c.kb.chunks != null ? c.kb.chunks : "—"} 块</span>
           </div>
           ${c.active ? `<div class="row" style="margin-top:9px;gap:6px">
               <button class="btn tiny" onclick="event.stopPropagation();go('custom')">✨ 自定义</button>
-              <button class="btn tiny" onclick="event.stopPropagation();go('persona')">🌸 人格·库</button>
+              <button class="btn tiny" onclick="event.stopPropagation();go('persona')">🌸 人格 / 知识库</button>
             </div>` : `<div class="row" style="margin-top:9px;gap:6px">
-              <button class="btn primary tiny" onclick="event.stopPropagation();switchChar('${esc(c.id)}')">切换出演</button>
-              <button class="btn tiny" onclick="event.stopPropagation();pickChar('${esc(c.id)}')">看人格</button>
+              <button class="btn primary tiny" onclick="event.stopPropagation();switchChar('${esc(c.id)}')">切换角色</button>
+              <button class="btn tiny" onclick="event.stopPropagation();pickChar('${esc(c.id)}')">看详情</button>
             </div>`}
         </div>
       </div>`).join("")}
@@ -2584,7 +2605,7 @@ async function viewChars(){
 /* ================= 开发规范 ================= */
 let docTab = "characters";
 /* ================= 知识库（已并入「人格 · 知识库」） ================= */
-/* ================= 提醒·日历 ================= */
+/* ================= 提醒 · 日历 ================= */
 let remindTimer = null;
 function _cd(due, now){
   const s = Math.max(0, due - now);
@@ -2643,18 +2664,18 @@ async function viewReminders(manual){
   }
   $("view").innerHTML = `
   <div class="row" style="justify-content:space-between;align-items:center">
-    <h2 class="page" style="margin:0">⏰ 提醒·日历</h2>
+    <h2 class="page" style="margin:0">⏰ 提醒 · 日历</h2>
     <span class="kv" style="margin:0"><span id="remindMsg"></span><button class="btn tiny" style="margin-left:8px" onclick="viewReminders(true)">⟳ 刷新</button></span>
   </div>
   <div class="card">
     <div class="row" style="justify-content:space-between">
-      <span class="kv" style="margin:0">共 <b id="remindCount">${items.length}</b> 条待提醒 · 每 30 秒自动刷新</span>
+      <span class="kv" style="margin:0"><b id="remindCount">${items.length}</b> 条待提醒 · 每 30 秒刷新</span>
     </div>
     <div style="margin-top:10px" id="remindList">${rows || '<div class="kv">还没有提醒</div>'}</div>
   </div>
   <div class="card">
     <div class="row" style="justify-content:space-between">
-      <span class="kv" style="margin:0">📅 纪念日小本本 · 共 <b id="annCount">${annTotal}</b> 个日子 · 每 30 秒自动刷新</span>
+      <span class="kv" style="margin:0">📅 纪念日 · <b id="annCount">${annTotal}</b> 个 · 每 30 秒刷新</span>
     </div>
     <div style="margin-top:10px" id="annList">${annRows || '<div class="kv">还没有纪念日</div>'}</div>
   </div>`;
@@ -2734,18 +2755,19 @@ async function viewFeed(target){
 // （以前混进 9 个后端根本不读的字段，点了保存也没用 —— 已删）
 const CFG_GROUPS = [
   {id: "conn", emoji: "🔌", title: "连接与账号", open: true,
-   note: "NapCat 地址 / token、主人 QQ、命令前缀",
+   note: "NapCat 地址 / Token、主人 QQ、命令前缀",
    fields: [
      {k:"napcat_http", label:"NapCat 地址", ph:"http://127.0.0.1:3101"},
-     {k:"napcat_token", label:"NapCat token", secret:true},
-     {k:"self_id", label:"机器人 QQ", hint:"首次收到事件会自动填"},
+     {k:"napcat_token", label:"NapCat Token", secret:true},
+     {k:"self_id", label:"机器人 QQ", hint:"首次收到消息会自动填"},
      {k:"owner_id", label:"主人 QQ"},
      {k:"feature_prefix", label:"插件命令前缀"},
    ]},
   {id: "chatstyle", emoji: "💬", title: "群聊与私聊", open: true,
    note: "群里怎么回、什么时候搭话、请求怎么处理",
    fields: [
-     {k:"group_policy", label:"群聊策略", opts:["mention","open","disabled"]},
+     {k:"group_policy", label:"群聊策略", opts:[
+       {v:"mention", t:"只在 @ 她时回"}, {v:"open", t:"每条都回"}, {v:"disabled", t:"不回复"}]},
      {k:"group_chime_probability", label:"群随机搭话概率", hint:"0~1"},
      {k:"group_chime_cooldown", label:"搭话冷却（秒）"},
      {k:"greet_on_group_add", label:"进群问候", bool:true},
@@ -2753,33 +2775,33 @@ const CFG_GROUPS = [
      {k:"request_notify", label:"好友/入群请求提醒主人", bool:true},
    ]},
   {id: "reply", emoji: "✍️", title: "回复风格", open: false,
-   note: "分段、限长、历史轮数、引用",
+   note: "分段、限长、历史消息数、引用",
    fields: [
      {k:"chat_enabled", label:"允许聊天回复", bool:true},
      {k:"split_sentences", label:"按句拆成多条气泡", bool:true},
      {k:"split_soft_max", label:"单个气泡软上限（字）"},
-     {k:"send_interval_min", label:"气泡间隔·最小（秒）"},
-     {k:"send_interval_max", label:"气泡间隔·最大（秒）"},
+     {k:"send_interval_min", label:"气泡间隔最小（秒）"},
+     {k:"send_interval_max", label:"气泡间隔最大（秒）"},
      {k:"max_reply_chars", label:"单条回复字数上限"},
-     {k:"max_tokens", label:"模型 max_tokens"},
-     {k:"history_messages", label:"带给模型的历史轮数"},
+     {k:"max_tokens", label:"单次输出上限（max_tokens）"},
+     {k:"history_messages", label:"带给模型的历史消息数"},
      {k:"quote_reply", label:"回复带引用", bool:true},
      {k:"at_sender", label:"回复 @ 提问者", bool:true},
    ]},
   {id: "kb", emoji: "📚", title: "知识库", open: false,
    note: "检索条数、阈值、注入上限",
    fields: [
-     {k:"kb_enabled", label:"知识库注入", bool:true},
+     {k:"kb_enabled", label:"启用知识库", bool:true},
      {k:"kb_url", label:"知识库地址"},
-     {k:"kb_topk", label:"取几条"},
+     {k:"kb_topk", label:"召回条数"},
      {k:"kb_threshold", label:"相似度阈值", hint:"小语料角色 0.35–0.45"},
      {k:"kb_max_chars", label:"注入字数上限"},
    ]},
   {id: "media", emoji: "🖼️", title: "图片与语音", open: false,
    note: "看图上限、TTS 音色与条数",
    fields: [
-     {k:"max_images", label:"单条最多图片"},
-     {k:"vision_max_bytes", label:"图片体积上限（字节）"},
+     {k:"max_images", label:"单条最多几张图"},
+     {k:"vision_max_bytes", label:"图片体积上限（字节）", hint:"1048576 = 1 MB"},
      {k:"vision_timeout", label:"图片理解超时（秒）"},
      {k:"tts_enabled", label:"语音回复（TTS）", bool:true},
      {k:"tts_voice", label:"TTS 音色"},
@@ -2788,12 +2810,10 @@ const CFG_GROUPS = [
   {id: "limit", emoji: "🛡️", title: "限流与日志", open: false,
    note: "发送限流、日志开关与保留天数",
    fields: [
-     {k:"rate_limit_per_min", label:"每会话每分钟最多发几条", hint:"0 = 不限"},
-     {k:"rate_limit_burst", label:"突发容量（令牌桶）"},
-     {k:"log_enabled", label:"记录运行日志（state/bot.log）", bool:true,
-      hint:"关掉后日志区显示「已关闭」，重开即恢复"},
-     {k:"log_retention_days", label:"流水保留天数",
-      hint:"0 = 永不清理；不动聊天记录"},
+     {k:"rate_limit_per_min", label:"每个会话每分钟最多几条", hint:"0 = 不限"},
+     {k:"rate_limit_burst", label:"突发上限（一次最多连发几条）"},
+     {k:"log_enabled", label:"记录运行日志", bool:true, hint:"关掉后日志区显示「已关闭」"},
+     {k:"log_retention_days", label:"日志保留天数", hint:"0 = 永不清理；不影响聊天记录"},
    ]},
 ];
 // 保存/遍历用：拍平
@@ -2909,8 +2929,8 @@ async function viewBoard(target){
     <div class="bd-kpi">
       <div class="b"><b>${m.today || 0}</b><span>今日消息</span></div>
       <div class="b"><b>${m.total || 0}</b><span>累计消息</span></div>
-      <div class="b"><b>${m.user || 0}</b><span>其中 · 大家说的</span></div>
-      <div class="b"><b>${m.assistant || 0}</b><span>其中 · 可莉回的</span></div>
+      <div class="b"><b>${m.user || 0}</b><span>其中 · 收到的</span></div>
+      <div class="b"><b>${m.assistant || 0}</b><span>其中 · 发出的</span></div>
       <div class="b"><b>${d.affinity_total || 0}</b><span>聊过天的人</span></div>
     </div>
     <div class="bd-chart" id="bdChart">${bars || '<div class="kv">还没有消息记录</div>'}</div>
@@ -2921,7 +2941,7 @@ async function viewBoard(target){
   </div>
   <div class="card" style="margin-top:14px">
     <div class="kv" style="margin:0 0 6px">💛 好感度 Top5</div>
-    ${affs || '<div class="kv">还没人跟可莉聊过天呢～</div>'}
+    ${affs || '<div class="kv">还没有人说过话</div>'}
   </div>
   ${(d.errors && d.errors.length) ? `<div class="card" style="margin-top:14px"><div class="kv" style="color:#c0392b">⚠️ 部分数据读取失败：${esc(d.errors.join("；"))}</div></div>` : ""}
   <div id="feedSlot" style="padding-bottom:12px"></div>`;
@@ -2944,9 +2964,9 @@ function boardWidgets(ov, pl, ch, dash){
   const pend = ((ov.requests || {}).pending) ?? ((dash.requests || {}).pending) ?? 0;
   const m = dash.messages || {};
   const cards = {
-    status: () => `<div class="wcard"><div class="wt">🛰 运行状态</div>
+    status: () => `<div class="wcard"><div class="wt">🛰️ 运行状态</div>
       <div class="wv">${a.connected ? "在线" : "离线"}</div>
-      <div class="ws">${a.connected ? "QQ 已连接" : "QQ 未登录"} · NapCat ${nap.running ? "运行中" : "未运行"} · 面板 ${gw.running === false ? "待机" : "正常"}</div>
+      <div class="ws">QQ ${a.connected ? "已连接" : "未登录"} · NapCat ${nap.running ? "运行中" : "未运行"} · 面板${gw.running === false ? "待机" : "正常"}</div>
       <a class="wl" href="javascript:go('ops')">去运维 →</a></div>`,
     quick: () => `<div class="wcard"><div class="wt">⚡ 快捷入口</div>
       <div class="row" style="margin-top:8px;gap:6px">
@@ -2955,7 +2975,7 @@ function boardWidgets(ov, pl, ch, dash){
         <button class="btn tiny" onclick="go('custom')">✨ 自定义</button>
         <button class="btn tiny" onclick="go('kb')">📚 知识库</button>
       </div>
-      <div class="ws" style="margin-top:8px">常用页面一键直达。</div></div>`,
+    </div>`,
     recent: () => `<div class="wcard"><div class="wt">💬 最近消息</div>
       <div class="wv">${m.today || 0}</div><div class="ws">今日消息 · 累计 ${m.total || 0} 条</div>
       <a class="wl" href="javascript:go('feed')">看消息流 →</a></div>`,
@@ -2965,16 +2985,16 @@ function boardWidgets(ov, pl, ch, dash){
         <div style="position:absolute;inset:0;background:linear-gradient(180deg,transparent 30%,rgba(0,0,0,.55))"></div>
         <div style="position:absolute;left:12px;bottom:8px;color:#fff;font-family:var(--font-cute);font-size:20px;text-shadow:0 1px 6px rgba(0,0,0,.4)">${esc(ACTIVE.name)}</div>
       </div>
-      <div style="padding:10px 14px"><div class="ws">📚 ${cur.kb && cur.kb.chunks || 0} 块记忆 · 🧩 ${(cur.plugins || []).length} 专属插件</div>
+      <div style="padding:10px 14px"><div class="ws">📚 ${cur.kb && cur.kb.chunks || 0} 块知识 · 🧩 ${(cur.plugins || []).length} 个专属插件</div>
       <a class="wl" href="javascript:go('chars')">切换角色 →</a></div></div>`,
     plugins: () => `<div class="wcard"><div class="wt">🧩 插件</div>
-      <div class="wv">${onFeat}<span style="font-size:15px;color:var(--ink-soft)"> / ${feats.length}</span></div>
-      <div class="ws">已启用 · 当前角色 ${esc(ACTIVE.name)}</div>
-      <a class="wl" href="javascript:go('plugins')">打开插件商店 →</a></div>`,
+      <div class="wv">${onFeat}<span style="font-size:15px;color:var(--ink-soft)">/${feats.length}</span></div>
+      <div class="ws">已启用 · 当前角色</div>
+      <a class="wl" href="javascript:go('plugins')">管理插件 →</a></div>`,
     kb: () => `<div class="wcard"><div class="wt">📚 知识库</div>
       <div class="wv">${cur.kb && cur.kb.chunks || 0}</div>
-      <div class="ws">${esc(ACTIVE.name)} 的检索块 · ${cur.kb && cur.kb.name ? "已建索引" : "未建索引"}</div>
-      <a class="wl" href="javascript:go('kb')">检索测试 →</a></div>`,
+      <div class="ws">知识索引${cur.kb && cur.kb.name ? "已就绪" : "还没建"}</div>
+      <a class="wl" href="javascript:go('kb')">打开知识库 →</a></div>`,
     ops: () => `<div class="wcard"><div class="wt">🚨 告警</div>
       <div class="wv">${(ov.alerts || []).length || 0}</div>
       <div class="ws">最近掉线/恢复事件</div>
@@ -3007,27 +3027,26 @@ async function viewOps(target){
   const onN = feats.filter(f => f.enabled).length;
   const badF = feats.filter(f => f.error);
   $(T).innerHTML = `
-  <h2 class="page">⚙️ 运维</h2>
   <div class="opsgrid">
-    <div class="card"><h3>🛰️ 面板 bot</h3>
+    <div class="card"><h3>🛰️ 面板</h3>
       <div class="opsline">角色：<b>${esc(ACTIVE.emoji + " " + ACTIVE.name)}</b>
         <a href="javascript:go('chars')" style="font-size:12px">切换</a><br>
-        状态：<b>${g.active ? "运行中" : "停了"}</b>（${esc(g.state || "?")}）<br>
+        状态：<b>${g.active ? "运行中" : "已停止"}</b><br>
         模型：${esc((ov.bot && ov.bot.model && ov.bot.model.model) || "—")}<br>
-        插件：<b>${onN}/${feats.length} 开</b></div>
+        插件：<b>${onN}/${feats.length} 启用</b></div>
       <div class="row" style="margin-top:10px">
         <button class="btn tiny" onclick="opsAct('restart_gateway')">重载插件</button>
       </div>
     </div>
     <div class="card"><h3>💬 QQ 连接</h3>
-      <div class="opsline">连接：<b>${a.connected ? "在线" : "离线"}</b> · 上次事件 ${a.age ?? "—"}s 前 · 运行 ${a.uptime ?? "—"}s<br>
-        收 ${st.events ?? 0} · 发 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 命令 ${st.commands ?? 0} · 错误 ${st.errors ?? 0}</div>
+      <div class="opsline">连接：<b>${a.connected ? "在线" : "离线"}</b>${a.age == null ? " · 还没收到过消息" : ` · 上次消息 ${ageText(a.age)}`} · 已运行 ${durText(a.uptime)}<br>
+        收到 ${st.events ?? 0} · 发出 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 命令 ${st.commands ?? 0} · 错误 ${st.errors ?? 0}</div>
       ${badF.length ? `<div class="opsline"><b style="color:var(--red)">插件报错：${badF.map(f=>esc(f.name)).join("、")}</b></div>` : ""}
-      <div class="opsline">插件：<b>${onN}/${feats.length} 开</b> · 命中 ${feats.reduce((s,f)=>s+(f.hits||0),0)} 次</div>
+      <div class="opsline">插件：<b>${onN}/${feats.length} 启用</b> · 命中 ${feats.reduce((s,f)=>s+(f.hits||0),0)} 次</div>
     </div>
-    <div class="card"><h3>🐱 NapCat</h3>
+    <div class="card"><h3>🐱 NapCat <span class="kv" style="font-family:var(--font-body)">QQ 协议端</span></h3>
       <div class="opsline">登录：<b>${n.ok ? (n.is_login ? "已登录" : "未登录") : "取不到"}</b>${n.uin ? ` · ${esc(n.uin)}${n.nick ? " " + esc(n.nick) : ""}` : ""}<br>
-        阶段：${esc(n.phase || "—")}</div>
+        阶段：<span title="${esc(n.phase || "")}">${esc(n.ok ? phaseText(n.phase) : "取不到状态")}</span></div>
       <div class="row" style="margin-top:10px">
         <button class="btn tiny" onclick="opsAct('restart_napcat')">重启 NapCat</button>
       </div>
@@ -3058,7 +3077,7 @@ async function viewOps(target){
       </div>`
       : `<div class="kv">✗ 读配置失败：${esc(cfg.error || "")}</div>`}
   </div>
-  <div class="card"><h3>📜 面板 bot 日志</h3>
+  <div class="card"><h3>📜 运行日志</h3>
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="logGrep" placeholder="过滤词，比如 OneBot / ERROR / KB" style="flex:1;min-width:180px">
       <select id="logN"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>
@@ -3089,7 +3108,7 @@ async function opsRequests(){
   if (!d || !d.ok){ box.innerHTML = '<div class="kv">✗ 读取失败</div>'; return; }
   const items = d.items || [];
   const pending = items.filter(x => x.kind && !x.action);
-  if (!pending.length){ box.innerHTML = '<div class="kv">最近没有待处理的请求。</div>'; return; }
+  if (!pending.length){ box.innerHTML = '<div class="kv">最近没有待处理的请求</div>'; return; }
   box.innerHTML = pending.map(r => {
     const who = esc(r.nickname || r.user_id || "?");
     const what = r.kind === "friend" ? "加好友" : `进群 ${esc(r.group_id || "")}`;
@@ -3131,10 +3150,11 @@ async function opsAlerts(){
     const dur = (e.down_s === null || e.down_s === undefined) ? "—" : `${e.down_s}s`;
     const full = String(e.text || "");
     // 上游把整段 urlopen 栈塞进 text，这里只留前半句，全文放 title
-    const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "").trim();
+    const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "")
+                    .replace(/[：:\s]+$/, "").trim();
     const msg = cut.length > 34 ? cut.slice(0, 34) + "…" : cut;
     return `· <b>${esc(e.time || "")}</b> <span class="pill ${bad ? "bad" : "ok"}" style="font-size:10px;padding:1px 7px">${bad ? "掉线" : "恢复"}</span>
-      <span title="${esc(full)}">${esc(msg)}</span> <span class="kv">${dur}</span>`;
+      <span title="${esc(full)}">${esc(msg)}</span> <span class="kv">离线 ${dur}</span>`;
   }).join("<br>");
   const rest = list.slice(6).map(e => {
     const full = String(e.text || "");
@@ -3158,9 +3178,13 @@ function cfgRow(field, vals){
   const val = v === null || v === undefined ? "" : String(v);
   let ctl;
   if (field.bool){
-    ctl = `<select id="cfg_${field.k}"><option value="true" ${val === "true" ? "selected" : ""}>开 / true</option><option value="false" ${val === "false" ? "selected" : ""}>关 / false</option></select>`;
+    ctl = `<select id="cfg_${field.k}"><option value="true" ${val === "true" ? "selected" : ""}>开</option><option value="false" ${val !== "true" ? "selected" : ""}>关</option></select>`;
   } else if (field.opts){
-    ctl = `<select id="cfg_${field.k}">${field.opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+    ctl = `<select id="cfg_${field.k}">${field.opts.map(o => {
+      const v = typeof o === "string" ? o : o.v;
+      const t = typeof o === "string" ? o : o.t;
+      return `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(t)}</option>`;
+    }).join("")}</select>`;
   } else if (field.secret) {
     ctl = `<div class="row" style="gap:6px;flex-wrap:nowrap">
       <input type="password" id="cfg_${field.k}" value="${esc(val)}" placeholder="${esc(field.ph || "")}" style="flex:1">
@@ -3214,7 +3238,7 @@ async function opsLogs(manual){
 }
 
 async function opsAct(action){
-  if (action === "restart_gateway" && !confirm("重载面板 bot 的插件？（QQ 不中断）")) return;
+  if (action === "restart_gateway" && !confirm("重载插件？（不影响 QQ）")) return;
   if (action === "restart_napcat" && !confirm("确定重启 NapCat？（会尝试快速登录，人在的话最稳）")) return;
   const r = await post("/api/action", {action});
   alert(r.msg || (r.ok ? "已执行" : r.error) || "done");

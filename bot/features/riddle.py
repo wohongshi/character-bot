@@ -130,7 +130,7 @@ def register(api):
         item = g["item"]
         if check_answer(raw, item):
             del games[ctx.chat_id]
-            await ctx.reply(f"🎉 {ctx.user_name} 猜对啦！谜底就是「{item[1]}」～可莉给你鼓掌！")
+            await ctx.reply(f"🎉 {ctx.user_name} 猜对啦！谜底就是「{item[1]}」～她给你鼓掌！")
             return
         await ctx.reply(f"唔……不对哦，再想想～（谜面：{item[0]}）\n"
                         f"实在想不出来就 .谜底")
@@ -145,7 +145,7 @@ def register(api):
         await ctx.reply(f"好嘛，揭晓啦——谜底是「{item[1]}」！\n（{item[2]}：{item[0]}）")
 
     api.on_command("谜语", start_cmd, aliases=("出谜", "来条谜语"), cooldown=5,
-                   help=".谜语 —— 可莉出一条谜语，你来猜")
+                   help=".谜语 —— 她出一条谜语，你来猜")
     api.on_command("猜谜", guess_cmd, aliases=("猜谜语",), cooldown=1,
                    help=".猜谜 <答案> —— 回答谜语")
     api.on_command("谜底", reveal_cmd, aliases=("揭晓", "猜不出"), cooldown=3,

@@ -3,7 +3,7 @@
 import re
 
 NAME = "出戏清洗"
-DESCRIPTION = "出站清洗：去掉「作为AI/语言模型」之类的出戏话术（on_reply 钩子示例）"
+DESCRIPTION = "出戏清洗：把「作为一个 AI」这类话从回复里抠掉再发"
 VERSION = "1.0"
 
 DEFAULT_PATTERNS = [

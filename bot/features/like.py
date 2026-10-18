@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 NAME = "点赞"
-DESCRIPTION = "让可莉给你的名片点赞：.赞我（每天一次）"
+DESCRIPTION = "让她给你的名片点赞：.赞我（每天一次）"
 VERSION = "1.0"
 
 CHARACTERS = ('klee',)
