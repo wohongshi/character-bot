@@ -21,6 +21,8 @@ import _cardimg
 
 logger = logging.getLogger(__name__)
 
+NAME = "每日素材"
+DESCRIPTION = "今天该刷哪个天赋书 / 突破秘境：.每日素材 [明天]"
 VERSION = "1.0"
 
 # 角色限定：只有这些角色启用；空 = 通用插件（可在面板关闭）
