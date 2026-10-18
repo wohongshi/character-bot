@@ -75,6 +75,9 @@ class OneBotAdapter(BaseAdapter):
     def get_image(self, file: str) -> dict:
         return self._wrap(self.raw.get_image, str(file))
 
+    def recall(self, message_id: str) -> Any:
+        return self._wrap(self.raw.delete_msg, str(message_id))
+
     def get_login_info(self) -> dict:
         return self._wrap(self.raw.get_login_info)
 

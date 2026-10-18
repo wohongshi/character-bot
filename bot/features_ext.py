@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -34,6 +35,32 @@ class RuntimeFeatures:
         self.stats.setdefault("tts_out", 0)
         self.stats.setdefault("vision_in", 0)
 
+    # ---------------- 适配器调用 ----------------
+    async def _adapter_call(self, name: str, *args, **kwargs):
+        """调适配器的一个动词，**同步实现和 async 实现都认**。
+
+        `docs/FRAMEWORK.md` 承诺「同步 / async 都行」，之前 `maybe_await()`
+        从来没被调用过 —— 换成 async 适配器后 `to_thread()` 拿到的是协程对象，
+        消息不发、还只留一句 "coroutine was never awaited"。这里把承诺兑现：
+
+          · 同步方法 → `asyncio.to_thread`（urllib 那种阻塞调用不能占住事件循环）
+          · 协程函数 → 直接 await（它自己就该是非阻塞的）
+        """
+        # 走 `self.ob`（传输句柄）而不是 `self.adapter`：
+        # ① 老代码/测试都是把 FakeOB 挂到 rt.ob 上做隔离的，绕过它就变成真发网络请求；
+        # ② 切换适配器时两者一起换（apply_config 里），不会分叉。
+        target = getattr(self, "ob", None) or self.adapter
+        fn = getattr(target, name, None)
+        if not callable(fn):
+            from .adapters.base import AdapterError
+            raise AdapterError(f"{getattr(target, 'platform', '?')} 没有实现 {name}()")
+        if inspect.iscoroutinefunction(fn):
+            return await fn(*args, **kwargs)
+        res = await asyncio.to_thread(fn, *args, **kwargs)
+        if inspect.isawaitable(res):        # 返回协程的同步包装（少见，但别再漏）
+            return await res
+        return res
+
     # ---------------- 语音 ----------------
     @staticmethod
     def extract_voice_tags(text: str) -> tuple[str, list]:
@@ -52,7 +79,7 @@ class RuntimeFeatures:
             if path is None:
                 return False
             async with self._chat_locks.setdefault(chat_id, asyncio.Lock()):
-                await asyncio.to_thread(self.ob.send_voice, chat_id, str(path))
+                await self._adapter_call("send_voice", chat_id, str(path))
             self.stats["tts_out"] += 1
             return True
         except Exception as e:                                     # noqa: BLE001

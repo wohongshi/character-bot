@@ -62,7 +62,8 @@ class TelegramAdapter(BaseAdapter):
 |---|---|
 | 只实现**能支持**的动词，其余留空 | 基类会抛 `AdapterError("xxx 不支持…")`，比 `AttributeError` 好排查 |
 | 能力要如实写进 `CAPABILITIES` | 插件用 `ctx.supports("image")` 判断，写假了插件会撞墙 |
-| 同步 / `async def` 都可以 | 框架用 `maybe_await()` 兜，不用为适配器改签名 |
+| I/O 动词同步 / `async def` 都可以 | 框架的 `_adapter_call()` 两种都认：同步丢线程池，协程直接 await |
+| `describe()` / `health()` / `reconfigure()` 必须**同步** | 它们是元数据，不该做 I/O；写成 async 面板只会显示一条错误说明 |
 | `health()` 不抛异常 | 面板「运维」页轮询它，抛了就整页错 |
 | 异常统一成 `AdapterError` | 上层只处理一种类型 |
 
@@ -139,10 +140,17 @@ def register(api):
 
 ```python
 if ctx.supports("group_member_list"):
-    names = await api.adapter.get_group_member_list(ctx.group_id)
+    raw   = await api.adapter.get_group_member_list(ctx.group_id)  # 原样 list[dict]
+    names = await api.adapter.member_names(ctx.group_id)           # {uid: 名片}，带缓存
 else:
     names = {}          # 这个平台没有，走降级分支
+
+await api.adapter.recall(ctx.message_id)      # 撤回；不支持时抛 AdapterError
+await api.adapter.send_raw(chat_id, segs)     # 原始消息段（不是每个平台都有）
 ```
+
+`api.adapter` 就是运行时本身，这些动词都由运行时转给当前适配器，
+**同步/异步实现都认**，而且平台不支持时抛的是 `AdapterError` 而不是 `AttributeError`。
 
 别用 `hasattr(api.adapter, "send_image")` —— 基类有兜底方法，永远为真。
 

@@ -206,10 +206,32 @@ class ModelStore:
             model = str(models[0]) if models else ""
         return {"provider": p.get("id", ""), "model": model}
 
+    def _ensure_model(self, provider_id: str, model: str) -> None:
+        """把选中的模型补进 provider 的 models 列表。
+
+        `models` 是「面板下拉里显示哪些」，不是「上游支持哪些」。之前它被当成
+        白名单用：vision/agent 选了一个刚 discover 到、但没勾进清单的模型，
+        保存后立刻被判成「未配置」—— 用户看到的是「明明配了却变回没配」。
+        选中即登记，别再让配置自己消失。
+        """
+        if not model:
+            return
+        for p in self.providers():
+            if p.get("id") != provider_id:
+                continue
+            models = p.get("models") if isinstance(p.get("models"), list) else []
+            if model not in models:
+                p["models"] = [*models, model]
+                self._save_locked()
+            return
+
     def set_active(self, provider: str, model: str) -> None:
         with _SAVE_LOCK:
             if not self.get_provider(provider):
                 raise ValueError(f"未知 provider: {provider}")
+            # 选中即登记：否则 active() 会拿「不在 models 清单」当失效，静默回退到
+            # 清单第一项 —— 面板显示保存成功，实际换了个模型。
+            self._ensure_model(provider, model)
             self.data["active"] = {"provider": provider, "model": model}
             self._save_locked()
 
@@ -229,9 +251,10 @@ class ModelStore:
         if not model or not p:
             return {"provider": provider, "model": "", "configured": False}
         models = p.get("models") if isinstance(p.get("models"), list) else []
-        if model not in models:                    # provider 换了/模型下线：宁可「未配置」也不瞎发
-            return {"provider": p.get("id", provider), "model": "", "configured": False}
-        return {"provider": p.get("id", provider), "model": model, "configured": True}
+        return {"provider": p.get("id", provider), "model": model, "configured": True,
+                # 不在下拉清单里 ≠ 不能用：上游可能只是没勾选。调用失败会走友好降级，
+                # 但别在状态里假装「没配过」。
+                "not_in_list": bool(models) and model not in models}
 
     def set_vision(self, provider: str = "", model: str = "") -> None:
         """设置看图模型；`model` 传空 = 关闭图片理解。provider 空 = 跟聊天同一个。"""
@@ -241,6 +264,7 @@ class ModelStore:
             if model and provider and not self.get_provider(provider):
                 raise ValueError(f"未知 provider: {provider}")
             self.data["vision"] = {"provider": provider, "model": model}
+            self._ensure_model(provider or self.active().get("provider", ""), model)
             self._save_locked()
 
     # ---------- agent（工具循环用的模型，可以和聊天模型分开） ----------
@@ -257,11 +281,8 @@ class ModelStore:
         if not p:
             return dict(act)
         models = p.get("models") if isinstance(p.get("models"), list) else []
-        if model not in models:
-            if not models:
-                return dict(act)
-            model = str(models[0])
-        return {"provider": p.get("id", act["provider"]), "model": model}
+        return {"provider": p.get("id", act["provider"]), "model": model,
+                "not_in_list": bool(models) and model not in models}
 
     def set_agent(self, provider: str = "", model: str = "") -> None:
         provider = str(provider or "").strip()
@@ -270,6 +291,7 @@ class ModelStore:
             if model and provider and not self.get_provider(provider):
                 raise ValueError(f"未知 provider: {provider}")
             self.data["agent"] = {"provider": provider, "model": model}
+            self._ensure_model(provider or self.active().get("provider", ""), model)
             self._save_locked()
 
     def upsert_provider(self, prov: dict) -> None:

@@ -8,6 +8,7 @@ adapter 接口只保留插件真正用到的几个方法（见 onebot_features �
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -274,14 +275,76 @@ class BotRuntime(RuntimeFeatures):
         logger.info("角色已切换为 %s（%s）", info["name"], info["id"])
         return info
 
+    # ---------- 插件看到的「适配器」其实是 runtime ----------
+    # FeatureManager(self) 把 runtime 当 adapter 交给插件（ctx.adapter / ctx.platform /
+    # ctx.supports）。如果这里不转发，插件问到的平台名会永远是兜底值 onebot11、
+    # supports("image") 永远 False —— 换成 webhook 或别的平台后插件会走错分支。
+    @property
+    def platform(self) -> str:
+        return str(getattr(self.adapter, "platform", "") or "")
+
+    @property
+    def CAPABILITIES(self) -> dict:
+        caps = getattr(self.adapter, "CAPABILITIES", None)
+        return dict(caps) if isinstance(caps, dict) else {}
+
+    def chat_id_of(self, is_group: bool, group_id: str, user_id: str) -> str:
+        fn = getattr(self.adapter, "chat_id_of", None)
+        if callable(fn):
+            return str(fn(is_group, group_id, user_id))
+        return f"group:{group_id}" if is_group else f"private:{user_id}"
+
     # ---------- 插件用的适配器接口 ----------
+    async def get_group_member_list(self, group_id: str) -> list:
+        """原始群成员列表（每项是平台给的原样 dict）。"""
+        return await self._adapter_call("get_group_member_list", str(group_id))
+
+    async def member_names(self, group_id: str) -> dict:
+        """user_id → 群名片/昵称（带 10 分钟缓存）。"""
+        return await self._member_names(group_id)
+
+    async def get_msg(self, message_id: str) -> dict:
+        return await self._adapter_call("get_msg", str(message_id))
+
+    async def get_image(self, file: str) -> dict:
+        return await self._adapter_call("get_image", str(file))
+
+    async def recall(self, message_id: str):
+        """撤回一条消息。平台不支持时抛 AdapterError（插件按能力降级）。"""
+        res = await self._adapter_call("recall", str(message_id))
+        self.stats["recalls"] = int(self.stats.get("recalls") or 0) + 1
+        return res
+
+    async def send_raw(self, chat_id: str, segments, **kw):
+        """发原始消息段（at/reply/image 混排时用；不是所有平台都有）。"""
+        return await self._adapter_call("send_raw", chat_id, segments, **kw)
+
+    def _adapter_meta(self) -> dict:
+        """面板用的适配器元信息。
+
+        `describe()` / `health()` / `reconfigure()` 必须是**同步**方法：它们是元数据，
+        不该做 I/O。真有人写成 async 也别把协程对象塞进 JSON（会炸序列化），
+        这里降级成一条能看懂的说明。
+        """
+        ad = self.adapter
+        try:
+            d = ad.describe()
+        except Exception as e:                                     # noqa: BLE001
+            return {"platform": ad.platform, "title": ad.title, "error": str(e)}
+        if inspect.isawaitable(d):
+            if hasattr(d, "close"):
+                d.close()
+            return {"platform": ad.platform, "title": ad.title,
+                    "error": "describe() 写成了 async，它必须是同步方法"}
+        return d
+
     async def _member_names(self, group_id: str) -> dict:
         now = time.time()
         c = self._member_cache.get(str(group_id))
         if c and now - c[0] < 600:
             return c[1]
         try:
-            rows = await asyncio.to_thread(self.ob.get_group_member_list, str(group_id))
+            rows = await self._adapter_call("get_group_member_list", str(group_id))
             names = {str(r.get("user_id")): (r.get("card") or r.get("nickname") or "")
                      for r in rows if isinstance(r, dict)}
             self._member_cache[str(group_id)] = (now, names)
@@ -325,8 +388,8 @@ class BotRuntime(RuntimeFeatures):
         async with lock:                       # 整段持锁：多条气泡不与其他回复交错
             for i, part in enumerate(parts):
                 try:
-                    data = await asyncio.to_thread(
-                        self.ob.send_text, chat_id, part,
+                    data = await self._adapter_call(
+                        "send_text", chat_id, part,
                         reply_to=(quote if i == 0 else None),
                         at_uid=(at_uid if i == 0 else None))
                     self._remember_own(str((data or {}).get("message_id") or ""))
@@ -352,8 +415,8 @@ class BotRuntime(RuntimeFeatures):
         lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
         try:
             async with lock:
-                data = await asyncio.to_thread(self.ob.send_image, chat_id, str(path), caption,
-                                               reply_to=quote, at_uid=at_uid)
+                data = await self._adapter_call("send_image", chat_id, str(path), caption,
+                                                reply_to=quote, at_uid=at_uid)
             self._remember_own(str((data or {}).get("message_id") or ""))
             self.stats["sent"] += 1
             return SimpleNamespace(success=True)
@@ -485,7 +548,7 @@ class BotRuntime(RuntimeFeatures):
         self.stats["last_event_text"] = text[:80]
 
         if reply_ids:
-            quoted = await asyncio.to_thread(self._resolve_quoted, reply_ids[0])
+            quoted = await self._resolve_quoted(reply_ids[0])
             if quoted:
                 text = f"[引用: {quoted}]\n{text}"
         chat_id = self._chat_id(is_group, group_id, user_id)
@@ -776,10 +839,10 @@ class BotRuntime(RuntimeFeatures):
             await asyncio.to_thread(self._write_text_atomic, self.hist_path, blob)
         await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
 
-    def _resolve_quoted(self, mid: str):
+    async def _resolve_quoted(self, mid: str):
         """取被引用消息的文本（失败返回空串）。"""
         try:
-            data = self.ob.get_msg(mid)
+            data = await self._adapter_call("get_msg", mid)
             segs = _segments(data.get("message"))
             bits = []
             for seg in segs:
@@ -931,10 +994,29 @@ class BotRuntime(RuntimeFeatures):
         self.owner_id = str(cfg.get("owner_id") or self.owner_id)
         self.feature_prefix = str(cfg.get("feature_prefix") or self.feature_prefix)
         self.hist_limit = int(cfg.get("history_messages") or self.hist_limit)
-        try:
-            self.adapter.reconfigure(cfg)          # 适配器自己决定要不要重连
-        except Exception as e:                                     # noqa: BLE001
-            logger.warning("适配器重配置失败：%s", e)
+        # 改 platform 只是改了个字符串是不够的 —— 必须换适配器实例，
+        # 否则面板上选了 webhook、实际还在用 OneBot 发消息（假开关）。
+        want = str(cfg.get("adapter") or "onebot11").strip().lower()
+        if want != str(getattr(self.adapter, "platform", "") or ""):
+            old = self.adapter
+            try:
+                new = adapters_mod.build(cfg, owner_id=self.owner_id, self_id=self.self_id)
+            except Exception as e:                                 # noqa: BLE001
+                logger.warning("切换适配器 %s → %s 失败，继续用 %s：%s",
+                               old.platform, want, old.platform, e)
+            else:
+                self.adapter = new
+                self.ob = new                    # 老代码都走 self.ob，一起换
+                try:
+                    old.close()
+                except Exception:                                  # noqa: BLE001
+                    pass
+                logger.info("适配器已切换：%s → %s", old.platform, new.platform)
+        else:
+            try:
+                self.adapter.reconfigure(cfg)      # 同一平台：就地热更新
+            except Exception as e:                                 # noqa: BLE001
+                logger.warning("适配器重配置失败：%s", e)
         self.setup_extras(cfg, preserve_buckets=True)
 
     # ---------- 状态 ----------
@@ -976,7 +1058,7 @@ class BotRuntime(RuntimeFeatures):
         return {
             "ok": True,
             "self_id": self.self_id,
-            "adapter": self.adapter.describe(),
+            "adapter": self._adapter_meta(),
             "character": {"id": self.active_character,
                           "name": self.active_character_info.get("name", ""),
                           "emoji": self.active_character_info.get("emoji", ""),

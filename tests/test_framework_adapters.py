@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from bot import adapters as A                      # noqa: E402
 from bot.adapters.base import AdapterError, BaseAdapter  # noqa: E402
-from bot.framework import EventContext, FeatureManager  # noqa: E402
+from bot.framework import EventContext, FeatureContext, FeatureManager  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -293,6 +293,96 @@ check("正文正确", got2 and got2[0].get("text") == "换平台以后照样能�
       str(got2[0] if got2 else None))
 check("平台名一起带上（下游可分流）", got2 and got2[0].get("platform") == "webhook")
 srv2.shutdown()
+
+# ---------- 7) async 适配器 ----------
+# 文档承诺「同步 / async 都行」。之前 maybe_await() 从来没被调用过：async 适配器
+# 的 send_text 会被 to_thread 当成普通函数调用，返回一个没人 await 的协程 ——
+# 消息不发、只留一句 "coroutine was never awaited"。这里用真 runtime 验。
+print("\n· async 适配器")
+got3 = []
+
+
+@A.register
+class _AsyncProbe(BaseAdapter):
+    platform = "asyncprobe"
+    title = "异步探针"
+    CAPABILITIES = {"text": True, "image": False, "voice": False,
+                    "group_member_list": False, "message_lookup": False,
+                    "request_approval": False, "recall": False}
+
+    async def send_text(self, chat_id, text, *, reply_to=None, at_uid=None):
+        import asyncio as _a
+        await _a.sleep(0)                 # 真让出一次事件循环
+        got3.append({"chat_id": chat_id, "text": text})
+        return {"ok": True, "message_id": "async-1"}
+
+    async def describe(self):            # 故意的错误写法：元数据不该是 async
+        return {"platform": "asyncprobe"}
+
+
+check("async 适配器自动注册", "asyncprobe" in A.REGISTRY, str(list(A.REGISTRY)))
+rt.apply_config({**rt.config, "adapter": "asyncprobe"})
+check("配置切换真的换了实例（不是只改字符串）", rt.adapter.platform == "asyncprobe", rt.adapter.platform)
+check("self.ob 跟着换（老代码不会发到旧平台）", rt.ob is rt.adapter)
+res = asyncio.run(rt.send("group:async", "异步也能发"))
+check("async send_text 真的被 await 了", len(got3) == 1, str(got3))
+check("正文/会话都对", got3 and got3[0] == {"chat_id": "group:async", "text": "异步也能发"}, str(got3))
+check("返回值不是协程（send 成功）", getattr(res, "success", None) is True, str(res))
+meta = rt._adapter_meta()
+check("describe() 写成 async 时降级成说明而不是塞协程",
+      isinstance(meta, dict) and "必须是同步方法" in str(meta.get("error")), str(meta))
+try:
+    json.dumps(rt.status(), ensure_ascii=False)
+    check("status() 可 JSON 序列化", True)
+except TypeError as e:
+    check("status() 可 JSON 序列化", False, str(e))
+
+# 切回 onebot11（同时验证反向切换）
+rt.apply_config({**rt.config, "adapter": "onebot11"})
+check("能切回 onebot11", rt.adapter.platform == "onebot11", rt.adapter.platform)
+A.REGISTRY.pop("asyncprobe", None)
+
+# ---------- 8) 运行时动词 ----------
+print("\n· 运行时动词（api.adapter.*）")
+for verb in ("get_group_member_list", "member_names", "get_msg", "get_image",
+             "recall", "send_raw"):
+    check(f"api.adapter.{verb} 存在", callable(getattr(rt, verb, None)))
+check("onebot11 能力表写了 recall=True 就真有 recall 动词",
+      callable(getattr(A.REGISTRY["onebot11"], "recall", None)))
+try:
+    BaseAdapter({}).recall("1")
+    check("基类 recall 抛 AdapterError（不是 AttributeError）", False)
+except AdapterError:
+    check("基类 recall 抛 AdapterError（不是 AttributeError）", True)
+
+# ---------- 9) 插件看到的平台信息 ----------
+# FeatureManager(self) 把 runtime 当成 adapter 交给插件。runtime 不转发 platform /
+# CAPABILITIES 的话：ctx.platform 永远兜底成 onebot11、ctx.supports("image") 永远 False
+# —— 换平台后插件全走错分支，而且不报错。
+print("\n· 插件看到的平台信息（ctx.platform / ctx.supports）")
+rt.apply_config({**rt.config, "adapter": "onebot11"})
+check("runtime.platform 跟随适配器", rt.platform == "onebot11", rt.platform)
+check("supports 看能力表而不是 hasattr",
+      rt.CAPABILITIES.get("image") is True and rt.CAPABILITIES.get("recall") is True,
+      str(rt.CAPABILITIES))
+fc = FeatureContext(adapter=rt, text="x", is_group=True, group_id="1",
+                    user_id="2", user_name="u", message_id="m")
+check("FeatureContext.platform 正确", fc.platform == "onebot11", fc.platform)
+check("FeatureContext.supports(image) 为真", fc.supports("image") is True)
+check("FeatureContext.chat_id 走适配器的 chat_id_of", fc.chat_id == "group:1", fc.chat_id)
+
+rt.apply_config({**rt.config, "adapter": "webhook", "webhook_url": "http://127.0.0.1:9/x"})
+check("切到 webhook 后 platform 跟着变", rt.platform == "webhook", rt.platform)
+check("webhook 的 recall 应该是 False", rt.CAPABILITIES.get("recall") is False, str(rt.CAPABILITIES))
+fc2 = FeatureContext(adapter=rt, text="x", is_group=False, group_id="", 
+                     user_id="2", user_name="u", message_id="m")
+check("换平台后 FeatureContext.platform 跟着变", fc2.platform == "webhook", fc2.platform)
+check("换平台后 supports(recall) 为假（插件会降级）", fc2.supports("recall") is False)
+ev = EventContext(adapter=rt, kind="notice",
+                  raw={"notice_type": "poke", "group_id": "1", "user_id": "2"})
+check("EventContext.platform 跟着变", ev.platform == "webhook", ev.platform)
+check("EventContext.chat_id 走适配器", ev.chat_id == "group:1", ev.chat_id)
+rt.apply_config({**rt.config, "adapter": "onebot11"})
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(1 if FAIL else 0)

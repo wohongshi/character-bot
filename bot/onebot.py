@@ -187,6 +187,15 @@ class OneBotHTTP:
         data = self.call("get_image", file=str(file or ""), timeout=15)
         return data if isinstance(data, dict) else {}
 
+    def delete_msg(self, message_id: str) -> dict:
+        """撤回消息（NapCat / go-cqhttp 都叫 delete_msg）。"""
+        try:
+            mid = int(str(message_id).strip())
+        except (TypeError, ValueError) as e:
+            raise OneBotError(f"非法 message_id：{message_id!r}") from e
+        data = self.call("delete_msg", message_id=mid, timeout=10)
+        return data if isinstance(data, dict) else {}
+
     def get_login_info(self) -> dict:
         data = self.call("get_login_info", timeout=8)
         return data if isinstance(data, dict) else {}

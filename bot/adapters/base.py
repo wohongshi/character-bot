@@ -13,9 +13,12 @@
 新增一个平台 = 新建一个文件，继承 `BaseAdapter`，标上 `platform = "xxx"`，
 框架启动时会自动注册；面板/配置里把 `adapter` 改成这个值即可。
 
-为什么方法全是**同步**的：老代码（OneBotHTTP）是 urllib 阻塞调用，框架用
-`asyncio.to_thread` 包起来跑。适配器作者如果更喜欢 async，也可以写成
-`async def` —— `maybe_await()` 两种都认，不用为了适配框架改签名。
+I/O 动词写成**同步**或 `async def` 都行：运行时统一走 `_adapter_call()` ——
+同步实现丢进 `asyncio.to_thread`（老代码 OneBotHTTP 是 urllib 阻塞调用，
+不能占住事件循环），协程实现直接 await。
+
+例外：`describe()` / `health()` / `reconfigure()` 必须是**同步**的 ——
+它们是元数据，不该做 I/O；写成 async 的话面板只会显示一条「必须是同步方法」。
 """
 from __future__ import annotations
 
@@ -116,6 +119,9 @@ class BaseAdapter:
 
     def get_image(self, file: str) -> dict:
         raise AdapterError(f"{self.platform} 取不了图片")
+
+    def recall(self, message_id: str) -> Any:
+        raise AdapterError(f"{self.platform} 不支持撤回消息")
 
     def set_friend_add_request(self, flag: str, approve: bool = False,
                                remark: str = "") -> Any:

@@ -2248,7 +2248,7 @@ async function mountAgentCard(){
       </select>
       <select id="agModel" style="min-width:240px">
         <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
-        ${((agProv.models||[]).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join(""))}
+        ${optList(agProv.models, agModel.model).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
     </div>
     <div class="kv" style="margin-top:10px">可用工具</div>
@@ -2392,6 +2392,7 @@ async function viewBot(target){
   window.__provs = provs;
   const cur = provs.find(p => p.id === act.provider) || provs[0] || {models: []};
   const vis = (md && md.vision) || {};
+  window.__vis = vis;                     // botSaveVision 用它判断「是不是在清空」
   const agentCfg = (ag && ag.ok) ? ag : {enabled:false, owner_only:true, max_steps:3,
     timeout:120, tools:[], available_tools:[], model:{}};
   const agModel = agentCfg.model || {};
@@ -2454,7 +2455,7 @@ async function viewBot(target){
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===act.provider?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
       </select>
       <select id="mpModel" style="min-width:240px">
-        ${(cur.models||[]).map(m=>`<option ${m===act.model?"selected":""}>${esc(m)}</option>`).join("")}
+        ${optList(cur.models, act.model).map(m=>`<option ${m===act.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
       <button class="btn primary" onclick="botSaveModel()">保存</button>
       <button class="btn" onclick="botTestModel()">测试</button>
@@ -2470,7 +2471,7 @@ async function viewBot(target){
       </select>
       <select id="mvModel" style="min-width:240px">
         <option value="">（不启用图片理解）</option>
-        ${(visModels||[]).map(m=>`<option ${m===(vis.configured?vis.model:"")?"selected":""}>${esc(m)}</option>`).join("")}
+        ${optList(visModels, vis.configured?vis.model:"").map(m=>`<option ${m===(vis.configured?vis.model:"")?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
       <button class="btn primary" onclick="botSaveVision()">保存看图模型</button>
     </div>
@@ -2535,6 +2536,14 @@ function qrArm(online){
   }
 }
 
+/* 下拉候选 = provider 的模型清单 + 已保存的那个值。
+   少了后半句，<select> 会落到第一项：「保存」一下就把用户选的模型换掉/清空。 */
+function optList(models, current){
+  const ms = (models || []).map(String);
+  const cur = String(current || "");
+  if (cur && !ms.includes(cur)) ms.unshift(cur);
+  return ms;
+}
 function botFillModels(){
   const p = (window.__provs || []).find(x => x.id === $("mpProv").value) || {models: []};
   $("mpModel").innerHTML = (p.models || []).map(m=>`<option>${esc(m)}</option>`).join("");
@@ -2552,11 +2561,15 @@ async function botTestModel(){
 function botFillVisionModels(){
   const p = (window.__provs || []).find(x => x.id === $("mvProv").value);
   const ms = p ? (p.models || []) : (((window.__provs || [])[0] || {}).models || []);
+  const cur = (window.__vis || {}).model || "";
   $("mvModel").innerHTML = "<option value=\"\">（不启用图片理解）</option>" +
-    ms.map(m=>`<option>${esc(m)}</option>`).join("");
+    optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
 async function botSaveVision(){
-  const d = await post("/api/models", {vision: {provider: $("mvProv").value, model: $("mvModel").value}});
+  const model = $("mvModel").value;
+  if (!model && (window.__vis || {}).configured &&
+      !confirm("关闭图片理解？以后发图片她只会说看不懂。")) return;
+  const d = await post("/api/models", {vision: {provider: $("mvProv").value, model}});
   const v = (d && d.vision) || {};
   $("mvOut").textContent = d.ok
     ? (v.configured ? `✓ 看图模型：${v.provider} / ${v.model}` : "✓ 已关闭图片理解（发图时会友好说明看不懂）")
@@ -3326,11 +3339,14 @@ function adapterHTML(ad){
   const on = Object.keys(caps).filter(k => caps[k]);
   const off = Object.keys(caps).filter(k => !caps[k]);
   const target = ad.base || ad.url || "—";
+  // 选 webhook 但没填地址 = 之后一条也发不出去，别让人等到「她怎么不回了」才发现
+  const warn = (ad.platform === "webhook" && !String(ad.url || "").trim())
+    ? '<br><b style="color:var(--red)">还没填 Webhook 地址，消息发不出去</b>' : "";
   return `平台：<b>${esc(ad.title || ad.platform)}</b><br>
     目标：<code style="font-size:11.5px">${esc(target)}</code><br>
     支持：${on.length ? on.map(k => `<span class="tag">${esc(CAP_CN[k] || k)}</span>`).join(" ")
                       : '<span class="kv">无</span>'}
-    ${off.length ? `<br><span class="kv">不支持：${esc(off.map(k => CAP_CN[k] || k).join("、"))}</span>` : ""}`;
+    ${off.length ? `<br><span class="kv">不支持：${esc(off.map(k => CAP_CN[k] || k).join("、"))}</span>` : ""}${warn}`;
 }
 
 async function viewOps(target){
