@@ -32,9 +32,9 @@ def register(api):
         title, body = random.choice(ORDERS)
         await ctx.reply(
             f"📜 妖盟令 · 第{n}道 · {title}\n"
-            "都听着。\n"
+            "都听着。我只说一遍。\n"
             f"{body}\n"
-            "照办。"
+            "照办。别让我再说第二遍。"
         )
 
     api.on_command("妖盟令", order, help=".妖盟令 —— 领一道妖盟令", cooldown=6)

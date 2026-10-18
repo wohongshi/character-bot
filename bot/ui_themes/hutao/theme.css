@@ -4,16 +4,16 @@ body[data-theme="hutao"]{
     radial-gradient(circle at 12% 8%, rgba(163,35,47,.06), transparent 46%),
     repeating-linear-gradient(135deg, rgba(120,60,40,.028) 0 2px, transparent 2px 9px);
 }
-body[data-theme="hutao"] aside{background:linear-gradient(180deg,#fdf6ea,#f3e5d2);
+body[data-theme="hutao"] aside{background:linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 92%, var(--red-soft)), color-mix(in srgb, var(--surface-3) 84%, var(--red-soft))) 97%, var(--red-soft)), color-mix(in srgb, var(--paper) 88%, var(--red-soft)));
   border-right:1px solid #d8bda3}
 body[data-theme="hutao"] nav button{border-radius:4px;letter-spacing:1px}
-body[data-theme="hutao"] nav button.on{background:linear-gradient(135deg,#a3232f,#6f121b);
+body[data-theme="hutao"] nav button.on{background:linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 74%, #000),color-mix(in srgb, var(--red-deep) 80%, #000));
   box-shadow:0 3px 0 rgba(90,20,25,.35)}
 body[data-theme="hutao"] .card,body[data-theme="hutao"] .charitem,body[data-theme="hutao"] .bub{
   border-width:1px;border-radius:8px}
-body[data-theme="hutao"] .bub{border-top-left-radius:1px;background:#fffdf7}
+body[data-theme="hutao"] .bub{border-top-left-radius:1px;background:var(--surface-2)}
 body[data-theme="hutao"] .msg.me .bub{border-radius:8px;border-top-right-radius:1px;
-  background:linear-gradient(180deg,#f9e9e3,#f3d9d1)}
+  background:linear-gradient(180deg, color-mix(in srgb, var(--ui-accent) 16%, var(--surface-2)), color-mix(in srgb, var(--ui-accent) 26%, var(--surface-2)))}
 body[data-theme="hutao"] h2.page{letter-spacing:2px}
 body[data-theme="hutao"] .brand::after{content:"蝶";font-family:serif;font-size:52px;
   color:rgba(163,35,47,.10);margin-left:auto;line-height:1}

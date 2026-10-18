@@ -105,3 +105,35 @@ body[data-theme="hutao"] h2.page{letter-spacing:2px}
 - [ ] 手机宽度（≤430px）下不溢出、不重叠
 - [ ] 目录名 = 角色 id，切换后 `document.body.dataset.theme` 正确
 - [ ] `testkit/test_themes.py` 与 `test_theme_http.py` 通过
+
+## 语义 token（2026-10-18 起）
+
+主题**只决定色相**，不要直接写死表面色和文字色 —— 否则深色模式会出现「浅色卡 + 浅色字」。
+
+| Token | 浅色默认 | 深色 | 用途 |
+| --- | --- | --- | --- |
+| `--surface` | `var(--paper)` | 同（paper 变深） | 大块表面 |
+| `--surface-2` | `#fff` | `#2b221d` | 卡片 / 输入框 / 气泡 |
+| `--surface-3` | paper 88% + red-soft | `#33281f` | 次级块（快捷语、结果框） |
+| `--ink-soft` | ink 84% + paper | ink 86% + bg | 次级文字，实测 ≥6:1 |
+| `--ink-faint` | ink 72% + paper | ink 72% + bg | 占位符、极次级 |
+| `--dim` | 每个主题在 `theme.json` 里校准到 ≥5.8:1 | 深色另给 | 说明文字 |
+
+写法约定：
+
+```css
+/* ✅ 跟着主题和深色模式一起变 */
+body[data-theme="X"] .card{background:var(--surface-2)}
+body[data-theme="X"] aside{background:linear-gradient(180deg,
+  color-mix(in srgb, var(--paper) 97%, var(--red-soft)),
+  color-mix(in srgb, var(--paper) 88%, var(--red-soft)))}
+
+/* ❌ 写死浅色：深色模式下会变成刺眼白块 */
+body[data-theme="X"] .card{background:#fff}
+body[data-theme="X"] .title{color:#8f1f20}   /* 深色下几乎看不见 */
+```
+
+导航选中态必须掺黑：`color-mix(in srgb, var(--ui-accent) 74%, #000)`，
+纯 `--ui-accent` 的浅端上白字只有 ~3:1。
+
+验收：`cache/scratch/contrast_pixel.py`（像素级对比度审计，浅/深 × 6 角色 × 5 页面）。

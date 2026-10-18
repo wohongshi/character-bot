@@ -85,7 +85,7 @@ class FakeAdapter:
 print("[1] CharacterStore")
 store = CharacterStore(TMP / "state", seeds_dir=STUDIO / "bot" / "character_seeds")
 ids = [c["id"] for c in store.list()]
-check("1.1 五个角色齐全", ids == [c["id"] for c in CHARACTERS] and len(ids) == 5, str(ids))
+check("1.1 六个角色齐全", ids == [c["id"] for c in CHARACTERS] and len(ids) == 6, str(ids))
 check("1.2 默认角色可莉", store.active_id() == "klee")
 missing = [c["id"] for c in store.list() if not Path(c["soul_path"]).is_file()]
 check("1.3 SOUL 全部播种", not missing, str(missing))

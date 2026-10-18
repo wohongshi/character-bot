@@ -38,7 +38,8 @@ def register(api):
         await ctx.reply(
             f"🏮 灯亮了，{color}。\n"
             f"{line}。\n"
-            f"这是你点的第 {n} 盏。{extra}"
+            f"这是你点的第 {n} 盏。{extra}\n"
+            "我把它搁在窗台上。风进来的时候，它会晃一下，但不会灭。"
         )
 
     api.on_command("点灯", light, help=".点灯 —— 点一盏灯，她替你数着", cooldown=4)

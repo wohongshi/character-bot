@@ -51,7 +51,13 @@ def register(api):
         if not who:
             rows = [x for x in (db_get(FILE, key, []) or []) if isinstance(x, dict)]
             if not rows:
-                await ctx.reply("姻缘簿。\n本会话还没查过谁。\n报个名字。")
+                await ctx.reply(
+                    "姻缘簿。\n"
+                    "本会话还没查过谁。\n"
+                    "报个名字。我给你翻一页。\n"
+                    "名字要报全。同名的人多。\n"
+                    "翻过的人，我会记着。"
+                )
                 return
             items = [f"{i + 1}. {r.get('n', '')} · {r.get('s', '')}"
                      for i, r in enumerate(rows)]
@@ -76,6 +82,7 @@ def register(api):
             f"「{who}」\n"
             f"状态：{status}。\n"
             f"{note}\n"
+            "簿子只记线的走向，不记人心里想什么。\n"
             "簿子上这么写。"
         )
 

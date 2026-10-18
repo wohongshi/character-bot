@@ -8,14 +8,14 @@ body[data-theme="citlali"]{
   background-size:auto,auto,auto,100% 100%;
 }
 body[data-theme="citlali"] .card,body[data-theme="citlali"] .charitem{
-  background:rgba(255,255,255,.72);backdrop-filter:blur(10px);
+  background:color-mix(in srgb, var(--surface-2) 76%, transparent);backdrop-filter:blur(10px);
   border-width:1px;border-radius:22px}
-body[data-theme="citlali"] aside{background:linear-gradient(180deg,rgba(255,255,255,.55),rgba(214,232,234,.65));
+body[data-theme="citlali"] aside{background:linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 92%, var(--red-soft)), color-mix(in srgb, var(--surface-3) 84%, var(--red-soft))) 97%, var(--red-soft)), color-mix(in srgb, var(--paper) 88%, var(--red-soft)));
   border-right:1px solid #cfe0e2}
-body[data-theme="citlali"] nav button.on{background:linear-gradient(135deg,#4f8b98,#2b5c68);
+body[data-theme="citlali"] nav button.on{background:linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 74%, #000),color-mix(in srgb, var(--red-deep) 80%, #000));
   box-shadow:0 6px 20px rgba(45,90,100,.28)}
 body[data-theme="citlali"] .bub{border-width:1px;border-radius:24px;border-top-left-radius:8px;
-  background:rgba(255,255,255,.82);backdrop-filter:blur(8px)}
+  background:color-mix(in srgb, var(--surface-2) 86%, transparent);backdrop-filter:blur(8px)}
 body[data-theme="citlali"] .msg.me .bub{border-radius:24px;border-top-right-radius:8px}
 body[data-theme="citlali"] h2.page{font-weight:300;letter-spacing:3px}
 body[data-theme="citlali"] .btn{border-width:1px}

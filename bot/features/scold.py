@@ -53,7 +53,7 @@ def register(api):
         now = datetime.now()
         lines, tag = TALKS[_topic(now.hour)]
         await ctx.reply(
-            f"🕯️ 现在 {now:%H:%M}，烟都快睡了。\n"
+            f"🕯️ 现在 {now:%H:%M}。\n"
             f"{random.choice(lines)}\n{tag}"
         )
 

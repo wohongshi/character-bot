@@ -34,6 +34,7 @@ def register(api):
             f"{lead}\n"
             "涂山。\n"
             f"{place}：{desc}\n"
+            "山上不打仗。要打，下山去打。\n"
             f"{random.choice(TAILS)}"
         )
 

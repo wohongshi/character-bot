@@ -6,8 +6,8 @@ body[data-theme="klee"]{
     radial-gradient(#f8e6d1 1.2px, transparent 1.2px);
   background-size:auto,auto,26px 26px;
 }
-body[data-theme="klee"] aside{background:linear-gradient(180deg,#fffaf0,#ffeede)}
-body[data-theme="klee"] nav button.on{background:linear-gradient(135deg,#ff7e60,#e8484f)}
+body[data-theme="klee"] aside{background:linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 92%, var(--red-soft)), color-mix(in srgb, var(--surface-3) 84%, var(--red-soft)))}
+body[data-theme="klee"] nav button.on{background:linear-gradient(135deg,color-mix(in srgb, var(--ui-accent) 74%, #000),color-mix(in srgb, var(--red-deep) 80%, #000))}
 body[data-theme="klee"] .bub{border-radius:18px;border-top-left-radius:6px}
 body[data-theme="klee"] .msg.me .bub{border-radius:18px;border-top-right-radius:6px}
 body[data-theme="klee"] .card,body[data-theme="klee"] .charitem{border-radius:20px}

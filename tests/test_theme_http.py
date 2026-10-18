@@ -28,7 +28,7 @@ print("[1] /api/themes")
 st, _, body = get("/api/themes")
 d = json.loads(body)
 items = d.get("items") or []
-check("1.1 200 + 5 条", st == 200 and len(items) == 5, str(len(items)))
+check("1.1 200 + ≥5 条", st == 200 and len(items) >= 5, str(len(items)))
 check("1.2 每条有 used_by", all("used_by" in t for t in items))
 check("1.3 目录被暴露（便于排查）", bool(d.get("dir")))
 

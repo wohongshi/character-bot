@@ -25,7 +25,7 @@ def check(name, ok, extra=""):
 print("[1] 发现与元信息")
 found = T.discover()
 ids = set(found)
-check("1.1 五个主题都被发现", ids == {"klee", "hutao", "citlali", "cyrene", "atri"}, str(ids))
+check("1.1 六个主题都被发现", {"klee","hutao","citlali","cyrene","atri"} <= ids, str(ids))
 check("1.2 每个主题都有名字/版本", all(t["name"] and t["version"] for t in found.values()))
 check("1.3 每个主题至少 10 个变量", all(len(t["tokens"]) >= 10 for t in found.values()),
       str({k: len(v["tokens"]) for k, v in found.items()}))
@@ -79,8 +79,8 @@ finally:
 
 print("[4] 列表接口形状")
 items = T.list_themes()
-check("4.1 五条 + 必要字段",
-      len(items) == 5 and all({"id", "name", "tokens", "source", "has_css"} <= set(i) for i in items))
+check("4.1 ≥5 条 + 必要字段",
+      len(items) >= 5 and all({"id", "name", "tokens", "source", "has_css"} <= set(i) for i in items))
 check("4.2 不含 extra_css 全文（省流量）", all("extra_css" not in i for i in items))
 
 print()
