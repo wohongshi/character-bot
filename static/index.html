@@ -2247,8 +2247,63 @@ async function viewBot(target){
       ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
       : "没配（发图时只会请你描述）"}</div>
   </div>
+  <div class="card" id="qrCard">
+    <h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫 —— 不用再等人发截图</span></h3>
+    <div class="row" style="align-items:flex-start;gap:14px">
+      <div id="qrBox" class="kv" style="flex:1;min-width:220px">正在读取二维码…</div>
+      <div class="row" style="flex-direction:column;gap:6px;align-items:stretch">
+        <button class="btn tiny" onclick="qrRefresh(true)">⟳ 刷新二维码</button>
+        <button class="btn tiny" onclick="qrRestart()">↻ 重启 NapCat 取新码</button>
+        <a class="btn tiny" id="qrWebui" target="_blank" rel="noopener">↗ NapCat WebUI</a>
+      </div>
+    </div>
+  </div>
 `;
+  qrArm(st.online === true);
 }
+/* ---- 二维码：只在机器人页；没登录时 20 秒轮询一次 ---- */
+let qrTimer = null;
+
+async function qrRefresh(manual){
+  const box = $("qrBox"); if (!box) return;
+  let d = null;
+  try { d = await api("/api/napcat/qr"); } catch(e){ d = null; }
+  if (!d || !d.ok){
+    box.innerHTML = `<b>现在没有可扫的码。</b><br>${esc((d && d.error) || "NapCat 可能不在登录流程里")}<br>
+      点「重启 NapCat 取新码」，或用右侧的 NapCat WebUI 扫码。`;
+    return;
+  }
+  const mins = Math.round((d.age_s || 0) / 60);
+  const head = d.stale
+    ? `<b style="color:var(--red)">这张码 ${mins} 分钟没更新，多半已失效。</b><br>点「重启 NapCat 取新码」重新生成。<br>`
+    : `<b style="color:var(--green)">${d.age_s || 0} 秒前生成的。</b><br>`;
+  const img = d.b64
+    ? `<img src="${d.b64}" alt="QQ 登录二维码" width="220" height="220"
+         style="image-rendering:pixelated;background:#fff;padding:6px;border-radius:10px;margin:8px 0">`
+    : "";
+  box.innerHTML = head + img
+    + (d.url ? `<div style="word-break:break-all;font-size:11px">${esc(d.url)}</div>` : "")
+    + `<div class="kv" style="margin-top:6px">用手机 QQ 扫上面这张。</div>`;
+}
+
+async function qrRestart(){
+  if (!confirm("重启 NapCat 会断开当前 QQ 连接并重新生成二维码，确定？")) return;
+  const box = $("qrBox");
+  if (box) box.innerHTML = "正在重启 NapCat…（约 10 秒）";
+  try { await post("/api/action", {action: "restart_napcat"}); } catch(e){}
+  setTimeout(() => qrRefresh(true), 9000);
+}
+
+function qrArm(online){
+  if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }
+  const link = $("qrWebui");
+  if (link) link.href = "http://" + (location.hostname || "127.0.0.1") + ":6099/webui";
+  if ($("qrBox")){
+    qrRefresh(false);
+    if (!online) qrTimer = setInterval(() => qrRefresh(false), 20000);
+  }
+}
+
 function botFillModels(){
   const p = (window.__provs || []).find(x => x.id === $("mpProv").value) || {models: []};
   $("mpModel").innerHTML = (p.models || []).map(m=>`<option>${esc(m)}</option>`).join("");
