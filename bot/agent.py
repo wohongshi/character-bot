@@ -140,7 +140,9 @@ def _markup_is_example(text: str) -> bool:
         return True
     # 「示例：」「格式：」这种引导词 + 很短的正文，也按例子处理
     head = _clear_stray_tags(t[:start])
-    return bool(re.search(r"(示例|例子|格式|写法|例如)[：:。]?\s*$", head)) and len(head) <= 24
+    # 「示例如下：」「写法如下：」「格式是这样的：」—— 关键词和句末之间常夹几个字
+    return bool(re.search(r"(示例|例子|格式|写法|例如|示范)[^。！？!?]{0,8}[：:]?\s*$", head)) \
+        and len(head) <= 24
 
 
 def _clear_stray_tags(text: str) -> str:

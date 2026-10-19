@@ -689,7 +689,8 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
     kw = {}
     if reasoning and reasoning != "default":
         kw["temperature"] = 0.4 if reasoning == "high" else 0.7
-    return agent_mod.run(
+    _sink: list[str] = []
+    _res = agent_mod.run(
         rt.models, msgs,
         provider="", model="",
         tools=tools,
@@ -698,7 +699,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
         # `send`、`owner_id`）。以前给 None，于是 use_skill 一调就
         # AttributeError: 'NoneType' object has no attribute '_chat_id' ——
         # 面板里等于所有插件技能都不可用（截图那轮模型就是这么白跑一趟的）。
-        chat={"adapter": _WebAdapter(rt, cid), "is_group": False, "group_id": "",
+        chat={"adapter": _WebAdapter(rt, cid, sink=_sink), "is_group": False, "group_id": "",
               "user_id": "panel", "user_name": "主人", "role": "owner",
               "is_owner": True, "loop": None, "loop_thread": None},
         max_steps=int(cfg.get("agent_max_steps") or 3),
@@ -710,6 +711,10 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
         character=cid,
         **kw,
     )
+    # 技能如果只通过 adapter.send 说话（不返回值），文字在这里，别丢
+    if _sink:
+        _res["plugin_texts"] = list(_sink)
+    return _res
 
 
 # ---------- 插件发出来的图片（卡片 / 画图 / 二维码） ----------
@@ -720,7 +725,7 @@ IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # 插件 `create_task` 丢下的活最多等这么久。要和出图插件的超时对齐
 # （bot/features/draw.py 的 timeout 默认 90 秒）—— 设成 40 就是「画到一半被取消」，
 # 而 CancelledError 是 BaseException，插件的 `except Exception` 兜底也接不住。
-TASK_DRAIN_SECONDS = 90.0
+TASK_DRAIN_SECONDS = 120.0
 IMG_ROOTS = (STUDIO_HOME / "bot" / "features" / "state", STUDIO_HOME / "state",
              STUDIO_HOME / "static" / "img")
 
@@ -775,6 +780,8 @@ class _WebAdapter:
         self.feature_prefix = str(rt.config.get("feature_prefix") or ".")
         self.images: list[dict] = []          # 插件发的图，交给 worker 落盘
         self.texts: list[str] = []            # 插件直接 adapter.send 的文字
+        if self.sink is None:
+            self.sink = self.texts             # 没有外部捕获表时，就写自己的
 
     async def send(self, chat_id, text, reply_to=None, sentence_split=None, **kw):
         # 命令走 ctx.reply（已换成捕获函数），但插件里也有直接
@@ -842,6 +849,13 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
     hit_cmd = False
     handled = False
     loop = _aio.new_event_loop()
+
+    def _bg_exc(_loop, ctx):               # 兜住「没人 await 的后台任务异常」
+        exc = ctx.get("exception")
+        logger.warning("插件后台任务异常（无人 await）：%s: %s",
+                       type(exc).__name__ if exc else "?", exc or ctx.get("message"))
+
+    loop.set_exception_handler(_bg_exc)
     try:
         # 1) 入站钩子（违禁词、复读……）：每条消息都跑
         passed = loop.run_until_complete(rt.mgr.run_message_hooks(ctx))
@@ -872,25 +886,30 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
         # 以前这里直接 close()，worker 要么还没开始跑、要么停在 await 上被丢掉 ——
         # 「只出图不出字」的 .画画 就是这么没图的。
         try:
-            # 快照**全部**任务（含已经跑完的）：只看 not done 的，那些提前抛异常的
-            # 任务永远不会被 await，异常只在 GC 时以「Task exception was never
-            # retrieved」冒出来 —— 正是这次要消灭的静默失败。
-            pending = [t for t in _aio.all_tasks(loop) if t is not _aio.current_task(loop)]
+            # 不要用 asyncio.gather()：它在**没有 running loop 的线程**里要靠
+            # policy 的 get_event_loop()，而这里（_chat_worker 线程）只是 new_event_loop()
+            # 过、从没 set_event_loop() —— 3.12+ 会直接抛「no current event loop」。
+            # 改成逐个 task 调 .exception()：done 的顺手把异常取走（否则 GC 时才报
+            # 「Task exception was never retrieved」），没 done 的先取消。
+            pending = list(_aio.all_tasks(loop))
             if pending:
                 loop.run_until_complete(_aio.wait(pending, timeout=TASK_DRAIN_SECONDS))
                 left = [t for t in pending if not t.done()]
                 for t in left:
                     t.cancel()
                 if left:
+                    loop.run_until_complete(_aio.wait(left, timeout=5))
                     logger.warning("插件还有 %d 个后台任务没跑完（已取消）", len(left))
-                # return_exceptions=True 拿到结果而不是抛：顺手把异常记进日志
-                done = loop.run_until_complete(
-                    _aio.wait_for(_aio.gather(*pending, return_exceptions=True), 5))
-                for t, res in zip(pending, done):
-                    if isinstance(res, BaseException) and not isinstance(
-                            res, _aio.CancelledError):
+                for t in pending:
+                    if not t.done():
+                        continue
+                    try:
+                        exc = t.exception()          # 取走异常（cancelled 会抛，下面接住）
+                    except BaseException:            # noqa: BLE001
+                        continue
+                    if exc is not None:
                         logger.warning("插件后台任务抛异常：%s: %s",
-                                       type(res).__name__, res)
+                                       type(exc).__name__, exc)
         except Exception as e:                                   # noqa: BLE001
             logger.warning("插件后台任务收尾失败：%s", e)
         loop.close()
@@ -1019,6 +1038,10 @@ def _chat_worker() -> None:
                                       "caption": str(i.get("caption") or "")}
                                      for i in (res.get("images") or []) if i.get("path")]
                     reply_agent = str(res.get("text") or "").strip()
+                    if not reply_agent and res.get("plugin_texts"):
+                        # 技能只调用 adapter.send 说了句话：那也是回答
+                        reply_agent = "\n".join(
+                            t for t in res["plugin_texts"] if str(t).strip())[:800]
                     if not reply_agent and job.get("images"):
                         # 技能执行成功了、图也生成了，但收尾那句人话没拿到：
                         # 图先落盘，别让整批丢掉。

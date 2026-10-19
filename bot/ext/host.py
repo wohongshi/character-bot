@@ -49,7 +49,12 @@ def _inject_jvm_flags(launcher: list[str], flags: list[str]) -> list[str]:
     当成命令名，插件从「编码不对」变成「起不来」。
     """
     for i, part in enumerate(launcher):
-        if Path(str(part)).name in ("java", "java.exe"):
+        tok = str(part)
+        # 跳过 env 赋值（`JAVA_HOME=/opt/java` 的 basename 也是 `java`！）
+        # 和选项 token（`-Djava.home=/opt/java` 同理），只认真正的可执行名。
+        if "=" in tok or tok.startswith("-"):
+            continue
+        if Path(tok).name in ("java", "java.exe"):
             return [*launcher[:i + 1], *flags, *launcher[i + 1:]]
     return launcher                      # 认不出 java：原样返回，别把它弄坏
 

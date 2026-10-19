@@ -127,7 +127,7 @@ internal static class Program
             }
             if (raw.StartsWith('/') || name.Contains(":") || name.Split('/').Any(s => s == ".."))
             {
-                r.Problems.Add($"路径穿越：{name}");
+                r.Problems.Add($"路径穿越：{raw}");
                 continue;
             }
             if (e.Length > MaxEntryBytes)
@@ -278,6 +278,10 @@ internal static class Program
                 ("backslash.zip", false, r => r.CharacterId == "demo" && r.Problems.Count == 0),
                 // 9) 绝对路径：Normalize 会吃掉前导 /，必须在原始名上判
                 ("abs.zip", true, r => r.Problems.Any(x => x.Contains("路径穿越"))),
+                // 10) 文件条目名字就叫 "." → 安装器按「空路径」拒绝，不能静默跳过
+                ("dot-name.zip", true, r => r.Problems.Any(x => x.Contains("空路径"))),
+                // 11) `_x.txt`：_ 前缀只对 .py 免检，非 .py 仍要报「只能放 .py」
+                ("underscore-txt.zip", true, r => r.Problems.Any(x => x.Contains("只能放 .py"))),
             };
             var okAll = true;
             foreach (var c in cases)
@@ -304,6 +308,14 @@ internal static class Program
                             break;
                         case "dot-prefix.zip":
                             Put(z, "./demo.py", "x = 1\n");
+                            break;
+                        case "dot-name.zip":
+                            Put(z, ".", "x");
+                            Put(z, "ok.py", "x = 1\n");
+                            break;
+                        case "underscore-txt.zip":
+                            Put(z, "demo.py", "x = 1\n");
+                            Put(z, "_notes.txt", "x");
                             break;
                         case "abs.zip":
                             Put(z, "/etc/passwd", "x");
