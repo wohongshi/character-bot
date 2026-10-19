@@ -717,7 +717,10 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
 # 插件自己 catch 住降级成文字 —— 于是 .运势 / .塔罗 / .角色卡 / .画画 的图
 # 在网页里一张都看不到（日志里只有一句「回退文本」）。这里补上整条链路。
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-TASK_DRAIN_SECONDS = 40.0      # 插件 `create_task` 丢下的活最多等这么久（出图要时间）
+# 插件 `create_task` 丢下的活最多等这么久。要和出图插件的超时对齐
+# （bot/features/draw.py 的 timeout 默认 90 秒）—— 设成 40 就是「画到一半被取消」，
+# 而 CancelledError 是 BaseException，插件的 `except Exception` 兜底也接不住。
+TASK_DRAIN_SECONDS = 90.0
 IMG_ROOTS = (STUDIO_HOME / "bot" / "features" / "state", STUDIO_HOME / "state",
              STUDIO_HOME / "static" / "img")
 
@@ -758,9 +761,10 @@ def _img_file(rel: str) -> Path | None:
 class _WebAdapter:
     """给 FeatureContext 用的假适配器：reply 捕获进列表，不再真的发消息。"""
 
-    def __init__(self, rt, cid: str):
+    def __init__(self, rt, cid: str, sink: list | None = None):
         self._rt = rt
         self._cid = cid
+        self.sink = sink                       # 捕获列表：插件直发 adapter.send 的文字
         # BOT 在测试桩 / 半初始化时可能没有 config：这只是「谁在说话」的标记，
         # 拿不到就给个默认值，不该让整条消息挂掉（以前只有命令消息才建这个对象，
         # 改成「每条消息都过钩子」之后这一行就跑在热路径上了）
@@ -776,8 +780,15 @@ class _WebAdapter:
         # 命令走 ctx.reply（已换成捕获函数），但插件里也有直接
         # `ctx.adapter.send(...)` 的（出图失败时提示用户就是），那种以前被
         # 直接丢掉、还回 success=True —— 用户看到的是「发出去什么都没发生」。
+        # 直接写进 sink（= captured），这样顺序和 ctx.reply 混排时是对的，
+        # 而且提前 return 的路径（钩子拦截 / 异常）也不会漏。
         if text:
-            self.texts.append(str(text))
+            if self.sink is not None:
+                for line in str(text).split("\n"):
+                    if line.strip():
+                        self.sink.append(line)
+            else:
+                self.texts.append(str(text))
         return SimpleNamespace(success=True)
 
     async def send_image_file(self, chat_id, path, caption=None, **kw):
@@ -815,11 +826,11 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
     prefix = str(rt.config.get("feature_prefix") or ".")
 
     from bot.framework import FeatureContext
-    adapter = _WebAdapter(rt, cid)
+    captured: list[str] = []
+    adapter = _WebAdapter(rt, cid, sink=captured)
     ctx = FeatureContext(adapter=adapter, text=raw, is_group=False,
                          group_id="", user_id="panel", user_name="主人",
                          message_id="", mentioned=True, role="owner")
-    captured: list[str] = []
 
     async def _fake_reply(t, **kw):
         for line in str(t).split("\n"):
@@ -861,20 +872,29 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
         # 以前这里直接 close()，worker 要么还没开始跑、要么停在 await 上被丢掉 ——
         # 「只出图不出字」的 .画画 就是这么没图的。
         try:
-            pending = [t for t in _aio.all_tasks(loop) if not t.done()]
+            # 快照**全部**任务（含已经跑完的）：只看 not done 的，那些提前抛异常的
+            # 任务永远不会被 await，异常只在 GC 时以「Task exception was never
+            # retrieved」冒出来 —— 正是这次要消灭的静默失败。
+            pending = [t for t in _aio.all_tasks(loop) if t is not _aio.current_task(loop)]
             if pending:
                 loop.run_until_complete(_aio.wait(pending, timeout=TASK_DRAIN_SECONDS))
                 left = [t for t in pending if not t.done()]
                 for t in left:
                     t.cancel()
                 if left:
-                    loop.run_until_complete(_aio.gather(*left, return_exceptions=True))
                     logger.warning("插件还有 %d 个后台任务没跑完（已取消）", len(left))
+                # return_exceptions=True 拿到结果而不是抛：顺手把异常记进日志
+                done = loop.run_until_complete(
+                    _aio.wait_for(_aio.gather(*pending, return_exceptions=True), 5))
+                for t, res in zip(pending, done):
+                    if isinstance(res, BaseException) and not isinstance(
+                            res, _aio.CancelledError):
+                        logger.warning("插件后台任务抛异常：%s: %s",
+                                       type(res).__name__, res)
         except Exception as e:                                   # noqa: BLE001
             logger.warning("插件后台任务收尾失败：%s", e)
         loop.close()
     job["images"] = adapter.images          # 插件发的卡片/图片，worker 负责落盘
-    captured.extend(t for t in adapter.texts if t)
     if captured:
         return "\n".join(captured)
     # 命令真的被消费了才算「已处理」；`.helo` 这种错字以前返回 ""，

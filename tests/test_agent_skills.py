@@ -389,13 +389,53 @@ def main():
           str(N2.scan("ДУРАК", ["дурак"])))
     check("13.5 中文不受影响（快路径还在）", N2.scan("这里有屏蔽词", ["屏蔽"]) == [0])
 
-    # 13.6 Java 必须钉 UTF-8：LANG=C 的机器上 stdio 编码跟 locale 走
-    from bot.ext.host import JAVA_UTF8, LANG_RUN
-    check("13.6 Java 启动参数含 stdin/stdout 编码",
-          all(k in LANG_RUN["java"] for k in ("-Dstdin.encoding=UTF-8", "-Dstdout.encoding=UTF-8")),
+    # 13.6 Java 必须钉 UTF-8：LANG=C 的机器上 stdio 编码跟 locale 走（实测过）
+    from bot.ext.host import ExtPlugin, JAVA_UTF8, LANG_RUN
+    from pathlib import Path as _P
+
+    _ext_base = _P(ROOT) / "bot" / "features" / "ext"
+
+    def _cmd(spec):
+        return " ".join(ExtPlugin(spec, _ext_base).cmd)
+
+    check("13.6 默认启动命令带 stdin/stdout 编码",
+          all(k in " ".join(LANG_RUN["java"]) for k in ("-Dstdin.encoding", "-Dstdout.encoding")),
           str(LANG_RUN["java"]))
-    check("13.7 自动注入（spec 自己写 run 也补上）",
-          all(k in str(JAVA_UTF8) for k in ("file.encoding", "stdin.encoding", "stdout.encoding")))
+    # 13.7 必须测**真的注入到 cmd**，不是只看常量
+    got = _cmd({"id": "x", "language": "java", "run": ["java", "-cp", "c"], "args": ["X"]})
+    check("13.7 spec 自己的 run 也会被补上四个属性", got.count("-D") == 4, got)
+    # 13.8 启动器是 env 包装时，旗标要插到真正的 java 后面，不能插给 env
+    got2 = _cmd({"id": "y", "language": "java",
+                 "run": ["env", "JAVA_HOME=/opt/jdk", "java", "-cp", "c"], "args": ["Y"]})
+    check("13.8 env 包装时插在 java 后面",
+          got2.startswith("env JAVA_HOME=/opt/jdk java -D") and "env -D" not in got2, got2)
+    # 13.9 spec 只钉了一条：剩下三条照样要补
+    got3 = _cmd({"id": "z", "language": "java",
+                 "run": ["java", "-Dstdout.encoding=UTF-8", "-cp", "c"], "args": ["Z"]})
+    check("13.9 逐条补：只写了一条也不会吞掉其余三条",
+          got3.count("-D") == 4 and got3.count("-Dstdout.encoding") == 1, got3)
+    # 13.10 认不出 java（sh 包装脚本）：不要动它，别把插件弄坏
+    got4 = _cmd({"id": "w", "language": "java", "run": ["sh", "run.sh"], "args": []})
+    check("13.10 认不出 java 时原样返回", got4 == "sh run.sh", got4)
+
+    # 13.11 混合词表：原生只折叠 ASCII，结果必须并上 Python 的
+    check("13.11 混合词表命中完整（hello + ДУРАК）",
+          N2.scan("hello дурак", ["hello", "ДУРАК"]) == [0, 1],
+          str(N2.scan("hello дурак", ["hello", "ДУРАК"])))
+
+    # 13.12 讲写法时，块是答案的一部分，不能被删掉
+    ex = "写法是这样的：<tool_call>{\"name\":\"now\",\"arguments\":{}}</tool_call> 这就是一条工具调用。"
+    c = script({"text": ex, "tool_calls": []})
+    res = A.run(None, [{"role": "user", "content": "tool_call 怎么写"}], max_steps=2, complete=c)
+    check("13.12 例子里的块保留在回答里", "<tool_call>" in res["text"] and "写法是这样的" in res["text"],
+          res["text"][:120])
+    check("13.13 例子不被执行", res["tool_calls"] == [], str(res["tool_calls"]))
+    # 13.14 「好的，我去查」+ 纯块 → 仍然要执行（别把正常调用当解释）
+    c = script({"text": "好的，我这就去查一下最新的资料。<tool_call>{\"name\":\"now\","
+                        "\"arguments\":{}}</tool_call>", "tool_calls": []},
+               {"text": "查到了", "tool_calls": []})
+    res = A.run(None, [{"role": "user", "content": "查一下"}], max_steps=3, complete=c)
+    check("13.14 开场白 + 块 → 照样执行", res["tool_calls"] == ["now"], str(res["tool_calls"]))
 
     # 13.8 只出图不出字：不能写空文本行
     with tempfile.TemporaryDirectory() as td:

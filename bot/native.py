@@ -170,10 +170,14 @@ def scan(text: str | None, words: Sequence[str]) -> list[int]:
             n = lib.klee_scan(raw, len(raw), packed, len(packed), out, len(ws))
             if n >= 0:
                 hits = [int(out[i]) for i in range(n)]
-                # 命中了直接返回；没命中且词表含「非 ASCII 的大小写」时才回落
-                # （纯中文词表不会触发，快路径不变）
-                if hits or not _needs_unicode_fold(ws):
+                # 词表里有「非 ASCII 的大小写」（西里尔/希腊…）时，原生结果只是
+                # **部分**结果：`scan("hello дурак", ["hello","ДУРАК"])` 原生只
+                # 命中 hello。这种情况要把 Python 的结果并进来，不能直接返回。
+                if not _needs_unicode_fold(ws):
                     return hits
+                low = s.lower()
+                py = [i for i, w in enumerate(ws) if w.lower() in low]
+                return sorted(set(hits) | set(py))
         except Exception:                                        # noqa: BLE001
             pass
     low = s.lower()

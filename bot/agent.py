@@ -116,17 +116,40 @@ def _parse_tool_markup(text: str) -> list[dict]:
     return out
 
 
-def _markup_is_answer(residue: str) -> bool:
-    """去掉调用块之后，剩下的那段是「解释文字」还是「一句话开场」？
+def _markup_is_example(text: str) -> bool:
+    """这段正文里的调用块，是「例子」还是「真的想调用」？
 
-    用户问「tool_call 怎么写」时模型会举例，正文里就带着真的可执行块 ——
-    照执行等于把提问当命令跑，还把解释吞掉。
-    判据：有句末标点（。！？）说明是在说话；没有的多半是「好的，我查一下：」这类开场。
+    判据用**结构**，不用句末标点（那条两个方向都会误判）：
+    1. 块在 ``` 代码围栏里 —— 一定是在讲写法；
+    2. 块**后面**还有 ≥6 字的实质文字 —— 说明后面还有话，块只是被引用的片段。
+
+    模型真的想调用时，正文通常是「好的，我查一下：」+ 块，块后面什么都没有。
     """
-    r = str(residue or "").strip()
-    if len(r) < 12:
-        return False                      # 太短：更像「好的，我查一下：」这类开场
-    return bool(re.search(r"[。！？!?]", r))   # 有句末标点 = 在说话，不是在调用
+    t = str(text or "")
+    spans = [(m.start(), m.end()) for m in _RE_BLOCK_INVOKE.finditer(t)]
+    spans += [(m.start(), m.end()) for m in _RE_BLOCK_CALL.finditer(t)]
+    if not spans:
+        return False
+    start, end = min(s for s, _ in spans), max(e for _, e in spans)
+    if t[:start].count("```") % 2 == 1:      # 块在未闭合的围栏里
+        return True
+    # 注意要先清掉外层标签（`</…calls>` 这种），否则「后面还有 19 个字」
+    # 会被误判成实质文字，一段纯调用就成了「例子」。
+    after = _clear_stray_tags(t[end:])
+    if len(after) >= 6:
+        return True
+    # 「示例：」「格式：」这种引导词 + 很短的正文，也按例子处理
+    head = _clear_stray_tags(t[:start])
+    return bool(re.search(r"(示例|例子|格式|写法|例如)[：:。]?\s*$", head)) and len(head) <= 24
+
+
+def _clear_stray_tags(text: str) -> str:
+    """只去掉孤立的调用标签，**保留**块里的内容（讲写法时要能看到那段）。"""
+    t = str(text or "")
+    t = re.sub(r"</?\s*(?:function_calls?|tool_calls?|tool_call)\b[^>]*>", "", t)
+    t = re.sub(r"</?\s*[｜|]{2}\s*DSML\s*[｜|]{2}[^>]*>", "", t)
+    t = re.sub(r"<[｜|]{2}[^>]*>", "", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
 def _looks_like_debris(text: str) -> bool:
@@ -719,21 +742,25 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             raise AgentError(f"模型调用失败：{type(e).__name__}: {e}") from e
         text = str(res.get("text") or "").strip()
         calls = res.get("tool_calls") or []
+        is_example = False
         if not calls and any(m in text for m in _MARKUP_MARKERS):
             parsed = _parse_tool_markup(text)
             # 只有「正文里除了标记几乎没有别的内容」才当成调用。
             # 用户问「DSML 标记怎么写」、或者模型引用搜索结果里的 <tool_call> 时，
             # 正文是解释文字，标记只是例子 —— 照执行就等于把用户的问题当成命令跑。
-            residue = _strip_tool_markup(text)
-            if parsed and not _markup_is_answer(residue):
+            if parsed and _markup_is_example(text):
+                # 在讲「怎么写」：块本身就是答案的一部分。**一个字都不要动** ——
+                # 之前这里还跑了一遍清理，把 <tool_call> 标签也删了，
+                # 用户问「怎么写」却看不到写法。
+                log.info("正文里的工具标记看着像例子（不是调用），原样返回")
+                is_example = True
+            elif parsed:
                 log.info("模型把工具调用写成了正文，解析出 %d 个调用（原来会被当正文回给用户）",
                          len(parsed))
                 calls = parsed
                 text = ""                       # 标记不是回答，别让它进历史
-            elif parsed:
-                log.info("正文里夹了工具标记但还有 %d 字解释，按普通文本处理", len(residue))
         if not calls:
-            if any(m in text for m in _MARKUP_MARKERS):
+            if not is_example and any(m in text for m in _MARKUP_MARKERS):
                 cleaned = _strip_tool_markup(text)
                 log.warning("模型把工具调用写进了正文（已清理 %d 字）", len(text) - len(cleaned))
                 if not cleaned or len(cleaned) < 2:

@@ -107,11 +107,25 @@ internal static class Program
                 r.Problems.Add($"条目太多（>{MaxEntries}）—— 可能是 zip 炸弹");
                 break;
             }
-            // 路径穿越：绝对路径、盘符、越界 ..（判的是原始名，别先归一化掉 ..）
+            // 路径穿越：绝对路径、盘符、越界 ..
+            // 判的是**原始名**：Normalize() 会丢掉空段，`/etc/passwd` 归一化后
+            // 变成 `etc/passwd`，前导 / 就没了 —— 拿归一化的名字判绝对路径是死代码。
             var raw = e.FullName.Replace('\\', '/');
+            var isDir = raw.EndsWith('/');
+            if (raw.Length == 0)
+            {
+                r.Problems.Add("空路径");
+                continue;
+            }
             var name = Normalize(raw);
-            if (name.Length == 0) continue;          // 纯目录/`.` 条目
-            if (name.StartsWith('/') || name.Contains(":") || name.Split('/').Any(s => s == ".."))
+            if (name.Length == 0)
+            {
+                // 只有目录条目（`./`、`a/`）可以没有名字；一个**文件**叫 `.`
+                // 会被安装器按「空路径」拒掉，这里也得报，不能静默跳过。
+                if (!isDir) r.Problems.Add($"空路径：{raw}");
+                continue;
+            }
+            if (raw.StartsWith('/') || name.Contains(":") || name.Split('/').Any(s => s == ".."))
             {
                 r.Problems.Add($"路径穿越：{name}");
                 continue;
@@ -122,7 +136,7 @@ internal static class Program
             }
             total += e.Length;
             string hash = "";
-            if (!raw.EndsWith('/'))      // 目录条目不算
+            if (!isDir)                  // 目录条目不算
             {
                 using var s = e.Open();
                 using var sha = SHA256.Create();
@@ -156,7 +170,8 @@ internal static class Program
                 // `_shared/util.py` 会被「共享模块」那条静默跳过，安装器却会拒。
                 if (rn.Contains('/')) { r.Problems.Add($"插件文件不能放在子目录：{rn}"); continue; }
                 if (rn is "plugin.json" or "README.md") continue;
-                if (rn.StartsWith('_')) continue;          // 共享模块：不算插件，也不报
+                if (rn.StartsWith('_') && rn.EndsWith(".py"))
+                    continue;                              // 共享模块：留给下面那条循环报
                 if (!rn.EndsWith(".py")) { r.Problems.Add($"插件包只能放 .py（发现 {rn}）"); continue; }
                 if (!PluginNameRe.IsMatch(rn))
                     r.Problems.Add($"文件名不合法：{rn}（小写字母开头，字母/数字/_）");
@@ -261,6 +276,8 @@ internal static class Program
                 ("dot-prefix.zip", true, r => r.Problems.Count == 0),
                 // 8) 反斜杠路径的角色包：能读到 character.json，不能「假通过」
                 ("backslash.zip", false, r => r.CharacterId == "demo" && r.Problems.Count == 0),
+                // 9) 绝对路径：Normalize 会吃掉前导 /，必须在原始名上判
+                ("abs.zip", true, r => r.Problems.Any(x => x.Contains("路径穿越"))),
             };
             var okAll = true;
             foreach (var c in cases)
@@ -287,6 +304,10 @@ internal static class Program
                             break;
                         case "dot-prefix.zip":
                             Put(z, "./demo.py", "x = 1\n");
+                            break;
+                        case "abs.zip":
+                            Put(z, "/etc/passwd", "x");
+                            Put(z, "ok.py", "x = 1\n");
                             break;
                         case "backslash.zip":
                             Put(z, @"demo\character.json", "{\"id\":\"demo\",\"name\":\"演示\"}");

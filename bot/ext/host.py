@@ -41,6 +41,19 @@ __all__ = ["ExtPlugin", "ExtError", "LANG_RUN"]
 JAVA_UTF8 = ["-Dfile.encoding=UTF-8", "-Dstdin.encoding=UTF-8",
              "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8"]
 
+def _inject_jvm_flags(launcher: list[str], flags: list[str]) -> list[str]:
+    """把 -D… 插到**真正的 java** 后面，而不是启动器后面。
+
+    spec 的 `run` 可能写成 `["env", "JAVA_HOME=…", "java", "-Xmx…"]` 或
+    `["sh", "run.sh"]`。直接插在 [0] 后面，`env` 会把 `-Dfile.encoding=…`
+    当成命令名，插件从「编码不对」变成「起不来」。
+    """
+    for i, part in enumerate(launcher):
+        if Path(str(part)).name in ("java", "java.exe"):
+            return [*launcher[:i + 1], *flags, *launcher[i + 1:]]
+    return launcher                      # 认不出 java：原样返回，别把它弄坏
+
+
 #: 语言 → 默认启动命令（entry 会接在后面）
 LANG_RUN = {
     "node": ["node"],
@@ -101,10 +114,13 @@ class ExtPlugin:
             # `run` 给了就照抄，`args` 里的参数原样追加（Java 要的是类名，不是路径）。
             # 但 Java 的 UTF-8 属性是**正确性**要求，不是偏好：
             # spec 没写就替它补上（写了就尊重 spec）。
-            if self.language == "java" and not any(
-                    str(x).startswith("-Dstdout.encoding") for x in launcher):
-                head = launcher[:1]
-                launcher = [*head, *JAVA_UTF8, *launcher[1:]]
+            if self.language == "java":
+                # 逐条补：spec 只钉了 `-Dstdout.encoding` 时，剩下的
+                # file/stdin/stderr 仍然必须补上（有人修乱码就只写这一条）。
+                have = {str(x).split("=")[0] for x in launcher if str(x).startswith("-D")}
+                want = [k for k in JAVA_UTF8 if k.split("=")[0] not in have]
+                if want:
+                    launcher = _inject_jvm_flags(launcher, want)
             args = self.spec.get("args")
             self.cmd = [*launcher, *[str(a) for a in (args or [])]]
             if not self.cmd or not self.cmd[-1:]:
