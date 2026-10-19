@@ -197,7 +197,7 @@ class ToolContext:
     def __init__(self, *, kb_url: str = "", state_dir: Path | None = None,
                  scope: str = "global", timeout: float = 20.0,
                  skills=None, chat: dict | None = None, models=None,
-                 character: str = ""):
+                 character: str = "", images_out: list | None = None):
         self.kb_url = str(kb_url or "").rstrip("/")
         self.state_dir = Path(state_dir) if state_dir else None
         self.scope = str(scope or "global")
@@ -207,7 +207,10 @@ class ToolContext:
         self.character = str(character or "")     # 当前角色（知识库必须按角色查）
         self.skills = skills                     # SkillHub（插件当 skill 用）
         self.chat = dict(chat or {})             # is_group/group_id/user_id/user_name/role
-        self.images_out: list[dict] = []         # skill 生成的图片，由 runtime 统一发
+        # skill 生成的图片，由 runtime 统一发。
+        # 可以由调用方传一个 list 进来「外部持有」：agent 超时抛异常时，
+        # 已经画好的图还在这个 list 里，不会被一起丢掉。
+        self.images_out: list[dict] = images_out if images_out is not None else []
 
 
 def _clip(s: str, n: int = MAX_TOOL_RESULT) -> str:
@@ -726,14 +729,15 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
         temperature: float = 0.7, max_tokens: int = 800,
         kb_url: str = "", state_dir: Path | None = None, scope: str = "global",
         tool_timeout: float = 20.0, complete=None, skills=None, chat: dict | None = None,
-        character: str = "", on_delta=None) -> dict:
+        character: str = "", on_delta=None, images_out: list | None = None) -> dict:
     """跑一轮 agent。返回 {text, steps, tool_calls, trace, error}。
 
     `complete` 可注入（测试用）：签名同 `ModelStore.complete_raw`。
     """
     allowed = resolve_tools(tools)
     ctx = ToolContext(kb_url=kb_url, state_dir=state_dir, scope=scope, timeout=tool_timeout,
-                      skills=skills, chat=chat, models=models, character=character)
+                      skills=skills, chat=chat, models=models, character=character,
+                      images_out=images_out)
     caller = complete or models.complete_raw
     msgs = list(messages)
     trace = []

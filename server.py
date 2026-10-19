@@ -816,10 +816,17 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
     return sys_text
 
 
+# 插件 `create_task` 丢下的活最多等这么久。要和出图插件的超时对齐
+# （bot/features/draw.py 的 timeout 默认 90 秒，GLM 那条路还要再下一张图）——
+# 设成 40 就是「画到一半被取消」，而 CancelledError 是 BaseException，
+# 插件的 `except Exception` 兜底也接不住。
+TASK_DRAIN_SECONDS = 120.0
+
 # 面板 agent 调技能后等后台任务（出图）的秒数。
-# 必须 ≥ 出图插件自己的超时（draw 默认 90 秒），否则图会在 drain 到点时被取消 ——
-# 和 TASK_DRAIN_SECONDS 那个「设成 40 就是画到一半被取消」是同一个坑。
-_PANEL_TOOL_DRAIN = 90.0
+# 必须 ≥ 出图插件自己的超时（draw 默认 90 秒，而且 GLM 那条路是先 POST 拿 URL
+# 再下载一次，最坏能到 ~2×timeout），所以直接用 TASK_DRAIN_SECONDS（120），
+# 和 QQ 侧的派发路径保持同一个口径。
+_PANEL_TOOL_DRAIN = TASK_DRAIN_SECONDS
 
 
 def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
@@ -835,38 +842,50 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
     kw = {}
     if reasoning and reasoning != "default":
         kw["temperature"] = 0.4 if reasoning == "high" else 0.7
-    return agent_mod.run(
-        rt.models, msgs,
-        provider="", model="",
-        tools=tools,
-        skills=(rt.skills if cfg.get("agent_skills", True) else None),
-        # adapter 不能给 None：插件技能几乎都要 adapter（`ctx.adapter._chat_id(...)`、
-        # `send`、`owner_id`）。以前给 None，于是 use_skill 一调就
-        # AttributeError: 'NoneType' object has no attribute '_chat_id' ——
-        # 面板里等于所有插件技能都不可用（截图那轮模型就是这么白跑一趟的）。
-        chat={"adapter": _WebAdapter(rt, cid), "is_group": False, "group_id": "",
-              "user_id": "panel", "user_name": "主人", "role": "owner",
-              "is_owner": True,
-              # 不给 bot 那条 loop：给了只会让 create_task 活下来，而 SkillHub
-              # 把 adapter 包成 _Capture，后台任务产的图要等 drain 才收得到，
-              # `tool_use_skill` 读 res["images"] 时早就返回了。
-              # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
-              # drain 要和这一轮 agent 的预算对得上：use_skill 的处理上限是 30 秒，
-              # drain 完还有两段各 5 秒的取消等待，最后还得留时间给「不带工具」的收尾。
-              # 30 + 90 + 12 = 132 < 180（总预算见下面的 timeout）。
-              "loop": None, "loop_thread": None, "drain": _PANEL_TOOL_DRAIN},
-        max_steps=int(cfg.get("agent_max_steps") or 3),
-        # 至少给「工具的 handler + drain + 收尾」留够；用户配更小就按他的来
-        timeout=max(float(cfg.get("agent_timeout") or 120), 30 + _PANEL_TOOL_DRAIN + 60),
-        max_tokens=int(cfg.get("max_tokens") or 800),
-        kb_url=str(cfg.get("kb_url") or ""),
-        state_dir=rt.state_dir,
-        # 必须是这个会话：面板里她「记住」的东西，下一条消息就得出现在提示里
-        scope=("web:" + session) if session else "web:panel",
-        character=cid,
-        on_delta=on_delta,
-        **kw,
-    )
+    # 图片先放在外面「外部持有」：agent 超时抛异常时，已经画好的图还在这，
+    # 至少能发给用户 —— 以前这条路径一超时图就没影了。
+    imgs: list = []
+    kw["images_out"] = imgs
+    try:
+        return agent_mod.run(
+            rt.models, msgs,
+            provider="", model="",
+            tools=tools,
+            skills=(rt.skills if cfg.get("agent_skills", True) else None),
+            # adapter 不能给 None：插件技能几乎都要 adapter（`ctx.adapter._chat_id(...)`、
+            # `send`、`owner_id`）。以前给 None，于是 use_skill 一调就
+            # AttributeError: 'NoneType' object has no attribute '_chat_id' ——
+            # 面板里等于所有插件技能都不可用（截图那轮模型就是这么白跑一趟的）。
+            chat={"adapter": _WebAdapter(rt, cid), "is_group": False, "group_id": "",
+                  "user_id": "panel", "user_name": "主人", "role": "owner",
+                  "is_owner": True,
+                  # 不给 bot 那条 loop：给了只会让 create_task 活下来，而 SkillHub
+                  # 把 adapter 包成 _Capture，后台任务产的图要等 drain 才收得到，
+                  # `tool_use_skill` 读 res["images"] 时早就返回了。
+                  # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
+                  # drain 要和这一轮 agent 的预算对得上：use_skill 的处理上限是 30 秒，
+                  # drain 完还有两段各 5 秒的取消等待，最后还得留时间给「不带工具」的收尾。
+                  # 30 + 120 + 12 = 162，加收尾 30 ≈ 192 < 282（总预算见下面的 timeout）。
+                  "loop": None, "loop_thread": None, "drain": _PANEL_TOOL_DRAIN},
+            max_steps=int(cfg.get("agent_max_steps") or 3),
+            # 预算要装得下：先调模型（≤90）+ 工具的 handler（30）+ drain（120）
+            # + 两段取消等待（12）+ 最后那次「不带工具」的收尾（30）。
+            # 用户配得更大就按他的来。
+            timeout=max(float(cfg.get("agent_timeout") or 120),
+                        90 + 30 + _PANEL_TOOL_DRAIN + 12 + 30),
+            max_tokens=int(cfg.get("max_tokens") or 800),
+            kb_url=str(cfg.get("kb_url") or ""),
+            state_dir=rt.state_dir,
+            # 必须是这个会话：面板里她「记住」的东西，下一条消息就得出现在提示里
+            scope=("web:" + session) if session else "web:panel",
+            character=cid,
+            on_delta=on_delta,
+            **kw,
+        )
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning("面板 agent 失败（图 %d 张已保住）：%s", len(imgs), e)
+        return {"text": "", "images": list(imgs), "tool_calls": [],
+                "steps": 0, "trace": [], "error": f"{type(e).__name__}: {e}"}
 
 
 # ---------- 插件发出来的图片（卡片 / 画图 / 二维码） ----------
@@ -874,10 +893,6 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
 # 插件自己 catch 住降级成文字 —— 于是 .运势 / .塔罗 / .角色卡 / .画画 的图
 # 在网页里一张都看不到（日志里只有一句「回退文本」）。这里补上整条链路。
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-# 插件 `create_task` 丢下的活最多等这么久。要和出图插件的超时对齐
-# （bot/features/draw.py 的 timeout 默认 90 秒）—— 设成 40 就是「画到一半被取消」，
-# 而 CancelledError 是 BaseException，插件的 `except Exception` 兜底也接不住。
-TASK_DRAIN_SECONDS = 120.0
 UPLOAD_DIR = STUDIO_HOME / "state" / "uploads"      # 面板里用户发上来的图
 IMG_ROOTS = (STUDIO_HOME / "bot" / "features" / "state", STUDIO_HOME / "state",
              STUDIO_HOME / "static" / "img")

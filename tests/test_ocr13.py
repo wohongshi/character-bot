@@ -158,6 +158,33 @@ def main() -> int:
     import shutil
     shutil.rmtree(td2, ignore_errors=True)
 
+    print("\n[2c] agent 超时也要保住已经画好的图")
+    class FakeHub:
+        def run(self, *a, **kw):
+            return {"ok": True, "skill": "draw", "command": "画画", "text": "在画啦",
+                    "images": [{"path": "/tmp/x.png", "caption": "画好了"}]}
+
+    calls = {"n": 0}
+
+    def fake_complete(msgs, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"text": "", "finish_reason": "tool_calls", "tool_calls": [
+                {"id": "c1", "name": "use_skill", "arguments": json.dumps({"name": "draw"})}]}
+        raise RuntimeError("agent 超时")
+
+    out: list = []
+    raised = False
+    try:
+        AG.run(None, [{"role": "user", "content": "画只猫"}], tools=["use_skill"],
+               skills=FakeHub(), complete=fake_complete, images_out=out, max_steps=2,
+               timeout=30, chat={"adapter": None})
+    except Exception:                                          # noqa: BLE001
+        raised = True
+    check("2c.1 超时时异常照旧往上抛（调用方还能回退普通聊天）", raised, "")
+    check("2c.2 但已经出好的图留在外部 list 里", len(out) == 1 and out[0].get("path"),
+          str(out)[:120])
+
     print("\n[3] 备份：不含密钥、收记忆")
     memfile = ROOT / "state" / "memories" / "_selftest.jsonl"
     memfile.parent.mkdir(parents=True, exist_ok=True)
