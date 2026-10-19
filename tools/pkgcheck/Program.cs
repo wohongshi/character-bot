@@ -15,6 +15,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace PkgCheck;
 
@@ -24,6 +25,9 @@ internal static class Program
     private const long MaxEntryBytes = 2 * 1024 * 1024;
     private const long MaxTotalBytes = 8 * 1024 * 1024;
     private const int MaxEntries = 200;
+    // 与 server.py 的 PLUGIN_MAX_FILES / PLUGIN_NAME_RE 保持一致
+    private const int PluginMaxFiles = 20;
+    private static readonly Regex PluginNameRe = new(@"^[a-z][a-z0-9_]{1,40}\.py$", RegexOptions.Compiled);
 
     private static int Main(string[] argv)
     {
@@ -68,6 +72,17 @@ internal static class Program
         public string By => "csharp";
     }
 
+    /// <summary>与 server.py 相同的「单个顶层目录」归一化。</summary>
+    private static (string Prefix, Func<string, string> Rel) CommonPrefix(IReadOnlyList<string> names)
+    {
+        if (names.Count == 0) return ("", n => n);
+        var tops = names.Select(n => n.Split('/')[0]).Distinct().ToList();
+        var prefix = (tops.Count == 1 && names.All(n => n.Contains('/'))) ? tops[0] + "/" : "";
+        string Rel(string n) =>
+            prefix.Length > 0 && n.StartsWith(prefix, StringComparison.Ordinal) ? n[prefix.Length..] : n;
+        return (prefix, Rel);
+    }
+
     private static Report Inspect(string path, bool pluginMode = false)
     {
         var r = new Report { File = Path.GetFileName(path), Bytes = new FileInfo(path).Length };
@@ -107,14 +122,32 @@ internal static class Program
 
         if (total > MaxTotalBytes) r.Problems.Add($"整包过大：{total / 1024} KB");
 
+        // 安装器（server.py::_plugin_zip_files / _import_character_zip）允许整包放在
+        // **一个**顶层目录里，判定看的是去掉前缀之后的相对名。这里必须同一口径，
+        // 否则 `demo/plugin.json` 这种能正常安装的包会被报「只能放 .py」——
+        // 一份和安装器打架的审计报告，比没有报告更糟。
+        var names = r.Files.Select(f => f.Name).ToList();
+        var (_, rel) = CommonPrefix(names);
+
         // 必填结构：character.json（角色包才要；插件包只看 .py）
-        var charJson = r.Files.FirstOrDefault(f => f.Name == "character.json");
+        var charJson = r.Files.FirstOrDefault(f => rel(f.Name) == "character.json");
         if (pluginMode)
         {
             if (r.Files.Count == 0) r.Problems.Add("zip 是空的");
-            foreach (var f in r.Files.Where(f => !f.Name.EndsWith(".py")))
-                if (f.Name is not ("plugin.json" or "README.md"))
-                    r.Problems.Add($"插件包只能放 .py（发现 {f.Name}）");
+            else if (r.Files.Count > PluginMaxFiles)
+                r.Problems.Add($"文件太多（>{PluginMaxFiles}）");
+            var pys = r.Files.Count(f => rel(f.Name).EndsWith(".py"));
+            if (r.Files.Count > 0 && pys == 0) r.Problems.Add("插件包里没有 .py");
+            foreach (var f in r.Files)
+            {
+                var rn = rel(f.Name);
+                if (rn is "plugin.json" or "README.md") continue;
+                if (rn.StartsWith('_')) continue;          // 共享模块：上面那条已经报过
+                if (rn.Contains('/')) { r.Problems.Add($"插件文件不能放在子目录：{rn}"); continue; }
+                if (!rn.EndsWith(".py")) { r.Problems.Add($"插件包只能放 .py（发现 {rn}）"); continue; }
+                if (!PluginNameRe.IsMatch(rn))
+                    r.Problems.Add($"文件名不合法：{rn}（小写字母开头，字母/数字/_）");
+            }
         }
         else if (charJson is null)
         {
@@ -150,9 +183,9 @@ internal static class Program
         }
 
         // 插件文件：*.py 不能以 _ 开头（那是共享模块，不该单独装）
-        foreach (var f in r.Files.Where(f => f.Name.EndsWith(".py")))
+        foreach (var f in r.Files.Where(f => rel(f.Name).EndsWith(".py")))
         {
-            var stem = Path.GetFileNameWithoutExtension(f.Name);
+            var stem = Path.GetFileNameWithoutExtension(rel(f.Name));
             if (stem.StartsWith('_')) r.Problems.Add($"插件名以 _ 开头（那是共享模块）：{f.Name}");
             else r.Plugins.Add(stem);
         }
@@ -164,30 +197,84 @@ internal static class Program
 
     private static int SelfTest()
     {
-        var tmp = Path.Combine(Path.GetTempPath(), $"pkgcheck-{Guid.NewGuid():N}.zip");
+        var tmp = Path.Combine(Path.GetTempPath(), $"pkgcheck-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmp);
+        string Make(string name, Action<ZipArchive> fill)
+        {
+            var fp = Path.Combine(tmp, name);
+            using var fs = File.Create(fp);
+            using var z = new ZipArchive(fs, ZipArchiveMode.Create);
+            fill(z);
+            return fp;
+        }
+        static void Put(ZipArchive z, string name, string body)
+        {
+            using var w = new StreamWriter(z.CreateEntry(name).Open());
+            w.Write(body);
+        }
         try
         {
-            using (var fs = File.Create(tmp))
-            using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
+            // 1) 路径穿越必须被拦下（任一模式）
+            var bad = Make("traversal.zip", z => Put(z, "../../etc/passwd", "x"));
+            var r1 = Inspect(bad);
+            var trav = r1.Problems.Any(x => x.Contains("路径穿越"));
+            // 每例的明细走 stderr，stdout 只留**一行**总结 ——
+            // 调用方（tests/test_polyglot.py）是对整段 stdout 做 json.loads 的。
+            Console.Error.WriteLine(Json(new { ok = trav, self = "路径穿越必须被拦下",
+                                               problems = r1.Problems, by = "csharp" }));
+
+            var cases = new (string Name, bool Plugin, Func<Report, bool> Assert)[]
             {
-                // 故意塞一个路径穿越条目 + 缺 character.json
-                var bad = zip.CreateEntry("../../etc/passwd");
-                using (var w = new StreamWriter(bad.Open())) w.Write("x");
+                // 2) 整包放在一个顶层目录里：安装器接受，这里也不能报错。
+                //    以前按原始路径判 == "character.json"，这种**合法**包会被报
+                //    「缺少 character.json」（server.py 会先剥掉前缀）。
+                ("wrap.zip", false, r => r.CharacterId == "demo"),
+                // 3) 插件包：一个顶层目录 + plugin.json/README.md，安装器接受
+                ("plug-wrap.zip", true, r => !r.Problems.Any(x => x.Contains("只能放") || x.Contains("子目录"))),
+                // 4) 插件包只有 README.md：安装器会拒（zip 里没有 .py）
+                ("plug-no-py.zip", true, r => r.Problems.Any(x => x.Contains("没有 .py"))),
+                // 5) 插件包混进 .txt：必须报
+                ("plug-txt.zip", true, r => r.Problems.Any(x => x.Contains("只能放 .py"))),
+            };
+            var okAll = true;
+            foreach (var c in cases)
+            {
+                var path = Make(c.Name, z =>
+                {
+                    switch (c.Name)
+                    {
+                        case "wrap.zip":
+                            Put(z, "demo/character.json", "{\"id\":\"demo\",\"name\":\"演示\"}");
+                            Put(z, "demo/SOUL.md", new string('人', 120));
+                            break;
+                        case "plug-wrap.zip":
+                            Put(z, "demo/demo.py", "x = 1\n");
+                            Put(z, "demo/README.md", "# demo\n");
+                            Put(z, "demo/plugin.json", "{}");
+                            break;
+                        case "plug-no-py.zip":
+                            Put(z, "README.md", "# nothing\n");
+                            break;
+                        default:
+                            Put(z, "a.py", "x = 1\n");
+                            Put(z, "notes.txt", "x");
+                            break;
+                    }
+                });
+                var rep = Inspect(path, c.Plugin);
+                var ok = c.Assert(rep);
+                okAll &= ok;
+                Console.Error.WriteLine(Json(new { ok, self = c.Name, problems = rep.Problems,
+                                                   character = rep.CharacterId, by = "csharp" }));
             }
-            var rep = Inspect(tmp);
-            var caught = rep.Problems.Any(p => p.Contains("路径穿越"));
-            Console.WriteLine(Json(new
-            {
-                ok = caught,
-                self = "路径穿越必须被拦下",
-                problems = rep.Problems,
-                by = "csharp",
-            }));
-            return caught ? 0 : 1;
+            var allOk = trav && okAll;
+            Console.WriteLine(Json(new { ok = allOk, self = "自检（含插件模式）",
+                                         cases = cases.Length + 1, by = "csharp" }));
+            return allOk ? 0 : 1;
         }
         finally
         {
-            try { File.Delete(tmp); } catch { /* 忽略 */ }
+            try { Directory.Delete(tmp, true); } catch { /* 忽略 */ }
         }
     }
 

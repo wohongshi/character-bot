@@ -93,7 +93,9 @@ px = bytes([220, 40, 40, 255] * 100)
 cols = N.palette(px, 10, 10, 3)
 check("1.9 C++ 取色返回合法 #rrggbb", cols and all(c.startswith("#") and len(c) == 7 for c in cols),
       str(cols))
-check("1.10 纯色图的第一个主色就是它", cols and cols[0].lower() in ("#dc2828", "#d92828"),
+# 口径已经对齐 C++（桶内均值 + 平方欧氏合并），所以这里只接受**一个**值；
+# 以前写成两个候选，等于把「两条路径结果不一致」当成了正常。
+check("1.10 纯色图的第一个主色就是它", cols and cols[0].lower() == "#dc2828",
       str(cols[:2]))
 check("1.11 亮度能算出来", N.luma(px, 10, 10, 1) > 60, str(N.luma(px, 10, 10, 1)))
 
@@ -169,8 +171,8 @@ if dll is not None:
     r = subprocess.run(["dotnet", str(dll), "--selftest"], capture_output=True, text=True, timeout=120)
     out = json.loads(r.stdout or "{}")
     check("6.2 自检能拦住路径穿越", out.get("ok") is True, r.stdout[:120])
-    check("6.3 返回了具体问题清单", any("路径穿越" in p for p in (out.get("problems") or [])),
-          str(out.get("problems")))
+    # 明细在 stderr（stdout 只留一行总结 JSON，方便调用方整段 json.loads）
+    check("6.3 返回了具体问题清单", "路径穿越" in (r.stderr or ""), (r.stderr or "")[:160])
 
 # ---------------------------------------------------------------- 7) 看板 SQL 与 Python 一致
 print("\n· 看板：SQL 与 Python 结果一致")

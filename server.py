@@ -724,13 +724,6 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
         return None
 
     prefix = str(rt.config.get("feature_prefix") or ".")
-    is_cmd = raw.startswith(prefix)
-    cmd_text = raw
-    if not is_cmd:
-        # 没带前缀：试试 NLU（自然语言路由到命令）
-        hit = rt.mgr.nlu_match(raw) if raw else None
-        if hit:
-            cmd_text = prefix + str(hit).lstrip("./／")
 
     from bot.framework import FeatureContext
     adapter = _WebAdapter(rt, cid)
@@ -746,24 +739,41 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
 
     ctx.reply = _fake_reply
 
+    hit_cmd = False
+    handled = False
     loop = _aio.new_event_loop()
     try:
         # 1) 入站钩子（违禁词、复读……）：每条消息都跑
         passed = loop.run_until_complete(rt.mgr.run_message_hooks(ctx))
         if not passed:
             return "\n".join(captured)          # 被拦下：有话说就说，没话说就静默
-        # 2) 命令 / NLU（钩子可以把文本改写掉，改写优先）
-        if is_cmd or cmd_text != raw:
-            ctx.text = ctx.text if ctx.text != raw else cmd_text
-            loop.run_until_complete(rt.mgr.handle_command(ctx))
+        # 2) 命令 / NLU —— 判定必须用**钩子改写之后**的文本。
+        #    以前 is_cmd 是钩子之前算的：钩子把一句普通话改成「.xxx」时
+        #    is_cmd 仍是 False，于是改写结果被直接丢掉（不报错、也不回复）。
+        cur = str(ctx.text or "").strip()
+        if cur:
+            hit_cmd = cur.startswith(prefix)
+            if not hit_cmd:
+                nl = rt.mgr.nlu_match(cur)          # 自然语言路由到命令
+                if nl:
+                    cur = prefix + str(nl).lstrip("./／")
+                    hit_cmd = True
+        if hit_cmd:
+            ctx.text = cur
+            handled = bool(loop.run_until_complete(rt.mgr.handle_command(ctx)))
+        elif cur and cur != raw:
+            # 钩子改写过的普通话：模型该看改写后的内容（列表里仍存原文）
+            job["dispatch_text"] = cur
     except Exception:                                        # noqa: BLE001
         logger.exception("网页插件分发失败")
         return None
     finally:
         loop.close()
-    if not captured:
-        return None if not (is_cmd or cmd_text != raw) else ""
-    return "\n".join(captured)
+    if captured:
+        return "\n".join(captured)
+    # 命令真的被消费了才算「已处理」；`.helo` 这种错字以前返回 ""，
+    # 于是既不报错也没有任何回复（模型也被跳过）。没消费就交回模型。
+    return "" if (hit_cmd and handled) else None
 
 
 # ---------- 对话：队列 + worker ----------
@@ -815,7 +825,8 @@ def _chat_worker() -> None:
             use_agent = rt is not None
             msgs = [{"role": "system", "content": persona +
                      f"\n\n【对话场景】你现在在网页面板里和主人聊天，你就是{cname}。像手机聊天一样说短句，别用 Markdown。"}]
-            kb_ctx = _kb_context(job["text"], cid)
+            dtxt = job.get("dispatch_text") or job["text"]   # 入站钩子可能改写过的文本
+            kb_ctx = _kb_context(dtxt, cid)
             if kb_ctx:
                 msgs.append({"role": "system", "content": "【相关背景资料】\n" + kb_ctx})
             hist = [e for e in _read_jsonl(CHAT_JSONL)
@@ -834,7 +845,7 @@ def _chat_worker() -> None:
             for e in hist:
                 if e.get("role") in ("user", "assistant"):
                     msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
-            msgs.append({"role": "user", "content": job["text"]})
+            msgs.append({"role": "user", "content": dtxt})
 
             # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
             if use_agent:
@@ -1205,7 +1216,7 @@ def _plugin_zip_files(raw: bytes) -> dict[str, str]:
 _PKGCHECK_DLL = STUDIO_HOME / "tools" / "pkgcheck" / "bin" / "Release" / "net10.0" / "pkgcheck.dll"
 
 
-def _pkgcheck(raw: bytes, *, plugin: bool = True, timeout: float = 20.0) -> dict:
+def _pkgcheck(raw: bytes, *, plugin: bool = True, timeout: float = 8.0) -> dict:
     """用 C# 的 pkgcheck 给这个 zip 出一份清单（文件 + SHA-256 + 问题列表）。
 
     它**不参与**安装决策（Python 侧的解压校验才是权威），只把「装进去的是哪些字节」
@@ -1717,13 +1728,18 @@ def _similar(q: str, limit: int = 3) -> dict:
     if not recent:
         # 索引还没建好时的兜底：只读尾部，不整文件解析
         try:
+            start = max(0, MSG_JSONL.stat().st_size - 262144)
             with MSG_JSONL.open("rb") as f:
-                f.seek(max(0, MSG_JSONL.stat().st_size - 262144))
-                tail = f.read().decode("utf-8", "replace").splitlines()[1:]
-            for line in reversed(tail):
+                f.seek(start)
+                lines = f.read().decode("utf-8", "replace").splitlines()
+            if start > 0 and lines:
+                lines = lines[1:]          # 只有从文件中段开始读时才丢掉半行
+            for line in reversed(lines):
                 try:
                     e = json.loads(line)
                 except ValueError:
+                    continue
+                if not isinstance(e, dict):      # 合法 JSON 但不是对象：跳过，别 AttributeError
                     continue
                 if e.get("role") == "user" and e.get("text"):
                     t = str(e["text"]).strip()
@@ -1739,7 +1755,12 @@ def _similar(q: str, limit: int = 3) -> dict:
     by = "python"
     if p is not None and recent:
         try:
-            payload = q + "\u0001" + "\u0002".join(recent)
+            # 分隔符是裸控制字符，而 recent_user_texts 返回的是**原文**：
+            # 一条消息里真带了 U+0001/U+0002 就会切错位置，分数整体错位一格。
+            def _clean(sv: str) -> str:
+                return str(sv).replace("\u0001", " ").replace("\u0002", " ")
+
+            payload = _clean(q) + "\u0001" + "\u0002".join(_clean(t) for t in recent)
             res = p.call("similar_batch", [], payload, {})
             scores = json.loads(res.get("reply") or "[]")
             by = "java"

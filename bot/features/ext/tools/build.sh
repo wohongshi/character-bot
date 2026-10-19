@@ -31,7 +31,14 @@ else
 fi
 
 if command -v javac >/dev/null 2>&1; then
-  mkdir -p classes && javac -d classes Hash.java && say java "已编译 classes/Hash.class"
+  # 每个 .java 都要编：以前只编了 Hash.java，改了 Similar.java 之后
+  # classes/Similar.class 一直是旧的 —— 测试绿着，线上跑的是上个版本。
+  mkdir -p classes
+  if javac -d classes ./*.java; then
+    say java "已编译 $(ls classes/*.class | wc -l) 个 class"
+  else
+    say java "编译失败"
+  fi
 else
   say java "没有 javac —— 跳过"
 fi

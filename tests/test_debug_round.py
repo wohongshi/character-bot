@@ -286,6 +286,167 @@ try:
 except Exception as e:                                        # noqa: BLE001
     check("7.1 只删掉被刷新的那一个", False, f"{type(e).__name__}: {e}")
 
+# ---------------------------------------------------------------- 8) OCR 第六轮
+print("\n· 钩子改写后：命令判定要用改写后的文本")
+try:
+    import server as S2                                       # noqa: E402
+
+    class _Mgr2:
+        def __init__(self, rewrite=None, cmds=()):
+            self.rewrite = rewrite
+            self.cmds = set(cmds)
+            self.ran = []
+            self.commands = []
+
+        def nlu_match(self, text):
+            return None
+
+        async def run_message_hooks(self, ctx):
+            self.ran.append(ctx.text)
+            if self.rewrite is not None:
+                ctx.text = self.rewrite      # 和真框架一样：钩子返回字符串 = 改写文本
+            return True
+
+        async def handle_command(self, ctx):
+            self.commands.append(ctx.text)
+            tok = str(ctx.text).split()[0]
+            if tok in self.cmds:
+                await ctx.reply("命令回执")
+                return True
+            return False
+
+    class _Rt2:
+        def __init__(self, **kw):
+            self.mgr = _Mgr2(**kw)
+            self.config = {"feature_prefix": "."}
+
+    # 8.1 钩子把普通话改成命令 —— 以前 is_cmd 是钩子之前算的，改写结果被静默丢掉
+    rt = _Rt2(rewrite=".help", cmds={".help"})
+    out = S2._web_plugin_dispatch(rt, {"session": "s"}, "帮个忙", "klee")
+    check("8.1 钩子改写成命令后真的会执行", rt.mgr.commands == [".help"], str(rt.mgr.commands))
+    check("8.2 命中的命令返回插件回执", out == "命令回执", repr(out))
+
+    # 8.3 错字命令：没消费就交回模型（以前返回 ""，于是没有任何回复）
+    rt3 = _Rt2(cmds=set())
+    out3 = S2._web_plugin_dispatch(rt3, {"session": "s"}, ".helo", "klee")
+    check("8.3 未消费的命令不是静默", out3 is None, repr(out3))
+
+    # 8.4 命令被消费且没话说 → 空串（静默）
+    class _Mgr4(_Mgr2):
+        async def handle_command(self, ctx):
+            return True
+    rt4 = _Rt2(cmds=set())
+    rt4.mgr = _Mgr4()
+    out4 = S2._web_plugin_dispatch(rt4, {"session": "s"}, ".quiet", "klee")
+    check("8.4 已消费但不回话 = 空串", out4 == "", repr(out4))
+
+    # 8.5 钩子改写的普通话要交给模型（落在 job 上）
+    rt5 = _Rt2(rewrite="改写后的句子")
+    job = {"session": "s"}
+    out5 = S2._web_plugin_dispatch(rt5, job, "原句", "klee")
+    check("8.5 改写后的文本传给模型", out5 is None and job.get("dispatch_text") == "改写后的句子",
+          str(job))
+except Exception as e:                                        # noqa: BLE001
+    check("8.1 钩子改写成命令后真的会执行", False, f"{type(e).__name__}: {e}")
+
+print("\n· 尾部兜底：只有真的截断才丢第一行，脏行不能 500")
+try:
+    import server as S3                                       # noqa: E402
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "messages.jsonl"
+        f.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+            {"role": "user", "text": "最早的一条"},
+            {"role": "assistant", "text": "回答"},
+            ["不是对象"],
+            {"role": "user", "text": "最近的这条"},
+        ]) + "\n", encoding="utf-8")
+        old = S3.MSG_JSONL
+        S3.MSG_JSONL = f
+        old_index = S3._index
+        S3._index = lambda: (_ for _ in ()).throw(RuntimeError("索引还没建好"))   # 强制走尾部兜底
+        try:
+            got = S3._similar("完全新的问题")
+            texts = [h["text"] for h in got.get("hits") or []]
+            check("8.6 小文件不丢第一条候选", "最早的一条" in texts or got.get("scanned") == 2,
+                  f"{texts} scanned={got.get('scanned')}")
+            check("8.7 非对象行不会把接口打成 500", got.get("ok") is True, str(got)[:120])
+        finally:
+            S3.MSG_JSONL = old
+            S3._index = old_index
+except Exception as e:                                        # noqa: BLE001
+    check("8.6 小文件不丢第一条候选", False, f"{type(e).__name__}: {e}")
+
+print("\n· Java 批量：只有一个候选也必须能算")
+try:
+    import subprocess
+    cls = ROOT / "bot" / "features" / "ext" / "tools" / "classes"
+    one = json.dumps({"op": "call", "id": 1, "cmd": "similar_batch",
+                      "text": "今天天气怎么样" + "\u0001" + "今天天气如何"}, ensure_ascii=False)
+    res = subprocess.run(["java", "-cp", str(cls), "Similar",
+                          "-XX:TieredStopAtLevel=1"],
+                         input='{"op":"hello"}\n' + one + '\n{"op":"bye"}\n',
+                         capture_output=True, text=True, timeout=60).stdout.strip().splitlines()
+    reply = json.loads(res[-1])
+    check("8.8 单候选批量能算出分（以前直接报错）", reply.get("ok") is True, str(reply))
+    if reply.get("ok"):
+        sc = json.loads(reply["reply"])
+        check("8.9 单候选分数与候选对齐（0.38~0.67 是换个说法）", 0.3 <= sc[0] <= 0.8, str(sc))
+except Exception as e:                                        # noqa: BLE001
+    check("8.8 单候选批量能算出分（以前直接报错）", False, f"{type(e).__name__}: {e}")
+
+print("\n· 取色兜底：和 C++ 版逐色一致（以前桶下界 / 曼哈顿距离都不一样）")
+_saved2 = dict(N._libs)
+try:
+    import random
+    rnd = random.Random(7)
+    for tag, gen in (("纯色", lambda: [(200, 50, 60)] * 256),
+                     ("渐变", lambda: [(x * 5 % 256, (x * 3) % 256, (x * 7) % 256) for x in range(256)]),
+                     ("随机", lambda: [(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
+                                       for _ in range(256)])):
+        px = b"".join(bytes((*c, 255)) for c in gen())
+        a = N.palette(px, 16, 16, 2, 4)
+        N._libs["palette"] = None
+        b = N.palette(px, 16, 16, 2, 4)
+        N._libs.update(_saved2)
+        check(f"8.10 {tag}：原生与纯 Python 取色一致", a == b, f"{a} vs {b}")
+finally:
+    N._libs.clear()
+    N._libs.update(_saved2)
+
+print("\n· pkgcheck：审计口径要和安装器一致")
+try:
+    import subprocess
+    dll = ROOT / "tools" / "pkgcheck" / "bin" / "Release" / "net10.0" / "pkgcheck.dll"
+    if dll.is_file():
+        with tempfile.TemporaryDirectory() as td:
+            def mk(name, entries):
+                fp = Path(td) / name
+                with zipfile.ZipFile(fp, "w") as z:
+                    for n, body in entries:
+                        z.writestr(n, body)
+                return fp
+            wrapped = mk("w.zip", [("demo/demo.py", "x=1\n"), ("demo/README.md", "# d\n"),
+                                   ("demo/plugin.json", "{}")])
+            nopy = mk("n.zip", [("README.md", "# nothing\n")])
+            out = {}
+            for tag, fp in (("w", wrapped), ("n", nopy)):
+                r = subprocess.run(["dotnet", str(dll), str(fp), "--plugin"],
+                                   capture_output=True, text=True, timeout=90)
+                out[tag] = json.loads(r.stdout.strip().splitlines()[-1])
+            # 注意：Inspect 走的是 Report（PascalCase 键），selftest 走匿名对象（小写）
+            check("8.11 顶层目录包不再误报（安装器接受）", out["w"].get("Ok") is True,
+                  str(out["w"].get("Problems")))
+            check("8.12 没有 .py 的插件包要被报出来",
+                  any("没有 .py" in x for x in out["n"].get("Problems", [])),
+                  str(out["n"].get("Problems")))
+            st = subprocess.run(["dotnet", str(dll), "--selftest"], capture_output=True,
+                                text=True, timeout=120)
+            check("8.13 自检覆盖插件模式", st.returncode == 0, st.stdout[-200:])
+    else:
+        check("8.11 顶层目录包不再误报（安装器接受）", False, "pkgcheck 没编译")
+except Exception as e:                                        # noqa: BLE001
+    check("8.11 顶层目录包不再误报（安装器接受）", False, f"{type(e).__name__}: {e}")
+
 print(f"\nPASS {len(PASS)} / {len(PASS) + len(FAIL)}")
 if FAIL:
     print("失败：" + "、".join(FAIL))

@@ -28,7 +28,8 @@ fi
 
 # ---------- Rust：多词扫描 ----------
 if command -v rustc >/dev/null 2>&1; then
-  # strip=symbols + opt-level=3：不 strip 时这个 .so 有 4.4 MB（调试符号占九成）
+  # -O 就是 -C opt-level=2（不是 3，别按 3 算体积/速度）；strip=symbols 才把
+  # 4.4 MB 降到 324 KB —— 调试符号占了九成。
   if rustc -O --crate-type cdylib -C panic=abort -C strip=symbols \
        -o "$OUT/libklee_text.so" "$SRC/klee_text.rs" \
        >/tmp/klee_text.log 2>&1; then

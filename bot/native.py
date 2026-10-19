@@ -32,6 +32,17 @@ log = logging.getLogger("klee.native")
 _LIB_DIR = Path(__file__).with_name("native") / "lib"
 
 _libs: dict[str, ctypes.CDLL | None] = {}
+# 「装了但运行期坏了」以前是**完全静默**的：_lib() 只报加载失败，
+# status() 只看 CDLL 能不能 load，于是 ABI 对不上（符号改名/被 strip）时
+# 面板照样显示「已编译」，实际每条都走慢速 Python。这里每个库只吼一次。
+_warned: set[str] = set()
+
+
+def _warn_once(lib: str, msg: str, *args: object) -> None:
+    if lib in _warned:
+        return
+    _warned.add(lib)
+    log.warning(msg, *args)
 _loaded = False
 
 
@@ -188,44 +199,57 @@ def palette(rgba: bytes, w: int, h: int, n: int = 5, step: int = 2) -> list[str]
             raw = out.raw
             return ["#%02x%02x%02x" % (raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2])
                     for i in range(max(0, got))]
-        except Exception:                                        # noqa: BLE001
-            pass
+        except Exception as e:                                   # noqa: BLE001
+            _warn_once("palette", "klee_palette 调用失败，回落纯 Python：%s", e)
     # 没有 .so 也要能用：粗量化直方图（慢一些，但「缺 .so 就回落 Python」这句话得是真的）
     return _py_palette(rgba, w, h, n, step)
 
 
 def _py_palette(rgba: bytes, w: int, h: int, n: int, step: int = 8) -> list[str]:
-    from collections import Counter
-    c: Counter = Counter()
+    """纯 Python 取色：口径**对齐** C++ 版（palette.cpp）。
+
+    两个坑（OCR 抓到的，都是「看着一样其实不一样」）：
+    1. 桶值必须取**桶内真实颜色的平均值**，不能取 `>>3<<3` 的桶下界；
+       同一张纯色图 (220,40,40)，C++ 出 `#dc2828`，取下界出 `#d82828`。
+    2. 合并相近色用**平方欧氏距离 < 48²**（和 C++ 一致），
+       曼哈顿距离对轴向/对角线差异的判定完全不同，兜底和原生会选出不同的 accent2。
+    """
     stride = max(1, int(step))
+    buckets: dict[tuple[int, int, int], list[int]] = {}
     for y in range(0, h, stride):
         row = y * w * 4
         for x in range(0, w, stride):
             i = row + x * 4
             if i + 3 >= len(rgba) or rgba[i + 3] < 8:
                 continue
-            # 量化到 5 bit/通道，和 C++ 版同一个桶宽
-            c[(rgba[i] >> 3 << 3, rgba[i + 1] >> 3 << 3, rgba[i + 2] >> 3 << 3)] += 1
-    if not c:
+            r, g, b = rgba[i], rgba[i + 1], rgba[i + 2]
+            key = (r >> 3, g >> 3, b >> 3)
+            acc = buckets.get(key)
+            if acc is None:
+                buckets[key] = [1, r, g, b]
+            else:
+                acc[0] += 1
+                acc[1] += r
+                acc[2] += g
+                acc[3] += b
+    if not buckets:
         return []
-    # 按「占比 × 饱和度 × 中等亮度」排，和 C++ 版口径近似
     scored = []
-    for (r, g, b), cnt in c.items():
+    for cnt, sr, sg, sb in buckets.values():
+        r, g, b = sr // cnt, sg // cnt, sb // cnt      # 桶内均值，和 C++ 一致
         mx, mn = max(r, g, b), min(r, g, b)
-        sat = 0 if mx == 0 else (mx - mn) / mx
+        sat = 0.0 if mx == 0 else (mx - mn) / mx
         lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-        mid = max(0.15, 1 - abs(lum - 0.55) * 1.1)
+        mid = max(0.15, 1.0 - abs(lum - 0.55) * 1.1)
         scored.append((cnt * (0.25 + sat) * mid, r, g, b))
     scored.sort(reverse=True)
-    out = []
+    out: list[tuple[int, int, int]] = []
     for _score, r, g, b in scored:
-        c_hex = "#%02x%02x%02x" % (r, g, b)
-        if all(abs(r - int(o[1:3], 16)) + abs(g - int(o[3:5], 16)) + abs(b - int(o[5:7], 16)) > 72
-               for o in out):
-            out.append(c_hex)
+        if all((r - o[0]) ** 2 + (g - o[1]) ** 2 + (b - o[2]) ** 2 >= 48 * 48 for o in out):
+            out.append((r, g, b))
         if len(out) >= n:
             break
-    return out
+    return ["#%02x%02x%02x" % (r, g, b) for r, g, b in out]
 
 
 def luma(rgba: bytes, w: int, h: int, step: int = 2) -> int:
@@ -235,8 +259,8 @@ def luma(rgba: bytes, w: int, h: int, step: int = 2) -> int:
         try:
             _bind_palette(lib)
             return int(lib.klee_luma(rgba, int(w), int(h), int(step)))
-        except Exception:                                        # noqa: BLE001
-            pass
+        except Exception as e:                                   # noqa: BLE001
+            _warn_once("luma", "klee_luma 调用失败，回落纯 Python：%s", e)
     if not rgba or w <= 0 or h <= 0:
         return -1
     stride = max(1, int(step))

@@ -68,7 +68,9 @@ public class Similar {
                     // 单个候选走一次进程往返要 2 ms，40 个候选就是 80 ms，
                     // 而浏览器每条消息都会问一遍 —— 必须批量。
                     String[] parts = text.split("\u0002", -1);
-                    if (parts.length < 2) {
+                    // 只有一个候选时 payload 是 "q\u0001cand"，split 后只有 1 段 ——
+                    // 这里以前直接报「至少一个候选」，于是**历史很短时批量路径永远不可用**。
+                    if (parts.length < 2 && parts[0].indexOf('\u0001') < 0) {
                         out.println("{\"id\":" + id + ",\"ok\":false,\"error\":\"批量需要查询 + 至少一个候选\"}");
                         continue;
                     }
@@ -120,6 +122,8 @@ public class Similar {
                 case 'n': sb.append('\n'); break;
                 case 't': sb.append('\t'); break;
                 case 'r': sb.append('\r'); break;
+                case 'b': sb.append('\b'); break;      // JSON 合法转义；漏了会变成字面 b
+                case 'f': sb.append('\f'); break;      // 同上，字面 f
                 case '"': sb.append('"'); break;
                 case '\\': sb.append('\\'); break;
                 case 'u':

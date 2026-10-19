@@ -65,8 +65,13 @@ def register(api):
         if use_native:
             try:
                 from bot import native as _native
-                if _native.scan(text, words):
-                    return await _block(ctx)
+                # native.scan 自己会在 .so 缺失/出错时回落 Python，
+                # 所以它「返回空列表」= 真的没命中，**不能**再跑下面的全量循环 ——
+                # 以前这里没有 return，于是一条干净消息要跑 Aho-Corasick
+                # 加一遍 O(词数×长度) 的 Python 扫描，比纯 Python 还慢（OCR 抓到）。
+                if not _native.scan(text, words):
+                    return None
+                return await _block(ctx)
             except Exception as e:                  # noqa: BLE001
                 api.log("原生扫描失败，本次退回 Python：%s", e)
         low = text.lower()
