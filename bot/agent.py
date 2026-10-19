@@ -38,6 +38,9 @@ except ImportError:                     # pragma: no cover - 直接按文件路�
 log = logging.getLogger("klee.bot.agent")
 
 MAX_TOOL_RESULT = 6000                  # 单个工具结果回灌给模型的字符上限
+FETCH_TIMEOUT = 8.0                     # 抓单页的上限：fandom 这类站点会挂满 20 秒
+_FAILED_HOSTS: dict[str, tuple[float, str]] = {}   # host → (过期时间, 原因)
+_FAILED_HOSTS_TTL = 600.0               # 10 分钟内同一个站不再重试
 MAX_TOOL_CALLS_PER_STEP = 4
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122 Safari/537.36")
@@ -53,6 +56,71 @@ class AgentError(RuntimeError):
 
 
 _MARKUP_MARKERS = ("<｜｜DSML｜｜", "<||DSML||", "<function_calls>", "<tool_calls>", "<tool_call>")
+
+
+_DSML = r"[｜|]{2}\s*DSML\s*[｜|]{2}"
+_RE_INVOKE = re.compile(
+    rf"<{_DSML}\s*invoke\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</{_DSML}\s*invoke\s*>", re.S)
+_RE_PARAM = re.compile(
+    rf"<{_DSML}\s*parameter\s+name=[\"']([^\"']+)[\"'](?:\s+string=[\"'](true|false)[\"'])?\s*>"
+    rf"(.*?)</{_DSML}\s*parameter\s*>", re.S)
+_RE_XML_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def _parse_tool_markup(text: str) -> list[dict]:
+    """把模型**写进正文**的工具调用解析回真正的调用。
+
+    为什么要有这个：网关不支持原生 function call、或者我们为了收尾传了
+    `tool_choice="none"` 时，模型会把调用写成 DSML / XML 标记。
+    以前这里只做「删掉标记」，于是参数（数字、网址）就留在了正文里 ——
+    截图里那句「6000 加一个 fandom 链接」就是这么漏出去的。
+    """
+    t = str(text or "")
+    if not t:
+        return []
+    out: list[dict] = []
+
+    def add(name: str, args: dict) -> None:
+        out.append({"id": f"mk{len(out)}", "name": name.strip(),
+                    "arguments": json.dumps(args, ensure_ascii=False)})
+
+    for name, body in _RE_INVOKE.findall(t):
+        args: dict = {}
+        for pname, is_str, val in _RE_PARAM.findall(body):
+            raw = html.unescape(val.strip())
+            if str(is_str).lower() == "false":
+                try:
+                    args[pname] = json.loads(raw)
+                    continue
+                except ValueError:
+                    pass
+            args[pname] = raw
+        add(name, args)
+    for blob in _RE_XML_CALL.findall(t):
+        try:
+            d = json.loads(blob)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        nm = str(d.get("name") or d.get("tool") or "").strip()
+        if not nm:
+            continue
+        a = d.get("arguments") or d.get("parameters") or {}
+        if isinstance(a, str):
+            try:
+                a = json.loads(a)
+            except ValueError:
+                a = {}
+        add(nm, a if isinstance(a, dict) else {})
+    return out
+
+
+def _looks_like_debris(text: str) -> bool:
+    """正文只剩数字 / 链接 / 标点 —— 那是工具参数漏出来了，不能当回答。"""
+    t = re.sub(r"https?://\S+", " ", str(text or ""))
+    t = re.sub(r"[\s\d\W_]+", "", t)
+    return len(t) < 2
 
 
 def _strip_tool_markup(text: str) -> str:
@@ -162,6 +230,13 @@ def tool_web_fetch(args: dict, ctx: ToolContext) -> str:
     u = urllib.parse.urlparse(url)
     if u.scheme not in ("http", "https"):
         return "错误：只支持 http/https"
+    host = (u.hostname or "").lower()
+    # 同一个站点刚失败过就别再花 8 秒 —— 模型会连续重试同一个域名，
+    # 每条都是「等到超时 → 报错 → 换一个 URL 再来一次」。
+    dead = _FAILED_HOSTS.get(host)
+    if dead and dead[0] > time.time():
+        return (f"这个站点刚才连不上（{dead[1]}），别再试它了；"
+                f"换一个来源，或者直接用搜索结果里的摘要回答。")
     if u.username or u.password:
         return "错误：URL 不能带账号密码"
     if _assert_public_host is None or _open is None:              # pragma: no cover
@@ -174,10 +249,13 @@ def tool_web_fetch(args: dict, ctx: ToolContext) -> str:
         "User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9",
         "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5"})
     try:
-        with _open(req, timeout=min(ctx.timeout, 20)) as r:
+        with _open(req, timeout=min(ctx.timeout, FETCH_TIMEOUT)) as r:
             ctype = str(r.headers.get("Content-Type") or "").lower()
             raw = r.read(3_000_000)
     except Exception as e:                                       # noqa: BLE001
+        if len(_FAILED_HOSTS) > 64:
+            _FAILED_HOSTS.clear()
+        _FAILED_HOSTS[host] = (time.time() + _FAILED_HOSTS_TTL, f"{type(e).__name__}: {e}")
         return f"抓取失败：{type(e).__name__}: {e}"
     charset = "utf-8"
     m = re.search(r"charset=([\w-]+)", ctype)
@@ -198,6 +276,8 @@ def tool_web_fetch(args: dict, ctx: ToolContext) -> str:
     text = text[:max_chars]
     if not text.strip():
         return "（页面没有可读文字，可能是 JS 渲染或纯图片）"
+    if len(text.strip()) < 80:
+        return text.strip() + "\n（这页基本抓不到正文，换个来源吧）"
     return _clip(text, max_chars)
 
 
@@ -408,19 +488,32 @@ def tool_list_skills(args: dict, ctx: ToolContext) -> str:
     hub = _skills(ctx)
     if hub is None:
         return "错误：技能目录不可用"
-    q = str(args.get("query") or "").strip().lower()
+    q = str(args.get("query") or "").strip()
     chat = ctx.chat
-    out = []
+    is_group = bool(chat.get("is_group"))
+    is_owner = bool(chat.get("is_owner"))
+    is_admin = is_owner or (is_group and str(chat.get("role") or "") in ("owner", "admin"))
+    if q:
+        hits = hub.search(q, is_owner=is_owner, is_admin=is_admin,
+                          is_group=is_group, limit=10)
+        if hits:
+            return _clip("\n".join(
+                f"- {s['name']}（{s['title']}）：{_clip(s['description'], 80)}"
+                f"｜命令 {' '.join('.' + c['name'] for c in cmds[:8])}"
+                for _score, s, cmds in hits), 1800)
+    # 没给 query、或者一个都没命中：报「有哪些」，不是「没有」
+    # （以前只回「没有匹配的技能。」，模型据此断定自己做不到，一次都不再尝试）
+    names = []
     for s in hub.skills():
-        if q and q not in s["name"].lower() and q not in s["title"].lower()                 and q not in s["description"].lower():
-            continue
-        cmds = [c for c in s["commands"]
-                if _skill_allowed(c, chat)]
-        if not cmds:
-            continue
-        out.append(f"- {s['name']}（{s['title']}）：{_clip(s['description'], 80)}"
-                   f"｜命令 {' '.join('.' + c['name'] for c in cmds[:8])}")
-    return _clip("\n".join(out) or "没有匹配的技能。")
+        cmds = [c for c in s["commands"] if _skill_allowed(c, chat)]
+        if cmds:
+            names.append(f"{s['name']}（{s['title']}）")
+    if not names:
+        return "没有启用任何带命令的技能。"
+    if not q:
+        return "技能（插件）有：\n" + _clip("、".join(names), 1500)
+    return ("没有精确匹配「%s」的技能。现有的技能有：%s。"
+            "用 read_skill(name=插件名) 看某个怎么用。" % (q, "、".join(names[:24])))
 
 
 def _skill_allowed(c: dict, chat: dict) -> bool:
@@ -563,6 +656,26 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
                       tool_choice=tool_choice, temperature=temperature,
                       max_tokens=max_tokens, timeout=min(90.0, left))
 
+    def final_answer() -> str:
+        """兜底收尾：**不带工具**再问一次，只要一句人话。
+
+        为什么单独来一次：把 `tool_choice=none` 和 `tools=...` 一起发给某些网关，
+        模型照样会把调用写成标记；干脆不给它工具，它就只能说话。
+        代价是一次额外调用，换来的是「永远不给用户看参数碎片」。
+        """
+        nudge = {"role": "system",
+                 "content": "时间到了。不要再调用任何工具，也不要输出调用标记或参数。"
+                            "用一两句自然的口语直接回答用户，就像在手机上聊天。"}
+        try:
+            r = caller(msgs + [nudge], provider=provider or None, model=model or None,
+                       tools=None, tool_choice="none", temperature=temperature,
+                       max_tokens=max_tokens,
+                       timeout=min(60.0, max(5.0, deadline - time.monotonic())))
+        except Exception as e:                                   # noqa: BLE001
+            log.info("收尾回答失败：%s", e)
+            return ""
+        return _strip_tool_markup(str(r.get("text") or "")).strip()
+
     for step in range(max_steps + 1):
         force_none = step == max_steps
         try:
@@ -573,6 +686,13 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             raise AgentError(f"模型调用失败：{type(e).__name__}: {e}") from e
         text = str(res.get("text") or "").strip()
         calls = res.get("tool_calls") or []
+        if not calls and any(m in text for m in _MARKUP_MARKERS):
+            parsed = _parse_tool_markup(text)
+            if parsed:
+                log.info("模型把工具调用写成了正文，解析出 %d 个调用（原来会被当正文回给用户）",
+                         len(parsed))
+                calls = parsed
+                text = ""                       # 标记不是回答，别让它进历史
         if not calls:
             if any(m in text for m in _MARKUP_MARKERS):
                 cleaned = _strip_tool_markup(text)
@@ -580,12 +700,16 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
                 if not cleaned or len(cleaned) < 2:
                     raise AgentError("模型只输出了工具调用标记，没有正文")
                 text = cleaned
+            # 工具跑过、正文却只剩数字/链接 = 参数漏出来了（真机上就是「6000 + 链接」）
+            if called and _looks_like_debris(text):
+                log.warning("回答里只有工具参数碎片（%r），重新收尾", text[:60])
+                text = final_answer() or text
             if not text:
                 raise AgentError("模型没有给出回复")
             return {"text": text, "steps": step, "tool_calls": called, "trace": trace,
                     "error": "", "images": ctx.images_out}
-        if force_none:                                           # 最后一轮还要求工具 → 停
-            break
+        # 解析出来的调用不花额外的模型次数 —— 最后一轮也照样执行，
+        # 拿到数据再让模型用一句话收尾，比直接丢掉强。
         calls = calls[:MAX_TOOL_CALLS_PER_STEP]      # 只执行多少就只声明多少，否则缺 tool 响应
         msgs.append({"role": "assistant", "content": text,
                      "tool_calls": [{"id": c["id"], "type": "function",
@@ -615,7 +739,14 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             trace.append({"name": name, "ms": int((time.monotonic() - t0) * 1000),
                           "chars": len(out)})
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
-            log.info("agent tool %s -> %d chars", name, len(out))
+            log.info("agent tool %s(%s) -> %d chars", name, _clip(str(c.get("arguments") or ""), 70),
+                     len(out))
+        if force_none:                       # 最后一轮的调用已经跑完：只要一句人话收尾
+            text = final_answer()
+            if text:
+                return {"text": text, "steps": step, "tool_calls": called, "trace": trace,
+                        "error": "", "images": ctx.images_out}
+            break
 
     return {"text": "", "steps": max_steps, "tool_calls": called, "trace": trace,
             "error": "步数用完了还没得出结论", "images": ctx.images_out}

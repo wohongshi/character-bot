@@ -525,7 +525,7 @@ async def main():
     first_msgs = rt.models.agent_kw[0]["messages"]
     tool_out = [m for m in rt.models.agent_kw[1]["messages"] if m["role"] == "tool"]
     check("12.3 system 注入了技能目录",
-          any("技能目录" in str(m.get("content")) and "t1" in str(m.get("content"))
+          any("你能用的技能" in str(m.get("content")) and "t1" in str(m.get("content"))
               for m in first_msgs if m["role"] == "system"), str(first_msgs[0].get("content"))[-160:])
     check("12.4 技能工具在 tools 里",
           {"list_skills", "use_skill"} <= {t["function"]["name"] for t in rt.models.agent_kw[0]["tools"]})

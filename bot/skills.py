@@ -38,7 +38,10 @@ MAX_DETAIL_CHARS = 3500
 
 def _clean(s: str, n: int) -> str:
     s = re.sub(r"\s+", " ", str(s or "")).strip()
-    return s if len(s) <= n else s[:n] + "…"
+    if len(s) <= n:
+        return s
+    cut = s[:n].rstrip(" /、，,。；;|｜")
+    return cut + "…"
 
 
 def _allowed(cmd, *, is_owner: bool, is_admin: bool, is_group: bool) -> bool:
@@ -78,6 +81,9 @@ class _Capture:
 class SkillHub:
     def __init__(self, manager):
         self.mgr = manager
+        # 每条消息都要算一次 hint（3 ms/次），把「技能 → 2-gram 集合」缓存起来。
+        # 插件热重载会换掉 last_reload_ts，缓存自然失效。
+        self._gram_cache: dict[str, tuple[float, list]] = {}
 
     # ---------- 目录 ----------
     def skills(self) -> list[dict]:
@@ -110,6 +116,12 @@ class SkillHub:
         return out
 
     def get(self, name: str) -> dict | None:
+        """按名字找技能：精确 → 标题 → 包含 → 模糊检索。
+
+        为什么要有后两步：模型看到「今日运势」会写 `read_skill("运势")`
+        （人类也是这么叫的），以前直接回「没有技能 '运势'。」——
+        模型据此认定「没装这个插件」，然后就放弃了。真机上就是这么翻车的。
+        """
         key = str(name or "").strip().lower()
         if not key:
             return None
@@ -120,7 +132,40 @@ class SkillHub:
         for s in items:
             if s["title"].lower() == key:
                 return s
-        return None
+        for s in items:                       # 「运势」→ 今日运势
+            if key in s["title"].lower() or key in s["name"].lower():
+                return s
+        for s in items:                       # 「今日运势怎么样」这种口语
+            t = s["title"].lower()
+            if t and (t in key or s["name"].lower() in key):
+                return s
+        # 最后一步：只对中文做「最长公共片段 ≥2 字」的兜底。
+        # 英文名不走这一步 —— 模型看到的是 `fortune` 这种精确名，
+        # 模糊匹配只会把 "nope" 匹到 "loopinfo" 这种无关插件。
+        if not re.search(r"[\u4e00-\u9fff]", key):
+            return None
+        from difflib import SequenceMatcher
+
+        def _longest(a: str, b: str) -> tuple[int, int]:
+            """(最长公共片段长度, 它在查询里的结束位置)。
+
+            结束位置做平手判据：中文是「动词在前、对象在后」——
+            「帮我丢个骰子」同时命中「帮我」（帮我选）和「骰子」（掷骰子），
+            靠后的那个才是真正的对象。
+            """
+            m = SequenceMatcher(None, a, b).find_longest_match(0, len(a), 0, len(b))
+            return m.size, m.a + m.size
+
+        # 先比标题（「运势」→ 今日运势），再比描述（「占卜」→ 塔罗占卜）
+        best, best_len, best_pos = None, 0, -1
+        for s in items:
+            n, pos = max(_longest(key, s["title"].lower()), _longest(key, s["name"].lower()))
+            if n > best_len or (n == best_len and n >= 2 and pos > best_pos):
+                best, best_len, best_pos = s, n, pos
+        # 只比标题/名字：描述里「帮我」「今日」这种通用词太多，
+        # 「帮我丢个骰子」会匹到「帮我选」——猜错比找不到更糟。
+        # 描述层面的匹配交给 list_skills（那是明确在问「有什么」）。
+        return best if best_len >= 2 else None
 
     def index_text(self, *, is_owner: bool = False, is_admin: bool = False,
                    is_group: bool = False, max_chars: int = MAX_INDEX_CHARS) -> str:
@@ -139,10 +184,111 @@ class SkillHub:
                 break
         return "\n".join(lines)
 
+    def _gram_index(self) -> list[tuple[dict, list, set[str]]]:
+        """[(skill, 允许前先不管, 全量 2-gram)]，按重载时间缓存。"""
+        stamp = float(getattr(self.mgr, "last_reload_ts", 0.0) or 0.0)
+        hit = self._gram_cache.get("all")
+        if hit and hit[0] == stamp:
+            return hit[1]
+        out = []
+        for s in self.skills():
+            blob = " ".join([s["name"], s["title"], s["description"]]
+                            + [c["name"] + " " + str(c["help"] or "") for c in s["commands"]])
+            out.append((s, self._grams(blob)))
+        self._gram_cache["all"] = (stamp, out)
+        return out
+
+    # ---------- 检索 ----------
+    def search(self, query: str, *, is_owner: bool = False, is_admin: bool = False,
+               is_group: bool = False, limit: int = 12,
+               min_score: float = 0.25) -> list[tuple[float, dict, list]]:
+        """按 2-gram 重合度给技能打分（**不是**子串匹配）。
+
+        子串匹配的死法：用户说「今天运势」，技能叫「今日运势」，`"今天运势" in blob`
+        直接为假 —— 于是模型拿到「没有匹配的技能」，断定自己做不到。
+        """
+        qg = self._grams(query)
+        if not qg:
+            return []
+        scored = []
+        for s, gr in self._gram_index():
+            cmds = [c for c in s["commands"]
+                    if _allowed(c, is_owner=is_owner, is_admin=is_admin, is_group=is_group)]
+            if not cmds:
+                continue
+            hit = len(qg & gr)
+            score = hit / max(1, len(qg))
+            # 门槛不能省：长句里蒙上一个 2-gram 就有分，不设下限时
+            # 「完全不存在的关键词zzz」也能匹到歇后语，反而误导模型。
+            if score >= min_score:
+                scored.append((score, s, cmds))
+        scored.sort(key=lambda x: (-x[0], -len(x[2]), x[1]["name"]))
+        return scored[:max(1, int(limit))]
+
+    # ---------- 提示词里的技能提示 ----------
+    @staticmethod
+    def _grams(sv: str) -> set[str]:
+        t = re.sub(r"\s+", "", str(sv or "")).lower()
+        return {t[i:i + 2] for i in range(max(0, len(t) - 1))} if len(t) > 1 else {t} if t else set()
+
+    def hint(self, text: str = "", *, is_owner: bool = False, is_admin: bool = False,
+             is_group: bool = False, max_chars: int = 760, pick: int = 6,
+             always: int = 8) -> str:
+        """给系统提示用的**紧凑**技能提示：按这条消息挑几个相关的，再给几条常备。
+
+        为什么不直接塞 `index_text`（3200 字）：那是每条消息都要付的输入成本，
+        而且 40 个技能里 39 个和当前问题无关，反而稀释注意力。
+        这里用 2-gram 重合度挑最相关的几个；一个都对不上就只报名字。
+        """
+        items = []
+        for s in self.skills():
+            cmds = [c for c in s["commands"]
+                    if _allowed(c, is_owner=is_owner, is_admin=is_admin, is_group=is_group)]
+            if not cmds:
+                continue
+            items.append((s, cmds))
+        if not items:
+            return ""
+        qg = self._grams(text)
+        grams = {s["name"]: gr for s, gr in self._gram_index()}
+        scored = []
+        for s, cmds in items:
+            overlap = len(qg & grams.get(s["name"], set()))
+            scored.append((overlap, s, cmds))
+        scored.sort(key=lambda x: (-x[0], -len(x[2]), x[1]["name"]))
+        picked = [x for x in scored if x[0] > 0][:pick]
+        if len(picked) < always:                      # 相关的不够就补常备的
+            names = {x[1]["name"] for x in picked}
+            picked += [x for x in scored if x[1]["name"] not in names][:always - len(picked)]
+        lines = []
+        for _score, s, cmds in picked:
+            names = " ".join("." + c["name"] for c in cmds[:5])
+            more = "…" if len(cmds) > 5 else ""
+            lines.append(f"- {s['name']}（{s['title']}）：{_clean(s['description'], 46)}｜{names}{more}"
+                         if s["description"] else
+                         f"- {s['name']}（{s['title']}）｜{names}{more}")
+            if sum(len(x) + 1 for x in lines) > max_chars:
+                break
+        tail = (f"（一共 {len(items)} 个技能；看全部用 list_skills，看某个的用法用 read_skill）")
+        head = ("【你能用的技能】这些是已经装好的插件，也就是你的技能。"
+                "有正好对得上的就直接调 use_skill(name=插件名, text=\"命令 参数\")，"
+                "别回答「我做不到」，也别自己编一个替代做法"
+                "（问运势就用 fortune，别拿骰子当占卜）。"
+                "技能返回的文字就是结果，照它说，不要改写数字。")
+        return head + "\n" + "\n".join(lines) + "\n" + tail
+
+    def suggest(self, name: str, limit: int = 2) -> str:
+        """找不到技能时的「你是指 X 吗」——模型据此能自己纠正，不用重来一轮。"""
+        hits = self.search(str(name or ""), is_owner=True, is_admin=True, is_group=True,
+                           limit=limit, min_score=0.2)
+        if not hits:
+            return ""
+        return "；你是指 " + "、".join(f"{s['name']}（{s['title']}）" for _sc, s, _c in hits) + " 吗？"
+
     def detail(self, name: str) -> str:
         s = self.get(name)
         if not s:
-            return f"没有技能 {name!r}。"
+            return f"没有技能 {name!r}" + self.suggest(name)
         out = [f"# {s['title']}（{s['name']}）" + (f" v{s['version']}" if s["version"] else "")]
         if s["description"]:
             out.append(s["description"])
@@ -163,7 +309,8 @@ class SkillHub:
             chat: dict | None = None) -> dict:
         s = self.get(name)
         if not s:
-            return {"ok": False, "error": f"没有技能 {name!r}（用 list_skills 看有哪些）"}
+            return {"ok": False,
+                    "error": f"没有技能 {name!r}" + self.suggest(name) + "（用 list_skills 看全部）"}
         raw = str(text or "").strip()
         raw = re.sub(r"^[.。．/／]+", "", raw)
         token, _, rest = raw.partition(" ")
