@@ -748,6 +748,22 @@ def _tail_log(n: int, grep: str) -> list:
         return ["(读不到日志)"]
 
 
+def _state_dir() -> Path:
+    rt = getattr(BOT, "runtime", None) if BOT is not None else None
+    d = getattr(rt, "state_dir", None) if rt is not None else None
+    return Path(d) if d else STATE_DIR
+
+
+def _memories_text(cid: str, query: str = "", limit: int = 8) -> str:
+    """当前角色的长期记忆（面板「记住」+ agent 的 remember 共用一份）。"""
+    from bot import memory as mem_mod
+    try:
+        return mem_mod.render(_state_dir(), cid, query, limit)
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("读记忆失败：%s", e)
+        return ""
+
+
 def _web_system_text(rt, cid: str, text: str) -> str:
     """网页聊天的系统提示：人格 + 场景 + **技能目录**。
 
@@ -758,6 +774,10 @@ def _web_system_text(rt, cid: str, text: str) -> str:
     cname = (_char_store().get(cid) or {}).get("name") or cid
     sys_text = persona + (f"\n\n【对话场景】你现在在网页面板里和主人聊天，你就是{cname}。"
                           "像手机聊天一样说短句，别用 Markdown。")
+    # 长期记忆和「有没有技能目录」无关：插件框架没起来也必须记得住。
+    memories = _memories_text(cid, text)
+    if memories:
+        sys_text += "\n" + memories
     if rt is None or getattr(rt, "skills", None) is None:
         return sys_text
     if (rt.config or {}).get("agent_skills", True) is False:
@@ -851,6 +871,71 @@ def _img_file(rel: str) -> Path | None:
         if fp.is_file():
             return fp
     return None
+
+
+# ---------- 朗读（TTS） ----------
+TTS_DIR = STATE_DIR / "tts_cache"
+TTS_CHUNK = 90          # 单段上限：MIMO 是 120 字，留点余量给语气词
+TTS_MAX_CHARS = 1200    # 一条消息最多念这么多（再长就只念前面）
+
+
+def _tts_clean(text: str) -> str:
+    """把 Markdown / 代码 / 链接从「要念的话」里去掉。
+
+    不处理的话 `**重点**` 会被念成「星号星号重点星号星号」，
+    代码块更糟 —— 整段括号引号都会被逐字读出来。
+    """
+    t = str(text or "")
+    t = re.sub(r"```.*?```", " ", t, flags=re.S)          # 代码块
+    t = re.sub(r"`([^`]*)`", r"\1", t)                    # 行内代码
+    t = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", t)          # 图片
+    t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)        # 链接 → 文字
+    t = re.sub(r"https?://\S+", " ", t)                   # 裸链接
+    t = re.sub(r"[*_#>~|]+", " ", t)                      # 强调/标题/表格符号
+    t = re.sub(r"^\s*[-·•]\s*", "", t, flags=re.M)         # 列表符号
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\s+([，。！？；：、）」』】])", r"\1", t)      # 「重点 ：」→「重点：」
+    t = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", t)  # 「你好 呀」→「你好呀」
+    t = re.sub(r"\n{2,}", "\n", t)
+    return t.strip()
+
+
+def _tts_chunks(text: str, limit: int = TTS_CHUNK) -> list[str]:
+    """按句切段，每段 ≤ limit 字。标点优先，实在没有就硬切。"""
+    t = _tts_clean(text)[:TTS_MAX_CHARS]
+    if not t:
+        return []
+    parts = re.split(r"(?<=[。！？!?…；;\n])", t)
+    out: list[str] = []
+    buf = ""
+    for raw in parts:
+        piece = raw.strip()
+        if not piece:
+            continue
+        while len(piece) > limit:                        # 单句超长：硬切
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.append(piece[:limit])
+            piece = piece[limit:]
+        if len(buf) + len(piece) <= limit:
+            buf += piece
+        else:
+            if buf:
+                out.append(buf)
+            buf = piece
+    if buf:
+        out.append(buf)
+    # 最多 4 段（约 360 字）：再长的消息念完要一分钟，用户早就不听了
+    return [x for x in (c.strip() for c in out) if x][:4]
+
+
+def _tts_voice() -> str:
+    try:
+        cfg = (BOT.config if BOT else {}) or {}
+        return str(cfg.get("tts_voice") or "").strip()
+    except Exception:                                            # noqa: BLE001
+        return ""
 
 
 def _save_upload(data_url: str) -> dict:
@@ -3456,6 +3541,30 @@ class Handler(BaseHTTPRequestHandler):
                     files.append({"name": p.name, "bytes": 0, "mtime": 0})
             self._json({"ok": True, "enabled": enabled, "days": days, "files": files})
             return
+        if u.path == "/api/memories":
+            from bot import memory as mem_mod
+            cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
+            items = mem_mod.all_items(_state_dir(), cid)
+            self._json({"ok": True, "character": cid, "items": items[:200],
+                        "count": len(items)})
+            return
+        if u.path == "/api/tts.wav":
+            # <audio src> 带不了自定义头，和图片接口同理：只认缓存目录里的 16 位 hash 名。
+            hh = str((q.get("h") or [""])[0]).strip()
+            if not re.fullmatch(r"[0-9a-f]{16}\.wav", hh):
+                self.send_error(404)
+                return
+            fp = TTS_DIR / hh
+            if not fp.is_file():
+                self.send_error(404)
+                return
+            try:
+                data = fp.read_bytes()
+            except OSError:
+                self.send_error(404)
+                return
+            self._send_bytes(data, "audio/wav", cache="private, max-age=604800")
+            return
         if u.path == "/api/chat/image":
             # 面板聊天里的图片（卡片/画图/二维码）。<img src> 带不了自定义头，
             # 所以这里不要求 X-Klee-Studio —— 但只认白名单目录 + 图片后缀，
@@ -3696,6 +3805,124 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)[:400]})
             return
 
+
+        if u.path == "/api/commands/run":
+            # 插件命令试跑：面板里填参数直接执行，不用去 QQ 里敲。
+            # 执行链路和 agent 的 use_skill 完全一样（SkillHub.run + 捕获适配器），
+            # 所以「试跑通过」= 「聊天里也能跑通」。
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            hub = getattr(rt, "skills", None) if rt is not None else None
+            if hub is None:
+                self._json({"ok": False, "error": "插件框架还没起来"}, 503)
+                return
+            cmd = str(body.get("command") or "").strip().lstrip("./／")
+            args = str(body.get("args") or "").strip()
+            if not cmd:
+                self._json({"ok": False, "error": "没有指定命令"}, 400)
+                return
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            sink: list[str] = []
+            adapter = _WebAdapter(rt, cid, sink=sink)
+            t0 = time.time()
+            try:
+                res = hub.run(cmd, f"{cmd} {args}".strip(), adapter=adapter,
+                              is_group=False, group_id="", user_id="panel",
+                              user_name="主人", role="owner", timeout=40,
+                              chat={"adapter": adapter, "is_owner": True, "is_group": False,
+                                    "user_id": "panel", "user_name": "主人", "role": "owner"})
+            except Exception as e:                               # noqa: BLE001
+                logger.exception("试跑命令失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            # 注意：技能路径下适配器被 SkillHub 用 _Capture 包了一层，
+            # 图片落在 res["images"]（{path, caption}）里，不在 adapter.images 上。
+            pics = list(res.get("images") or []) + list(adapter.images)
+            imgs, seen_ref = [], set()
+            for i in pics:
+                ref = str(i.get("ref") or "") or _img_ref(i.get("path") or "")
+                if not ref or ref in seen_ref:
+                    continue
+                seen_ref.add(ref)
+                imgs.append({"url": f"/api/chat/image?p={ref}", "caption": i.get("caption") or ""})
+            err = "" if res.get("ok") else str(res.get("error") or "")
+            if err.startswith("没有技能"):
+                # 别让人对着「没有技能」发呆：明确说这是角色隔离造成的
+                err += f"（当前角色是 {cid}，别的角色的限定插件要把角色切过去才能试跑）"
+            self._json({"ok": bool(res.get("ok")), "skill": res.get("skill"),
+                        "command": res.get("command"), "text": res.get("text") or "",
+                        "extra": "\n".join(sink) if sink else "",
+                        "images": imgs, "ms": int((time.time() - t0) * 1000),
+                        "character": cid, "error": err})
+            return
+
+        if u.path in ("/api/memories", "/api/memories/delete"):
+            from bot import memory as mem_mod
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            if u.path == "/api/memories/delete":
+                try:
+                    ts = float(body.get("ts"))
+                except (TypeError, ValueError):
+                    self._json({"ok": False, "error": "ts 不合法"}, 400)
+                    return
+                n = mem_mod.remove(_state_dir(), cid, ts)
+                self._json({"ok": bool(n), "removed": n,
+                            "items": mem_mod.all_items(_state_dir(), cid)})
+                return
+            text = str(body.get("text") or "")
+            ent = mem_mod.add(_state_dir(), cid, text,
+                              source=str(body.get("source") or "panel"),
+                              who=str(body.get("who") or ""))
+            if ent is None:
+                self._json({"ok": False, "error": "没有可记的内容"}, 400)
+                return
+            self._json({"ok": True, "item": ent, "count": len(mem_mod.all_items(_state_dir(), cid))})
+            return
+
+        if u.path == "/api/tts":
+            text = str(body.get("text") or "")
+            chunks = _tts_chunks(text)
+            if not chunks:
+                self._json({"ok": False, "error": "没有可念的内容"}, 400)
+                return
+            from bot import tts as tts_mod
+            if not (os.environ.get("MIMO_TTS_API_KEY") or "").strip():
+                self._json({"ok": False,
+                            "error": "没配语音合成（缺 MIMO_TTS_API_KEY，写在 .env 里）"}, 400)
+                return
+            voice = str(body.get("voice") or "").strip() or _tts_voice() or tts_mod.DEFAULT_VOICE
+            t0 = time.time()
+            # 并行合成：串行 4 段要 ~18 秒，并行 3 路 ~6 秒（MIMO 单段 4 秒左右）。
+            # 顺序必须保持 —— 念错序比慢更糟。
+            import concurrent.futures as _cf
+            def _one(c: str):
+                try:
+                    return tts_mod.synthesize(c, voice=voice, cache_dir=TTS_DIR)
+                except Exception as e:                           # noqa: BLE001
+                    logger.warning("TTS 合成失败：%s", e)
+                    return None
+            with _cf.ThreadPoolExecutor(max_workers=3) as pool:
+                got = list(pool.map(_one, chunks))
+            out = []
+            for c, fp in zip(chunks, got):
+                if fp is None:
+                    continue
+                # 只回文件名，让前端自己拼 /api/tts.wav?h=…
+                # （这样「面板用得到的接口」在 index.html 里是有出处的，不是黑箱）
+                out.append({"h": fp.name, "chars": len(c), "text": c})
+            if not out:
+                self._json({"ok": False, "error": "语音合成失败（看运行日志）"}, 502)
+                return
+            # 缓存回收：不设上限的话 tts_cache 会一直长（每段几百 KB）
+            try:
+                files = sorted(TTS_DIR.glob("*.wav"), key=lambda f: f.stat().st_mtime, reverse=True)
+                for fp in files[80:]:
+                    fp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._json({"ok": True, "voice": voice, "chunks": out,
+                        "chars": sum(len(c) for c in chunks),
+                        "ms": int((time.time() - t0) * 1000)})
+            return
 
         if u.path == "/api/chat/upload":
             raw = str(body.get("data") or "")

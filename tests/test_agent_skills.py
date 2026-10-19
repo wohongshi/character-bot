@@ -247,10 +247,15 @@ def main():
           (hub.get("帮我丢个骰子") or {}).get("name") == "dice", str(hub.get("帮我丢个骰子")))
     check("10.4 英文名不做模糊匹配（nope 不能匹到 loopinfo）", hub.get("nope") is None)
     check("10.5 找不到时给出「你是指」", "tarot" in hub.detail("占卜"), hub.detail("占卜"))
-    bad = hub.run("占卜", "", adapter=ad, is_group=False, group_id="", user_id="1",
+    # 「占卜」其实是 tarot 的命令别名 —— 精确命中命令名就走别名，这是对的
+    alias = hub.run("占卜", "", adapter=ad, is_group=False, group_id="", user_id="1",
+                    user_name="主人", role="owner", timeout=12)
+    check("10.6 命令别名也能直接调（占卜 → 塔罗）",
+          alias.get("ok") and alias.get("command") == "塔罗", str(alias)[:160])
+    bad = hub.run("zzz真的不存在", "", adapter=ad, is_group=False, group_id="", user_id="1",
                   user_name="主人", role="owner", timeout=10)
-    check("10.6 use_skill 也带建议", not bad.get("ok") and "tarot" in str(bad.get("error")),
-          str(bad))
+    check("10.7 真找不到时给出 list_skills 的指引",
+          not bad.get("ok") and "list_skills" in str(bad.get("error")), str(bad)[:160])
 
     print("\n[11] 插件出的图：面板也得看得见")
     import tempfile

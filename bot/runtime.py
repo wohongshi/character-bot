@@ -937,6 +937,15 @@ class BotRuntime(RuntimeFeatures):
                                        is_group=ctx.is_group)
                 if idx:
                     sys_rules += "\n" + idx
+        # 长期记忆（面板「记住」和 agent 的 remember 写的是同一份）
+        try:
+            from . import memory as mem_mod
+            if self.state_dir:
+                mem = mem_mod.render(self.state_dir, self.active_character, text)
+                if mem:
+                    sys_rules += "\n" + mem
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("读记忆失败：%s", e)
         msgs = [{"role": "system", "content": persona + sys_rules}]
         if kb:
             msgs.append({"role": "system",

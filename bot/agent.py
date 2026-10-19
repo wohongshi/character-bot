@@ -494,6 +494,15 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
     path = _notes_path(ctx)
     if not path:
         return "错误：没有可写的位置"
+    # 同时写进「长期记忆」：面板里能看到、下一条消息就会注入到提示里。
+    # agent_notes.json 保留（它是 agent 自己的流水账），但人看的那一份在这里。
+    try:
+        from . import memory as mem_mod
+        if ctx.character:
+            mem_mod.add(ctx.state_dir, ctx.character, text, source="agent",
+                        who=str((ctx.chat or {}).get("user_name") or ""))
+    except Exception:                                        # noqa: BLE001
+        pass
     with _notes_lock(path):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))

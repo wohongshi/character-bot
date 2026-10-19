@@ -802,6 +802,19 @@ body[data-density="wide"] .card{padding:20px 24px}
 /* 对话 */
 #chatWrap{display:flex;flex-direction:column;height:100%;min-height:520px;gap:10px}
 .chatbar{align-items:center}
+/* 命令试跑：参数输入 + 输出区 */
+#tryBox{display:none;margin-top:10px;border:1px dashed var(--line);border-radius:12px;padding:10px}
+#tryBox.on{display:block}
+#tryBox .tb-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+#tryBox .tb-h code{font-size:13px}
+#tryBox .tb-out{white-space:pre-wrap;word-break:break-word;font-size:13px;
+  background:var(--surface-2);border-radius:10px;padding:8px 10px;max-height:260px;overflow:auto}
+#tryBox .tb-out.err{color:var(--red-deep,var(--red));background:color-mix(in srgb,var(--red) 8%,var(--surface-2))}
+#tryBox img{max-width:190px;border-radius:10px;margin:6px 6px 0 0;border:1px solid var(--line)}
+/* 正在朗读的那条：气泡描一圈呼吸光，不抢眼但能看出「就是它在说」 */
+.msg.speaking .bub{box-shadow:0 0 0 2px color-mix(in srgb,var(--ui-accent) 55%,transparent),var(--shadow);
+  animation:spk 1.6s ease-in-out infinite}
+@keyframes spk{50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--ui-accent) 18%,transparent),var(--shadow)}}
 /* 流式输出：气泡末尾一个跳动的方块 */
 .bub.streaming::after{content:"▋";margin-left:2px;opacity:.75;animation:blink 1s step-end infinite}
 @keyframes blink{50%{opacity:0}}
@@ -1970,6 +1983,14 @@ function cmdkRun(i){
 async function openPluginDrawer(name, meta){
   let m = meta || (plMeta && plMeta[name]);
   const el = $("pdrawer"); if (!el) return;
+  if (!m){
+    // 不在插件页也能打开（运维页的「插件页」按钮、命令试跑都走这里）：
+    // 先问一次 detail，别直接甩一句「还没加载好」。
+    try {
+      const d0 = await api("/api/plugins/detail?name=" + encodeURIComponent(name));
+      if (d0 && d0.ok && d0.meta){ m = d0.meta; plMeta[name] = m; }
+    } catch(e){}
+  }
   if (!m){ flash(t("plug.notReady")); return; }
   // 列表接口为了省流量不带命令清单/schema/能力表；抽屉打开时补这一次（1–3 ms）
   try {
@@ -2005,8 +2026,11 @@ async function openPluginDrawer(name, meta){
     ${m.system ? "" : `<h4>命令（${cmds.length}）</h4>
     ${cmds.length ? cmds.map(c => `<div class="cmdrow"><code>.${esc(c.name)}</code>
         <span class="h">${esc(cmdHelpText(c))}</span>
-        ${c.aliases && c.aliases.length ? `<span class="h alias">别名：${esc(c.aliases.join(" / "))}</span>` : ""}</div>`).join("")
+        ${c.aliases && c.aliases.length ? `<span class="h alias">别名：${esc(c.aliases.join(" / "))}</span>` : ""}
+        <button class="btn tiny" style="flex:none;margin-left:auto"
+                onclick="tryCommand(${esc(JSON.stringify(name))}, ${esc(JSON.stringify(c.name))}, ${esc(JSON.stringify(cmdHelpText(c)))})">试跑</button></div>`).join("")
       : '<div class="kv">这个插件没有命令，只在消息里自动触发</div>'}`}
+    <div id="tryBox"></div>
     <h4>状态</h4>
     <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
       <span class="tag" id="pdState">${m.enabled ? "● 已启用" : "○ 已停用"}</span>
@@ -2080,6 +2104,51 @@ function pluginFrameDoc(html){
     esc: (s) => String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])),
   };
 <\/script>${html || ""}</body></html>`;
+}
+
+/* ---------- 命令试跑 ---------- */
+/* 和 agent 的 use_skill 走同一条链路（SkillHub.run + 捕获适配器），
+   所以这里跑通 = 聊天里也能跑通。 */
+let tryState = {plugin: "", command: ""};
+function tryCommand(plugin, command, help){
+  const box = $("tryBox");
+  if (!box) return;
+  tryState = {plugin, command};
+  box.classList.add("on");
+  box.innerHTML = `<div class="tb-h"><code>.${esc(command)}</code>
+      <span class="kv" style="flex:1;min-width:0">${esc(help || "")}</span>
+      <button class="btn tiny icon" onclick="closeTry()" title="关掉">✕</button></div>
+    <div class="row" style="flex-wrap:nowrap">
+      <input type="text" id="tryArgs" placeholder="参数（可以留空）" style="flex:1;min-width:120px">
+      <button class="btn primary tiny" onclick="runTry()">运行</button>
+    </div>
+    <div id="tryOut" style="margin-top:8px"></div>`;
+  const inp = $("tryArgs");
+  if (inp){ inp.focus(); inp.addEventListener("keydown", e => { if (e.key === "Enter"){ e.preventDefault(); runTry(); } }); }
+}
+function closeTry(){
+  const box = $("tryBox");
+  if (box){ box.classList.remove("on"); box.innerHTML = ""; }
+}
+async function runTry(){
+  const out = $("tryOut");
+  const argsEl = $("tryArgs");
+  const args = argsEl ? argsEl.value.trim() : "";
+  if (out) out.innerHTML = `<div class="kv">运行中…</div>`;
+  const d = await post("/api/commands/run", {command: tryState.command, args,
+                                             character: ACTIVE.id});
+  if (!out) return;
+  if (!d){ out.innerHTML = `<div class="tb-out err">请求失败</div>`; return; }
+  if (!d.ok){
+    out.innerHTML = `<div class="tb-out err">${esc(d.error || "没有输出")}</div>`;
+    return;
+  }
+  const head = `<div class="kv" style="margin-bottom:4px">.${esc(d.command || tryState.command)} · ${d.ms} ms${d.skill ? " · " + esc(d.skill) : ""}</div>`;
+  const body = `<div class="tb-out">${esc(d.text || "（没有文字输出）")}</div>`;
+  const extra = d.extra ? `<div class="tb-out" style="margin-top:6px">${esc(d.extra)}</div>` : "";
+  const imgs = (d.images || []).map(im =>
+    `<img src="${esc(im.url)}" alt="${esc(im.caption || "")}" onclick="window.open(this.src,'_blank')">`).join("");
+  out.innerHTML = head + body + extra + (imgs ? `<div>${imgs}</div>` : "");
 }
 
 async function openPluginPage(name){
@@ -2312,6 +2381,7 @@ async function reloadFeatures(){ const r = await post("/api/action", {action:"re
 document.querySelectorAll("nav button[data-v]").forEach(b => b.onclick = () => go(b.dataset.v));
 function render(){
   stopOpsTimers();
+  try{ stopSpeak(); }catch(e){}          // 换页就别继续念了
   if (V !== "chat" && chat.timer){               // 离开对话页：连轮询一起停（原来只是空转）
     clearTimeout(chat.timer); chat.timer = null;
     clearInterval(chat.tick); chat.tick = null;
@@ -2582,6 +2652,92 @@ function exportConv(){
             `&character=${encodeURIComponent(ACTIVE.id)}`;
   window.open(u, "_blank");            // 服务端带 Content-Disposition，浏览器直接下载
 }
+/* ---------- 朗读 ---------- */
+/* 一次只念一条：点第二条会先停掉前一条。分段返回的音频按顺序播，播完自动收尾。
+   自动播放：合成要几秒，用户手势的「临时激活」早过期了，play() 会被拦。
+   所以在点击那一刻先用一个静音 wav 把同一个 <audio> 元素解锁，后面只换 src。 */
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+let speakState = {box: null, audio: null, list: [], idx: 0, btn: null, token: 0, tick: null};
+
+function stopSpeak(){
+  const st = speakState;
+  st.token++;
+  if (st.tick){ clearInterval(st.tick); st.tick = null; }
+  if (st.audio){ try{ st.audio.pause(); }catch(e){} try{ st.audio.src = ""; }catch(e){} st.audio = null; }
+  if (st.box) st.box.classList.remove("speaking");
+  if (st.btn){ st.btn.textContent = "🔊 朗读"; st.btn = null; }
+  st.box = null; st.list = []; st.idx = 0;
+}
+
+async function speakMsg(el){
+  const box = el.closest(".msg");
+  if (!box) return;
+  if (speakState.box === box && speakState.audio){ stopSpeak(); return; }   // 再点一次 = 停
+  stopSpeak();
+  const bub = box.querySelector(".bub");
+  if (!bub) return;
+  const qb = bub.querySelector(".qb");                 // 引用块不念，只念这一轮的正文
+  const text = (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
+  if (!text){ flash("这条没有可念的文字"); return; }
+
+  const token = ++speakState.token;
+  const btn = el;
+  // 在用户手势里解锁音频元素（必须先 play 一次）
+  const audio = new Audio(SILENT_WAV);
+  audio.play().catch(() => {});
+  speakState.audio = audio;
+  speakState.box = box;
+  speakState.btn = btn;
+  box.classList.add("speaking");
+
+  const t0 = Date.now();
+  btn.textContent = "…合成中 0s";
+  speakState.tick = setInterval(() => {
+    if (token !== speakState.token) return;
+    btn.textContent = "…合成中 " + Math.round((Date.now() - t0) / 1000) + "s";
+  }, 500);
+
+  let d = null;
+  try{ d = await post("/api/tts", {text}); }catch(e){}
+  if (speakState.tick){ clearInterval(speakState.tick); speakState.tick = null; }
+  if (token !== speakState.token) return;             // 期间被停掉了
+  if (!d || !d.ok || !(d.chunks || []).length){
+    stopSpeak();
+    flash((d && d.error) || "语音合成失败");
+    return;
+  }
+  speakState.list = d.chunks.map(c => "/api/tts.wav?h=" + encodeURIComponent(c.h));
+  speakState.idx = 0;
+  btn.textContent = "⏹ 停止";
+
+  const playNext = () => {
+    if (token !== speakState.token) return;
+    const url = speakState.list[speakState.idx];
+    if (!url){ stopSpeak(); return; }
+    const a = speakState.audio;
+    a.onended = () => { speakState.idx++; playNext(); };
+    /* 换 src 会 abort 上一次加载，浏览器据此派发 error 但 a.error 是 null；
+       只有真错误（编码/网络）才停，否则会被 abort 误伤。 */
+    a.onerror = () => { if (a.error){ stopSpeak(); flash("这一段播不出来（" + (a.error.message || a.error.code) + "）"); } };
+    a.src = url;
+    a.play().catch(() => { stopSpeak(); flash("浏览器拦住了自动播放，再点一次朗读"); });
+  };
+  playNext();
+}
+async function keepMsg(el){
+  const box = el.closest(".msg");
+  if (!box) return;
+  const bub = box.querySelector(".bub");
+  if (!bub){ return; }
+  const qb = bub.querySelector(".qb");
+  const text = (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
+  if (!text){ flash("这条没有可记的内容"); return; }
+  const r = await post("/api/memories", {character: ACTIVE.id, text: text.slice(0, 300),
+                                         source: "panel", who: ACTIVE.name});
+  if (!r || !r.ok){ alert((r && r.error) || "记不下来"); return; }
+  flash(r.item && r.item.hits ? "这条已经记过了" : "记住了（下一条消息就会带上）");
+}
+
 async function copyMsg(el){
   const b = el.closest(".msg").querySelector(".bub");
   const t = b ? (b.innerText || "").trim() : "";
@@ -2705,9 +2861,11 @@ async function sendMsg(){
 function actsHTML(role){
   const copy = `<button onclick="copyMsg(this)" title="复制这条">复制</button>`;
   const quote = `<button onclick="quoteMsg(this)" title="引用这条再问">引用</button>`;
+  const speak = role === "assistant" ? `<button onclick="speakMsg(this)" title="用她的声音念出来">🔊 朗读</button>` : "";
+  const keep = `<button onclick="keepMsg(this)" title="存进她的长期记忆">🧠 记住</button>`;
   const regen = role === "assistant" ? `<button onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
   const del = `<button onclick="delMsg(this)" title="删掉这一条">删除</button>`;
-  return `<div class="acts">${copy}${quote}${regen}${del}</div>`;
+  return `<div class="acts">${copy}${quote}${speak}${keep}${regen}${del}</div>`;
 }
 function quoteHTML(q){
   if (!q || !q.text) return "";
@@ -2967,6 +3125,7 @@ async function viewPersona(){
   <div class="seg" style="margin:2px 0 12px">
     <button id="ptSoul" class="on" onclick="ptab('soul')">📝 人格</button>
     <button id="ptKb" onclick="ptab('kb')">📚 知识库</button>
+    <button id="ptMem" onclick="ptab('mem')">🧠 记忆</button>
   </div>
   <div id="paneSoul">
   <div class="card">
@@ -3013,6 +3172,20 @@ async function viewPersona(){
     <h3>🕒 最近命中 <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
     <div id="kbRecent" style="margin-top:6px"></div>
   </div>
+  </div>
+  <div id="paneMem" style="display:none">
+  <div class="card">
+    <h3>🧠 长期记忆 <span class="kv" style="font-family:var(--font-body)">聊天里点「记住」也进这里</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="loadMemories()">刷新</button></h3>
+    <div class="kv" style="margin:6px 0 10px;line-height:1.7">
+      每条消息都会带上这里最相关的几条（不是全塞）。和「知识库」不同：记忆是单条、立刻生效，
+      不用重建索引。</div>
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" id="memQ" placeholder="写一条要她记住的事，比如「主人怕黑」" style="flex:1;min-width:200px">
+      <button class="btn primary" onclick="addMemory()">记住</button>
+    </div>
+    <div id="memOut"><div class="kv">读取中…</div></div>
+  </div>
   </div>`;
   $("pChars").textContent = p.chars ?? "—";
   $("pTok").textContent = p.est_tokens ?? "—";
@@ -3024,12 +3197,54 @@ async function viewPersona(){
 let personaTab = "soul";
 function ptab(name){
   personaTab = name;
-  const soul = $("paneSoul"), kb = $("paneKb");
+  const soul = $("paneSoul"), kb = $("paneKb"), mem = $("paneMem");
   if (!soul || !kb) return;
   soul.style.display = name === "soul" ? "" : "none";
   kb.style.display = name === "kb" ? "" : "none";
+  if (mem) mem.style.display = name === "mem" ? "" : "none";
   $("ptSoul").classList.toggle("on", name === "soul");
   $("ptKb").classList.toggle("on", name === "kb");
+  if ($("ptMem")) $("ptMem").classList.toggle("on", name === "mem");
+  if (name === "mem") loadMemories();
+}
+
+/* ---------- 长期记忆 ---------- */
+async function loadMemories(){
+  const box = $("memOut");
+  if (!box) return;
+  const d = await api("/api/memories?character=" + encodeURIComponent(ACTIVE.id));
+  const items = (d && d.items) || [];
+  if (!items.length){
+    box.innerHTML = `<div class="kv">还没有记忆。聊到要紧的事，点消息下面的「记住」，或者在上面写一条。</div>`;
+    return;
+  }
+  box.innerHTML = items.map(e => {
+    const when = e.ts ? new Date(e.ts * 1000).toLocaleString("zh-CN",
+      {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
+    const from = e.source === "agent" ? "她自己记的" : "我记的";
+    return `<div class="opsline" style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line)">
+      <span class="kv" style="flex:none;width:86px">${esc(when)}<br>${esc(from)}</span>
+      <span style="flex:1;min-width:0;word-break:break-word">${esc(e.text)}</span>
+      <button class="btn tiny icon" style="flex:none" title="忘掉这条"
+              onclick="delMemory(${Number(e.ts) || 0})">✕</button>
+    </div>`;
+  }).join("");
+}
+async function addMemory(){
+  const inp = $("memQ");
+  const text = (inp && inp.value || "").trim();
+  if (!text){ flash("写点什么再记"); return; }
+  const r = await post("/api/memories", {character: ACTIVE.id, text, source: "panel"});
+  if (!r || !r.ok){ alert((r && r.error) || "记不下来"); return; }
+  if (inp) inp.value = "";
+  flash(r.item && r.item.hits ? "这条已经记过了" : "记住了");
+  loadMemories();
+}
+async function delMemory(ts){
+  const r = await post("/api/memories/delete", {character: ACTIVE.id, ts});
+  if (!r || !r.ok){ alert((r && r.error) || "删不掉"); return; }
+  loadMemories();
+  flash("忘掉了");
 }
 async function savePersona(){
   const soul = $("soul").value;

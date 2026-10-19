@@ -336,7 +336,18 @@ class SkillHub:
     def run(self, name: str, text: str, *, adapter, is_group: bool, group_id: str,
             user_id: str, user_name: str, role: str = "", timeout: float = 25.0,
             chat: dict | None = None) -> dict:
-        s = self.get(name)
+        # 先按**命令名**精确找（`.r` 这种单字母命令很常见）：
+        # get("r") 走模糊匹配会匹到 "anniversary" 这种名字里带 r 的插件 ——
+        # 于是「试跑 .r」报「.r 属于技能 dice，不是 anniversary」，纯属自己绕自己。
+        s = None
+        key = re.sub(r"^[.。．/／]+", "", str(name or "").strip()).split(" ")[0].lower()
+        cmd0 = self.mgr.commands.get(key) if key else None
+        if cmd0 is not None:
+            cand = self.get(cmd0.plugin)
+            if cand:
+                s = cand
+        if s is None:
+            s = self.get(name)
         if not s:
             return {"ok": False,
                     "error": f"没有技能 {name!r}" + self.suggest(name) + "（用 list_skills 看全部）"}
