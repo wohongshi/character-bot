@@ -20,6 +20,8 @@
 - 每项统一返回 `{id, name, level, detail, hint, fix, fix_label}`。
   `level` 只有 ok / warn / bad 三档；`fix` 是修复动作 id（不可修为 None）。
 - **不猜**：量不到的东西（比如读不到温度传感器）就说「不适用」，不算通过。
+- 宿主机三个指标（磁盘余量/可用内存/温度）可以由 `env["host"]` 注入：
+  它们随负载抖动，测试要断言「干净环境全绿」就得能钉住。
 """
 
 from __future__ import annotations
@@ -162,10 +164,14 @@ def run(env: dict) -> list[dict]:
     feats = Path(env.get("features_dir") or state)
     items: list[dict] = []
 
+    # 宿主机指标可以由调用方注入（`env["host"]`）：本机内存/温度会随负载抖动，
+    # 测试要断言「干净环境 = 全绿」就必须能钉住这三个数。
+    host = env.get("host") if isinstance(env.get("host"), dict) else {}
+
     # 1) 磁盘：4 GB 的机器上，磁盘满 = 聊天记录写不进去
     try:
         du = shutil.disk_usage(str(state))
-        free = du.free
+        free = int(host.get("free", du.free))
         level = "bad" if free < DISK_BAD_B else ("warn" if free < DISK_WARN_B else "ok")
         pct = free / max(1, du.total) * 100
         items.append(_item("disk", "磁盘余量", level,
@@ -177,7 +183,7 @@ def run(env: dict) -> list[dict]:
         items.append(_item("disk", "磁盘余量", "warn", f"量不到：{e}"))
 
     # 2) 内存
-    avail = _mem_available()
+    avail = int(host["mem"]) if "mem" in host else _mem_available()
     if avail < 0:
         items.append(_item("mem", "可用内存", "warn", "量不到"))
     else:
@@ -186,7 +192,7 @@ def run(env: dict) -> list[dict]:
                            hint="内存吃紧：可能有浏览器/进程没退" if level != "ok" else ""))
 
     # 3) 温度（fanless 主机最怕这个）
-    temp = _max_temp()
+    temp = float(host["temp"]) if "temp" in host else _max_temp()
     if temp < 0:
         items.append(_item("temp", "CPU 温度", "ok", "这台没有温度传感器（不适用）"))
     else:

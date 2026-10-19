@@ -135,13 +135,15 @@ def main():
             return r.status, json.loads(r.read())
 
     try:
+        # 先只设模式：静默窗口留到 8.6 再设（否则「现在」可能正好落在窗口里，
+        # 8.4 会被静默拦住 —— 那测的就不是「open 是否生效」了）
         code, d = post(BASE + "/api/control/chat",
                        {"chat_id": "group:998877", "mode": "open",
-                        "quiet": ["23:30", "07:00"], "quiet_mention": True, "note": "测试"})
+                        "quiet": [], "quiet_mention": True, "note": "测试"})
         check("8.1 保存 200", code == 200 and d.get("ok"), f"{code} {str(d)[:80]}")
         saved = json.loads((ROOT / "state" / "chat_policy.json").read_text(encoding="utf-8"))
         row = saved["chats"].get("group:998877") or {}
-        check("8.2 落盘内容对", row.get("mode") == "open" and row.get("quiet") == ["23:30", "07:00"]
+        check("8.2 落盘内容对", row.get("mode") == "open" and not row.get("quiet")
               and row.get("quiet_mention") is True and row.get("note") == "测试", str(row))
         check("8.3 快照里能看到", (d["after"]["chats"].get("group:998877") or {}).get("mode") == "open")
         # 设计成 open 的会话：模拟「群里随便说一句」应交给模型

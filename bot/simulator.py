@@ -24,13 +24,8 @@ from pathlib import Path
 MAX_TEXT = 2000
 
 
-def _ctx_cls():
-    from .framework import FeatureContext
-    return FeatureContext
-
-
 class _FakeAdapter:
-    """只提供判定要用的三样东西：owner_id / chat_id_of / platform。"""
+    """判定只需要两样：owner_id（谁是主人）和 chat_id_of（会话形态）。"""
 
     platform = "sim"
 
@@ -39,12 +34,6 @@ class _FakeAdapter:
 
     def chat_id_of(self, is_group, group_id, user_id):
         return (f"group:{group_id}" if is_group else f"private:{user_id}")
-
-    def _chat_id(self, is_group, group_id, user_id):
-        return self.chat_id_of(is_group, group_id, user_id)
-
-    def supports(self, cap):
-        return True
 
 
 def _step(sid: str, label: str, state: str, detail: str) -> dict:
@@ -93,6 +82,7 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
     else:
         steps.append(_step("policy", "会话策略", "info", f"{label}（跟全局）"))
     if pol["mode"] == "disabled":
+        # runtime 现在对私聊也生效（面板允许单独给私聊设「完全不理」）
         return done("ignore", "这个会话被设成「完全不理」，连命令也不接",
                     {"policy": pol})
     if pol["quiet"]:
@@ -141,10 +131,22 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
             return done("ignore", "命中关键词规则，选择不回", {"rule": hit.get("id"), "policy": pol})
         if act == "command":
             full = str(hit.get("command") or "").lstrip("./／").strip()
-            # 运行时是把整串（含参数）塞回 handle_command 让它自己解析的，
-            # 所以「有没有这个命令」只看第一个词 —— 拿整串去查会永远查不到。
+            # 运行时是把整串（含参数）塞回 handle_command 让它自己解析的。
+            # 这里也走同一个 explain_command —— 作用域/权限/冷却同样生效，
+            # 否则会报「会执行 .仅主人命令」，而真实场景被拦下。
             token = full.split()[0] if full else ""
-            exists = bool(token) and mgr.commands.get(token.lower()) is not None
+            probe = FeatureContext(adapter=_FakeAdapter(owner_id), text="." + full,
+                                   is_group=bool(is_group), group_id=str(group_id or ""),
+                                   user_id=str(user_id or ""), user_name=str(user_name or ""),
+                                   message_id="", mentioned=bool(mentioned), role=str(role or ""))
+            v2 = mgr.explain_command(probe) if token else {"action": "none"}
+            exists = v2.get("action") in ("run", "skip")
+            if v2.get("action") == "skip":
+                steps.append(_step("rule", "关键词规则", "block",
+                                   f"命中「{hit.get('name') or hit.get('id')}」→ 当命令跑 .{full}"
+                                   f"，但被拦下：{v2.get('reason')}"))
+                return done("ignore", f"规则命令被拦下：{v2.get('reason')}",
+                            {"command": token, "rule": hit.get("id"), "policy": pol})
             steps.append(_step("rule", "关键词规则", "pass" if exists else "block",
                                f"命中「{hit.get('name') or hit.get('id')}」→ 当命令跑 .{full}"
                                + ("" if exists else "（这个命令不存在，会退回正常流程）")))
@@ -163,22 +165,21 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
 
     # 4) @ 门槛 / 群策略
     if is_group and pol["mode"] == "mention" and not mentioned:
-        if pol["quiet"] and pol["quiet_mention"]:
-            steps.append(_step("mention", "@ 门槛", "pass", "静默但设了「被 @ 仍回复」"))
-        else:
-            steps.append(_step("mention", "@ 门槛", "block",
-                               "群里没被 @，这条不会处理（关键词规则已经在上面查过了）"))
-            return done("ignore", "群里没被 @（策略：被叫到才应）", {"policy": pol})
+        # runtime 这一层只看 mentioned（静默例外是**下一层**的事：它决定
+        # 「被 @ 的那条要不要回」，不会让没被 @ 的消息通过）。这里必须一致。
+        steps.append(_step("mention", "@ 门槛", "block",
+                           "群里没被 @，这条不会处理（关键词规则已经在上面查过了）"))
+        return done("ignore", "群里没被 @（策略：被叫到才应）", {"policy": pol})
     elif is_group:
         steps.append(_step("mention", "@ 门槛", "pass",
                            "被 @ 了" if mentioned else "这个群设成每条都看"))
     else:
         steps.append(_step("mention", "@ 门槛", "pass", "私聊，不需要 @"))
 
-    # 静默时段：@ 也不聊（除非显式放开）
-    if pol["quiet"] and not pol["quiet_mention"]:
+    # 静默时段：和 runtime 同一个条件 —— `quiet and not (mentioned and quiet_mention)`
+    if pol["quiet"] and not (mentioned and pol["quiet_mention"]):
         steps.append(_step("quiet2", "静默时段", "block",
-                           "静默时段里不聊天（命令照常、@ 也按设定不回）"))
+                           "静默时段里不聊天（命令照常；被 @ 是否例外看会话设定）"))
         return done("ignore", "静默时段，不聊天", {"policy": pol})
 
     # 5) NLU（自然语言触发）
@@ -188,11 +189,15 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
         nlu = None
         steps.append(_step("nlu", "自然语言触发", "skip", f"匹配失败：{e}"))
     if nlu:
-        exists = mgr.commands.get(str(nlu).lower()) is not None
+        # `nlu_match` 返回的常带参数（"生日 可莉" / "天气 北京"），运行时是整串
+        # 塞回 handle_command 由它自己切 —— 拿整串查表会永远查不到。
+        full = str(nlu).strip()
+        token = full.split()[0] if full else ""
+        exists = bool(token) and mgr.commands.get(token.lower()) is not None
         steps.append(_step("nlu", "自然语言触发", "pass" if exists else "block",
-                           f"整句命中 → .{nlu}" + ("" if exists else "（对应命令不存在）")))
+                           f"整句命中 → .{full}" + ("" if exists else "（对应命令不存在）")))
         if exists:
-            return done("command", f"自然语言命中 .{nlu}", {"command": nlu, "policy": pol})
+            return done("command", f"自然语言命中 .{full}", {"command": token, "policy": pol})
     else:
         steps.append(_step("nlu", "自然语言触发", "pass", "没有整句命中"))
 

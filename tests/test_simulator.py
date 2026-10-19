@@ -110,7 +110,7 @@ def main():
     mgr.overrides = CP.load(cfg)
     d = sim(".b64e x", is_group=True)
     check("3.5 作用域覆盖在模拟里也生效", d["action"] == "ignore", str(d)[:100])
-    CP.set_override(cfg, plugin="b64")
+    CP.set_override(cfg, plugin="b64", scope="", permission="")
     mgr.overrides = CP.load(cfg)
 
     section("4. 权限")
@@ -123,7 +123,7 @@ def main():
     check("4.2 主人放行", d["action"] == "command", d["action"])
     d = sim(".b64e x")
     check("4.2b 没指定身份时按访客处理", d["action"] == "ignore", d["action"])
-    CP.set_override(cfg, command="b64e")
+    CP.set_override(cfg, command="b64e", scope="", permission="")
     mgr.overrides = CP.load(cfg)
 
     section("5. 静默时段")
@@ -139,6 +139,29 @@ def main():
     CHP.set_chat(st, "group:555", mode="disabled")
     d = sim(".b64e x", is_group=True, chat_id="group:555")
     check("5.4 disabled 连命令都不接", d["action"] == "ignore" and "完全不理" in d["reason"])
+
+    section("5b. 和 runtime 对齐的两个细节")
+    # 静默 + 没被 @：runtime 一定不处理（quiet_mention 只影响「被 @ 的那条」）
+    CHP.set_chat(st, "group:556", mode="open", quiet=["00:00", "23:59"], quiet_mention=True)
+    d = sim("随便聊聊", is_group=True, chat_id="group:556", mentioned=False)
+    check("5b.1 静默+没@ 即使 quiet_mention 也不聊", d["action"] == "ignore", d["action"])
+    # 规则转命令要过权限：仅主人的命令，群体触发应当被拦
+    CP.set_override(cfg, command="b64e", permission="owner")
+    mgr.overrides = CP.load(cfg)
+    R.add(st, {"match": "equals", "pattern": "偷偷查", "action": "command",
+               "command": ".b64e hi"})
+    d = sim("偷偷查", is_group=True, user_id="9", role="member")
+    check("5b.2 规则转的仅主人命令会被拦", d["action"] == "ignore" and "主人" in d["reason"],
+          d["reason"])
+    CP.set_override(cfg, command="b64e", scope="", permission="")
+    mgr.overrides = CP.load(cfg)
+    # NLU 命中带参数（"生日 可莉"）：要取第一个词查命令，不能整串查
+    nlu_text = next((t for t in ("生日 可莉",) if mgr.nlu_match(t)), "")
+    if nlu_text:
+        d = sim(nlu_text)
+        check("5b.3 NLU 带参数也认得命令", d["action"] == "command", str(d)[:120])
+    else:
+        print("  · 这个环境没有匹配的 NLU 句子，跳过 5b.3")
 
     section("6. 只读：不发消息、不执行、不动冷却")
     sent = []

@@ -1554,6 +1554,7 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
       </div>
       <div class="navgroup">
         <div class="navlabel">系统</div>
+        <button data-v="control" title="管控：命令权限、会话策略、消息模拟">🎚 <span class="t">管控</span></button>
         <button data-v="ops" title="运维：平台、配置、日志、模型">⚙️ <span class="t">运维</span></button>
         <button data-v="custom" title="自定义">✨ <span class="t">自定义</span></button>
       </div>
@@ -5951,6 +5952,16 @@ async function selfFix(id, btn){
 
 /* ================= 管控：命令权限 / 会话策略 / 模拟器 ================= */
 let ctlData = null, ctlFilter = "all", ctlQuery = "";
+function ctlNormChat(raw){
+  // 和 ctlAddChat 同一套规则：只填数字当群号；已经带前缀的原样用。
+  // 不归一化的话，模拟器会把 `998877` 当成会话 ID，策略永远查不到
+  // （策略表的键是 `group:998877`）。
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (/^(group|private):/.test(s)) return s;
+  if (/^\d{5,}$/.test(s)) return "group:" + s;
+  return "private:" + s;
+}
 function chatLabel(id){
   const s = String(id || "");
   if (s.startsWith("group:")) return "群 " + (s.slice(6) || "（临时）");
@@ -6049,17 +6060,23 @@ function ctlRenderCmds(){
       <code>.${esc(r.name)}</code>
       <span class="pl">${esc(r.title || r.plugin || "")}</span>
       <span class="h">${esc((r.help || "").replace(/^\.[^\s]+\s*/, "").slice(0, 40))}</span>
-      <select onchange="ctlSetCmd(${jsq(r.name)}, 'scope', this.value)">
+      <select data-k="scope" onchange="ctlSetCmd(${jsq(r.name)})">
         ${opt(scopes, r.scope_eff || "both")}</select>
-      <select onchange="ctlSetCmd(${jsq(r.name)}, 'permission', this.value)">
+      <select data-k="permission" onchange="ctlSetCmd(${jsq(r.name)})">
         ${opt(perms, r.permission_eff || "all")}</select>
       ${r.override ? `<button class="btn tiny" onclick="ctlResetCmd(${jsq(r.name)})">默认</button>`
                    : '<span class="kv" style="flex:none;min-width:44px"></span>'}
     </div>`).join("");
 }
-async function ctlSetCmd(name, field, value){
-  const body = {command: name};
-  body[field] = value;
+async function ctlSetCmd(name){
+  // 两个字段一起提交：服务端是按字段合并的，但整份发过来能顺手避免
+  // 「另一个 select 在请求飞行期间被改过」这类时序问题。
+  const row = [...document.querySelectorAll("#ctlCmds .ctl-cmd")]
+    .find(x => (x.querySelector("code") || {}).textContent === "." + name);
+  if (!row){ flash("找不到这一行"); return; }
+  const body = {command: name,
+                scope: (row.querySelector('[data-k="scope"]') || {}).value || "",
+                permission: (row.querySelector('[data-k="permission"]') || {}).value || ""};
   const d = await post("/api/control/cmd", body);
   if (!d || !d.ok){ flash("没保存：" + ((d && d.error) || "未知")); return; }
   ctlData = d.after;
@@ -6067,7 +6084,8 @@ async function ctlSetCmd(name, field, value){
   flash("已生效：" + name);
 }
 async function ctlResetCmd(name){
-  const d = await post("/api/control/cmd", {command: name});
+  // 显式给空串才是「清掉这两项」（不给 = 不动，服务端分得很清楚）
+  const d = await post("/api/control/cmd", {command: name, scope: "", permission: ""});
   if (!d || !d.ok){ flash("没恢复：" + ((d && d.error) || "未知")); return; }
   ctlData = d.after; ctlRenderCmds(); flash("已回到插件默认：" + name);
 }
@@ -6096,12 +6114,14 @@ function ctlRenderChats(){
       <code style="min-width:118px">${esc(chatLabel(id))}</code>
       <select data-k="mode" onchange="ctlSaveChat(${jsq(id)})">${opt(r.mode)}</select>
       <input data-k="q1" value="${esc(q[0] || "")}" placeholder="23:30" style="width:66px"
-             title="静默开始（留空 = 没静默）">
+             title="静默开始（留空 = 没静默）" onchange="ctlSaveChat(${jsq(id)})">
       <span class="kv" style="flex:none">~</span>
-      <input data-k="q2" value="${esc(q[1] || "")}" placeholder="07:00" style="width:66px">
+      <input data-k="q2" value="${esc(q[1] || "")}" placeholder="07:00" style="width:66px"
+             onchange="ctlSaveChat(${jsq(id)})">
       <label class="check" style="font-size:12px"><input type="checkbox" data-k="qm"
-        ${r.quiet_mention ? "checked" : ""}> 静默时 @ 也回</label>
-      <input data-k="note" value="${esc(r.note || "")}" placeholder="备注" style="width:90px">
+        ${r.quiet_mention ? "checked" : ""} onchange="ctlSaveChat(${jsq(id)})"> 静默时 @ 也回</label>
+      <input data-k="note" value="${esc(r.note || "")}" placeholder="备注" style="width:90px"
+             onchange="ctlSaveChat(${jsq(id)})">
       ${Object.keys(saved).includes(id)
         ? `<button class="btn tiny" onclick="ctlClearChat(${jsq(id)})">删</button>`
         : `<button class="btn tiny" onclick="ctlForget(${jsq(id)})">移除</button>`}
@@ -6109,7 +6129,7 @@ function ctlRenderChats(){
   }).join("");
 }
 async function ctlSaveChat(id){
-  const row = document.querySelector(`[data-chat="${id}"]`);
+  const row = document.querySelector(`[data-chat="${CSS.escape(id)}"]`);
   if (!row) return;
   const get = k => (row.querySelector(`[data-k="${k}"]`) || {}).value || "";
   const body = {chat_id: id, mode: get("mode"), note: get("note")};
@@ -6158,7 +6178,7 @@ async function ctlSim(){
                 role: role === "me" ? (isGroup ? "owner" : "member") : role,
                 user_id: role === "me" ? (owner || "10001") : "10001",
                 user_name: role === "me" ? "主人" : "访客",
-                chat_id: ($("simChat") || {}).value || ""};
+                chat_id: ctlNormChat(($("simChat") || {}).value || "")};
   if (out) out.innerHTML = '<div class="kv" style="margin-top:8px">判定中…</div>';
   const d = await post("/api/simulate", body);
   if (!out) return;

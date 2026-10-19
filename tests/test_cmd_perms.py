@@ -90,8 +90,8 @@ def main():
     check("1.3 非法值被丢掉", CP.load(tmp)["commands"] == {}, str(CP.load(tmp)))
     CP.set_override(tmp, command="b64e", permission="owner")
     check("1.4 写进去能读回来", CP.load(tmp)["commands"]["b64e"] == {"permission": "owner"})
-    CP.set_override(tmp, command="b64e")
-    check("1.5 值全空 = 删掉这条", CP.load(tmp)["commands"] == {})
+    CP.set_override(tmp, command="b64e", scope="", permission="")
+    check("1.5 两项显式清空 = 删掉这条", CP.load(tmp)["commands"] == {})
     for kwargs, why in (({"command": "a", "plugin": "p"}, "命令和插件同时给"),
                         ({}, "都不给"),
                         ({"command": "x", "scope": "sideways"}, "非法作用域"),
@@ -101,6 +101,18 @@ def main():
             check(f"1.6 拒绝{why}", False)
         except CP.PolicyError:
             check(f"1.6 拒绝{why}", True)
+
+    section("1b. 按字段合并（改一项不能把另一项冲掉）")
+    CP.set_override(tmp, command="x", permission="owner")
+    CP.set_override(tmp, command="x", scope="dm")
+    check("1b.1 改作用域保留权限", CP.load(tmp)["commands"]["x"] == {"permission": "owner",
+                                                                "scope": "dm"},
+          str(CP.load(tmp)["commands"]))
+    CP.set_override(tmp, command="x", permission="")
+    check("1b.2 只清权限，作用域还在",
+          CP.load(tmp)["commands"]["x"] == {"scope": "dm"}, str(CP.load(tmp)["commands"]))
+    CP.set_override(tmp, command="x", scope="")
+    check("1b.3 两项都清 → 整条消失", CP.load(tmp)["commands"] == {})
 
     section("2. 默认行为不变（没写覆盖时和插件声明一致）")
     mgr, cfg = make_mgr()
@@ -232,11 +244,22 @@ def main():
         check("7.7 响应里带最新快照",
               any(c["name"] == "b64e" and c["permission_eff"] == "owner"
                   for c in r1["after"]["commands"]))
-        code, r2 = post(BASE + "/api/control/cmd", {"command": "b64e"})
+        code, r2 = post(BASE + "/api/control/cmd",
+                        {"command": "b64e", "scope": "", "permission": ""})
         check("7.8 能恢复默认", code == 200 and r2["after"]["counts"]["overridden"] == 0,
               str(r2.get("after", {}).get("counts")))
         code, bad = post(BASE + "/api/control/cmd", {"command": "b64e", "permission": "god"})
         check("7.9 非法权限 400", code == 400, str(code))
+        # 面板是先设权限、再改作用域的；合并写错就会把「仅主人」悄悄冲掉
+        post(BASE + "/api/control/cmd", {"command": "b64e", "permission": "owner"})
+        code, r3 = post(BASE + "/api/control/cmd", {"command": "b64e", "scope": "dm"})
+        row = next((c for c in r3["after"]["commands"] if c["name"] == "b64e"), {})
+        check("7.10 改作用域不会冲掉权限",
+              row.get("permission_eff") == "owner" and row.get("scope_eff") == "dm", str(row))
+        post(BASE + "/api/control/cmd", {"command": "b64e", "scope": "", "permission": ""})
+        check("7.11 收尾清干净",
+              not json.loads((ROOT / "bot" / "features" / "overrides.json")
+                             .read_text(encoding="utf-8"))["commands"], "")
     except (urllib.error.URLError, OSError) as e:
         print(f"  · 服务没起来，跳过（{type(e).__name__}）")
 

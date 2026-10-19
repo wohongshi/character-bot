@@ -2092,9 +2092,11 @@ def _control_snapshot() -> dict:
     # 面板还要知道「有哪些会话」：策略表里没设过的群也该能选（从索引里取活跃的）
     known = []
     try:
-        for src in (_index().summary(30, "messages").get("sources") or [])[:20]:
+        for src in (_index().summary(30, "messages").get("sources") or [])[:24]:
             cid = str(src.get("chat_id") or "")
-            if cid:
+            # 只要真的能设策略的会话：`web:<session>` 是面板自己的记录，
+            # 列进「会话策略」会让人以为能给它设群策略（设了也没用）。
+            if cid.startswith(("group:", "private:")):
                 known.append({"id": cid, "n": int(src.get("n") or 0),
                               "last": float(src.get("last") or 0)})
     except Exception:                                             # noqa: BLE001
@@ -5861,12 +5863,13 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/control/cmd":
             from bot import cmdpolicy
             try:
+                # 键不存在 = 不动这一项；显式空串 = 清掉（见 cmdpolicy.set_override）
                 data = cmdpolicy.set_override(
                     FEATURES_DIR,
                     command=str(body.get("command") or ""),
                     plugin=str(body.get("plugin") or ""),
-                    scope=str(body.get("scope") or ""),
-                    permission=str(body.get("permission") or ""))
+                    scope=body.get("scope") if "scope" in body else None,
+                    permission=body.get("permission") if "permission" in body else None)
             except cmdpolicy.PolicyError as e:
                 self._json({"ok": False, "error": str(e)}, 400)
                 return

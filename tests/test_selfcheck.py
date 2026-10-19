@@ -35,7 +35,9 @@ def section(t):
 
 
 def env_for(tmp: Path, **kw) -> dict:
-    base = {"state_dir": tmp, "features_dir": tmp / "features",
+    # 宿主机指标钉死：本机内存/温度随负载抖动，不钉的话「干净环境全绿」这条会假红
+    base = {"host": {"free": 30 * 1024 ** 3, "mem": 1024 ** 3, "temp": 55.0},
+            "state_dir": tmp, "features_dir": tmp / "features",
             "index": {"ok": True, "rows": 10},
             "model": {"provider": "p", "model": "m", "has_key": True, "local": False},
             "adapter": {"platforms": [{"name": "onebot11", "connected": True, "detail": ""}],

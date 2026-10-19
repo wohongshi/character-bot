@@ -80,7 +80,7 @@ def _clean(ov: dict) -> dict:
 
 def save(features_dir: Path | str, data: dict) -> dict:
     p = path_for(features_dir)
-    with _LOCK:
+    with _LOCK:                          # RLock：save 会被 set_override 在外层再拿一次
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -89,27 +89,46 @@ def save(features_dir: Path | str, data: dict) -> dict:
 
 
 def set_override(features_dir: Path | str, *, command: str = "", plugin: str = "",
-                 scope: str = "", permission: str = "") -> dict:
-    """设/清一条覆盖。两个值都空 = 删掉这条（回到插件默认）。"""
+                 scope: str | None = None, permission: str | None = None) -> dict:
+    """设一条覆盖（**按字段**）。
+
+    `None` = 这一项不动；`""` = 清掉这一项；两项都清 → 整条删掉（回到插件默认）。
+    这个区分很要紧：面板是先设权限、再改作用域的，如果「没给」和「清空」
+    长得一样，第二步就会把第一步悄悄冲掉。
+    """
     command = str(command or "").strip()
     plugin = str(plugin or "").strip()
     if bool(command) == bool(plugin):
         raise PolicyError("要么给命令名，要么给插件名（二选一）")
-    scope = str(scope or "").strip().lower()
-    permission = str(permission or "").strip().lower()
+    scope = None if scope is None else str(scope).strip().lower()
+    permission = None if permission is None else str(permission).strip().lower()
     if scope and scope not in SCOPES:
         raise PolicyError(f"作用域只能是 {'/'.join(SCOPES)}")
     if permission and permission not in PERMISSIONS:
         raise PolicyError(f"权限只能是 {'/'.join(PERMISSIONS)}")
-    data = load(features_dir)
-    kind = "commands" if command else "plugins"
-    key = command or plugin
-    clean = _clean({"scope": scope, "permission": permission})
-    if clean:
-        data[kind][key] = clean
-    else:
-        data[kind].pop(key, None)
-    return save(features_dir, data)
+    # 读-改-写整体串行：面板是 ThreadingHTTPServer，两个标签页同时保存时
+    # 后写的会覆盖先写的（丢的是权限规则，属于用户可见的配置丢失）。
+    with _LOCK:
+        data = load(features_dir)
+        kind = "commands" if command else "plugins"
+        key = command or plugin
+        # **按字段合并**，不是整条替换：面板每次只提交改动的那个字段
+        # （改权限时只发 permission），整条替换会把上一步设的作用域冲掉 ——
+        # 更糟的是「先设仅主人、再改作用域」会把权限悄悄恢复成所有人可用。
+        row = dict((data.get(kind) or {}).get(key) or {})
+        for k, v in (("scope", scope), ("permission", permission)):
+            if v is None:
+                continue                     # 没提这一项 → 不动
+            if v:
+                row[k] = v
+            else:
+                row.pop(k, None)             # 显式给空串 → 清掉
+        clean = _clean(row)
+        if clean:
+            data.setdefault(kind, {})[key] = clean
+        else:
+            (data.get(kind) or {}).pop(key, None)
+        return save(features_dir, data)
 
 
 def effective(cmd: object, data: dict) -> dict:

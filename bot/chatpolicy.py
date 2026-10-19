@@ -121,6 +121,12 @@ def set_chat(state_dir: Path | str, chat_id: str, **patch) -> dict:
     chat_id = str(chat_id or "").strip()
     if not chat_id:
         raise ValueError("缺会话 ID")
+    # 读-改-写整体串行（同 cmdpolicy：并发保存会丢别人的策略）
+    with _LOCK:
+        return _set_chat_locked(state_dir, chat_id, patch)
+
+
+def _set_chat_locked(state_dir: Path | str, chat_id: str, patch: dict) -> dict:
     data = load(state_dir)
     row = dict(data["chats"].get(chat_id) or {})
     if "mode" in patch:

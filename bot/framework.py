@@ -1136,13 +1136,15 @@ class FeatureManager:
         """
         parsed = self._split_command(ctx.text)
         if not parsed:
-            return {"action": "none", "reason": "不是命令（没有前缀）"}
+            # 形状要和「有命令」的那几个分支一致：调用方会直接读 token/args/cmd
+            return {"action": "none", "token": "", "args": [], "cmd": None,
+                    "kind": "prefix", "reason": "不是命令（没有前缀）"}
         token, args = parsed
         with self._lock:                    # 热重载会在另一个线程重置字典
             cmd = self.commands.get(token.lower())
         if cmd is None:
-            return {"action": "none", "token": token, "args": args,
-                    "reason": f"没有命令「{token}」"}
+            return {"action": "none", "token": token, "args": args, "cmd": None,
+                    "kind": "unknown", "reason": f"没有命令「{token}」"}
         scope, perm = cmd.scope, cmd.permission
         source = "插件默认"
         try:
@@ -1151,27 +1153,31 @@ class FeatureManager:
             scope, perm = eff["scope"], eff["permission"]
             if eff["override"]:
                 source = "面板覆盖"
-        except Exception:                                          # noqa: BLE001
-            pass
+        except Exception as e:                                     # noqa: BLE001
+            # 覆盖表坏了就退回插件默认 —— 但必须留痕，否则「明明设了却不生效」
+            # 无从排查（正是这个功能要消灭的失败方式）。
+            logger.warning("OneBot: 命令权限覆盖读取失败（按插件默认）：%s", e)
         out = {"token": token, "args": args, "cmd": cmd, "scope": scope,
                "permission": perm, "rule_source": source}
-        if scope == "group" and not ctx.is_group:
-            return {**out, "action": "skip", "reason": "这条命令只在群里可用"}
-        if scope == "dm" and ctx.is_group:
-            return {**out, "action": "skip", "reason": "这条命令只在私聊可用"}
-        ok = (perm == "all"
-              or (perm == "owner" and ctx.is_owner)
-              or (perm == "admin" and (ctx.is_admin or ctx.is_owner)))
-        if not ok:
-            return {**out, "action": "skip",
+        # 判定本体在 cmdpolicy 里（allowed/scope_ok），这里不再内联一份 ——
+        # 以后加权限级别只改一个地方。
+        from . import cmdpolicy as _cp2
+        if not _cp2.scope_ok(scope, is_group=ctx.is_group):
+            if scope == "group":
+                return {**out, "action": "skip", "kind": "scope",
+                        "reason": "这条命令只在群里可用"}
+            return {**out, "action": "skip", "kind": "scope",
+                    "reason": "这条命令只在私聊可用"}
+        if not _cp2.allowed(perm, is_owner=ctx.is_owner, is_admin=ctx.is_admin):
+            return {**out, "action": "skip", "kind": "permission",
                     "reason": ("只有主人能用" if perm == "owner" else "只有群主/群管理能用")}
         if cmd.cooldown > 0:
             key = (cmd.name.lower(), ctx.user_id)
             if time.monotonic() < self.cooldowns.get(key, 0.0):
-                return {**out, "action": "skip",
+                return {**out, "action": "skip", "kind": "cooldown",
                         "reason": f"冷却中（{cmd.cooldown:g} 秒一次）", "cooldown": cmd.cooldown}
             out["cooldown"] = cmd.cooldown
-        return {**out, "action": "run"}
+        return {**out, "action": "run", "kind": "ok"}
 
     async def handle_command(self, ctx: FeatureContext) -> bool:
         """命中并消费返回 True；没命中返回 False（继续正常流程）。"""
@@ -1179,12 +1185,12 @@ class FeatureManager:
         action = verdict["action"]
         if action == "none":
             return False
-        cmd = verdict.get("cmd")
-        if cmd is None:
-            return False
+        cmd = verdict["cmd"]
         if action == "skip":
-            # 作用域 / 权限 / 冷却 —— 任何一项不过都静默吞掉（别喂给 LLM）
-            if verdict.get("reason", "").startswith(("只有", "这条命令")):
+            # 作用域 / 权限 / 冷却 —— 任何一项不过都静默吞掉（别喂给 LLM）。
+            # 用 verdict["kind"] 分类，不靠中文 reason 前缀（改个措辞就会静默失效）。
+            kind = verdict.get("kind")
+            if kind in ("scope", "permission"):
                 logger.info("OneBot: 命令 .%s 被拦下（%s %s role=%s）",
                             cmd.name, verdict["reason"], ctx.user_id, ctx.role or "-")
                 self._bump(f"{cmd.plugin}:denied")

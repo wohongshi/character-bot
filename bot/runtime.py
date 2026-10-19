@@ -615,14 +615,31 @@ class BotRuntime(RuntimeFeatures):
         except Exception:                                          # noqa: BLE001
             logger.debug("%s 钩子链异常（已忽略）", kind)
 
+    _POLICY_CACHE: dict = {"ts": 0.0, "key": "", "data": None}
+
     def policy_for(self, chat_id: str, now: float | None = None) -> dict:
         """这个会话此刻生效的策略（含静默时段）。见 bot/chatpolicy.py。
 
         失败按全局策略处理：策略文件坏了不该让消息完全不处理。
+
+        文件内容按 (mtime, size) 缓存 2 秒：每条入站消息都在事件循环线程上，
+        每次都 `read_text + json.loads`（文件不存在时还要吃一次失败的 open）
+        是白白占着循环。2 秒的延迟对「改完立刻生效」完全够。
         """
         try:
             from . import chatpolicy
-            return chatpolicy.resolve(self.state_dir, chat_id, self.group_policy, now=now)
+            p = chatpolicy.path_for(self.state_dir)
+            try:
+                st = p.stat()
+                sig = f"{st.st_mtime_ns}:{st.st_size}"
+            except OSError:
+                sig = "none"                       # 没有文件 = 全是默认
+            c = self._POLICY_CACHE
+            if c["data"] is None or c["key"] != sig or time.time() - float(c["ts"]) > 2.0:
+                c["data"] = chatpolicy.load(self.state_dir)
+                c["key"], c["ts"] = sig, time.time()
+            return chatpolicy.resolve(self.state_dir, chat_id, self.group_policy,
+                                      now=now, data=c["data"])
         except Exception as e:                                     # noqa: BLE001
             logger.info("会话策略读取失败（按全局 %s）：%s", self.group_policy, e)
             return {"mode": self.group_policy, "global_mode": self.group_policy,
@@ -730,7 +747,9 @@ class BotRuntime(RuntimeFeatures):
         # 以前只看全局 group_policy；现在每个群/私聊可以单独设（state/chat_policy.json），
         # 没设的仍然跟全局，行为不变。
         pol = self.policy_for(chat_id)
-        if is_group and pol["mode"] == "disabled":
+        # 以前只看群（`is_group and ...`）。面板允许给私聊单独设「完全不理」，
+        # 设了却不生效才是 bug —— 按会话判定，不看群/私聊。
+        if pol["mode"] == "disabled":
             return
 
         ctx = FeatureContext(
@@ -786,8 +805,11 @@ class BotRuntime(RuntimeFeatures):
                 return
 
         chime = False
+        quiet_now = pol["quiet"] and not pol["quiet_mention"]
         if is_group and pol["mode"] == "mention" and not mentioned:
-            chime = self._maybe_chime(group_id)
+            # 静默时段里不掷骰子：`_maybe_chime` 命中后会记冷却，
+            # 而这条消息马上会被静默判定丢掉 —— 等于白白烧掉一次彩蛋机会。
+            chime = False if quiet_now else self._maybe_chime(group_id)
             if not chime:
                 return                                            # 闲聊/ NLU 必须被叫到
         # open = 群里的每条都看；mention 已在上面的分支筛过；私聊永远看
