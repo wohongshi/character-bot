@@ -234,6 +234,22 @@ def main():
                   S2._known_chat_sessions() == set(), str(S2._known_chat_sessions()))
         finally:
             S2._index = real_index
+        # 库被删会新建一个空库：查询不报错、返回 0 行 —— 同样不能拿尾部冒充全量
+        import sqlite3 as _sq
+        empty_db = tmp2 / "empty.db"
+        con0 = _sq.connect(empty_db)
+        con0.execute("CREATE TABLE msg (session TEXT, src TEXT)")
+        con0.commit(); con0.close()
+        class EmptyIndex:
+            def _connect(self):
+                c = _sq.connect(empty_db)
+                return c
+        try:
+            S2._index = lambda: EmptyIndex()
+            check("8.7d 空索引也返回空集", S2._known_chat_sessions() == set(),
+                  str(S2._known_chat_sessions()))
+        finally:
+            S2._index = real_index
         n_workers = int("".join(ch for ch in wk["detail"] if ch.isdigit()) or 0)
         check("8.7 长驻线程都被数到（≥4）", n_workers >= 4, wk["detail"])
     except (urllib.error.URLError, OSError) as e:

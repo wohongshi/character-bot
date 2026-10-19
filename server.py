@@ -2079,6 +2079,10 @@ def _known_chat_sessions() -> set:
     - 索引是**增量**同步的（后台 worker 每 20 秒一次），刚建几秒的会话还查不到；
     - 只读 JSONL 尾部又会让很久以前的老会话被误判成「没有记录」。
     所以索引给全量、JSONL 尾部补上「刚刚发生的」那一批。
+
+    **契约（调用方依赖）**：索引问不到时返回**空集**，表示「不知道」——
+    所有调用方都写成 `if known and k not in known`，空集等于关闭孤儿判定。
+    这样宁可少报，也不会在索引坏掉时把所有老会话的名字/置顶删掉。
     """
     known: set = set()
     try:
@@ -2088,11 +2092,18 @@ def _known_chat_sessions() -> set:
         finally:
             con.close()
         known |= {str(r[0]) for r in rows if r[0]}
+        if not known:
+            # 「查到了 0 行」和「问不到」一样不可信：库文件被删会新建一个空库、
+            # 冷启动首轮 sync 还没跑完也查不到 —— 这时返回空集（= 不知道），
+            # 不能拿尾部冒充全量去判孤儿。
+            logger.warning("会话索引为空，本轮不判孤儿")
+            return set()
     except Exception as e:                            # noqa: BLE001
         # **fail-closed**：索引问不到就返回空集（调用方约定「空 = 不知道，别判孤儿」）。
         # 只拿 4MB 尾部凑一份不完整的名单更危险 —— 调用方会当它是全量，
         # 把所有老会话判成孤儿，点一下就真删了。
-        logger.info("读会话清单失败（本轮不判孤儿）：%s", e)
+        # warning 级别：孤儿检测会一直处于「降级模式」，运维该看见
+        logger.warning("读会话清单失败（本轮不判孤儿）：%s", e)
         return set()
     for e in _read_jsonl(CHAT_JSONL):                 # 尾部 4MB，补上还没同步的那一段
         sid = e.get("session")
