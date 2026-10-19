@@ -692,7 +692,11 @@ class _WebAdapter:
     def __init__(self, rt, cid: str):
         self._rt = rt
         self._cid = cid
-        self.owner_id = str((BOT.config if BOT else {}).get("owner_id") or "")
+        # BOT 在测试桩 / 半初始化时可能没有 config：这只是「谁在说话」的标记，
+        # 拿不到就给个默认值，不该让整条消息挂掉（以前只有命令消息才建这个对象，
+        # 改成「每条消息都过钩子」之后这一行就跑在热路径上了）
+        _cfg = getattr(BOT, "config", None) if BOT else None
+        self.owner_id = str((_cfg if isinstance(_cfg, dict) else {}).get("owner_id") or "")
         self.owner_id = self.owner_id or "1"          # 网页端视为操作者本人
         self.features_dir = ""
         self.feature_prefix = str(rt.config.get("feature_prefix") or ".")
@@ -702,26 +706,35 @@ class _WebAdapter:
 
 
 def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
-    """网页消息先走插件层：命中命令/NLU 就直接用插件的回复。
+    """网页消息先走插件层：入站钩子 → 命令 / NLU，命中就用插件的回复。
 
-    返回 str = 插件已回复；None = 没命中，继续普通聊天。
-    在 worker 线程里同步执行（命令 handler 是 async，用独立小循环跑）。
+    返回 str = 插件已处理（可能是空串：被静默拦下）；None = 没命中，继续普通聊天。
+
+    **入站钩子对每条消息都要跑**，不只是带前缀的命令。
+    以前这里先判断「是不是命令」，不是就直接 return None ——
+    于是明明启用了「屏蔽词」，网页聊天里一句话都拦不住，
+    复读之类的 on_message 插件也从来没在面板里生效过。
     """
     import asyncio as _aio
     # 测试桩 / 半初始化的 runtime 没有 mgr：直接退回纯聊天，别把 worker 弄挂
     if not hasattr(rt, "mgr") or getattr(rt, "mgr", None) is None or not hasattr(rt, "config"):
         return None
-    text = str(text or "").strip()
-    if not text or not text.startswith(str(rt.config.get("feature_prefix") or ".")):
-        # 没带前缀：试试 NLU（自然语言路由到命令），没路由就直接聊天
-        hit = rt.mgr.nlu_match(text) if text else None
-        if not hit:
-            return None
-        text = str(rt.config.get("feature_prefix") or ".") + hit.lstrip("./／")
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    prefix = str(rt.config.get("feature_prefix") or ".")
+    is_cmd = raw.startswith(prefix)
+    cmd_text = raw
+    if not is_cmd:
+        # 没带前缀：试试 NLU（自然语言路由到命令）
+        hit = rt.mgr.nlu_match(raw) if raw else None
+        if hit:
+            cmd_text = prefix + str(hit).lstrip("./／")
 
     from bot.framework import FeatureContext
     adapter = _WebAdapter(rt, cid)
-    ctx = FeatureContext(adapter=adapter, text=text, is_group=False,
+    ctx = FeatureContext(adapter=adapter, text=raw, is_group=False,
                          group_id="", user_id="panel", user_name="主人",
                          message_id="", mentioned=True, role="owner")
     captured: list[str] = []
@@ -735,17 +748,21 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
 
     loop = _aio.new_event_loop()
     try:
-        # 先跑入站钩子（违禁词等），再跑命令
-        ok = loop.run_until_complete(rt.mgr.run_message_hooks(ctx))
-        if ok:
-            ok = loop.run_until_complete(rt.mgr.handle_command(ctx))
+        # 1) 入站钩子（违禁词、复读……）：每条消息都跑
+        passed = loop.run_until_complete(rt.mgr.run_message_hooks(ctx))
+        if not passed:
+            return "\n".join(captured)          # 被拦下：有话说就说，没话说就静默
+        # 2) 命令 / NLU（钩子可以把文本改写掉，改写优先）
+        if is_cmd or cmd_text != raw:
+            ctx.text = ctx.text if ctx.text != raw else cmd_text
+            loop.run_until_complete(rt.mgr.handle_command(ctx))
     except Exception:                                        # noqa: BLE001
         logger.exception("网页插件分发失败")
         return None
     finally:
         loop.close()
     if not captured:
-        return None
+        return None if not (is_cmd or cmd_text != raw) else ""
     return "\n".join(captured)
 
 
@@ -772,6 +789,11 @@ def _chat_worker() -> None:
             if rt is not None:
                 web_reply = _web_plugin_dispatch(rt, job, raw, cid)
                 if web_reply is not None:
+                    if not str(web_reply).strip():
+                        # 被钩子静默拦下（例如冷却期内）：不回复，也不该进模型
+                        with _lock:
+                            _chat_state["running"] = None
+                        continue
                     _append_jsonl(MSG_JSONL, {"ts": time.time(),
                                               "chat_id": "web:" + job["session"],
                                               "role": "assistant", "text": str(web_reply)[:800]})
@@ -1180,6 +1202,42 @@ def _plugin_zip_files(raw: bytes) -> dict[str, str]:
     return out
 
 
+_PKGCHECK_DLL = STUDIO_HOME / "tools" / "pkgcheck" / "bin" / "Release" / "net10.0" / "pkgcheck.dll"
+
+
+def _pkgcheck(raw: bytes, *, plugin: bool = True, timeout: float = 20.0) -> dict:
+    """用 C# 的 pkgcheck 给这个 zip 出一份清单（文件 + SHA-256 + 问题列表）。
+
+    它**不参与**安装决策（Python 侧的解压校验才是权威），只把「装进去的是哪些字节」
+    记下来 —— 出问题时能对着哈希查。dotnet 没装就返回 {skipped}，不报错。
+    """
+    import shutil as _sh
+    import subprocess as _sp
+    import tempfile
+
+    if not _PKGCHECK_DLL.is_file():
+        return {"skipped": "没编译（tools/pkgcheck 里跑 dotnet build -c Release）"}
+    dotnet = _sh.which("dotnet")
+    if not dotnet:
+        return {"skipped": "没装 .NET"}
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".zip", prefix="klee-pkg-")
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        cmd = [dotnet, str(_PKGCHECK_DLL), tmp] + (["--plugin"] if plugin else [])
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return json.loads(r.stdout or "{}") or {"skipped": "没有输出"}
+    except Exception as e:                                     # noqa: BLE001
+        return {"skipped": f"{type(e).__name__}: {e}"}
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def _import_plugin_zip(raw: bytes, overwrite: bool = False) -> dict:
     files = _plugin_zip_files(raw)
     known = {c["id"] for c in _char_store().list()}
@@ -1216,8 +1274,19 @@ def _import_plugin_zip(raw: bytes, overwrite: bool = False) -> dict:
                 pass
         raise ImportError_(f"写入失败：{e}") from None
     RELOAD_MARK.touch()
-    return {"ok": True, "installed": written, "overwrite": overwrite,
-            "note": "插件已安装，8 秒内热重载"}
+    # `written` 从来没被定义过 —— 这个函数以前每次都在最后一行 NameError，
+    # 于是「📦 安装插件包」永远是 500（前端只会说“安装失败”）。
+    written = sorted(files.keys())
+    out = {"ok": True, "installed": written, "overwrite": overwrite,
+           "note": "插件已安装，8 秒内热重载"}
+    audit = _pkgcheck(raw, plugin=True)
+    if audit and not audit.get("skipped"):
+        out["manifest"] = {"files": audit.get("Files") or [],
+                           "problems": audit.get("Problems") or [],
+                           "bytes": audit.get("Bytes")}
+    elif audit:
+        out["manifest"] = {"skipped": audit.get("skipped")}
+    return out
 
 
 def _import_character_zip(raw: bytes) -> dict:
@@ -1630,56 +1699,106 @@ def _highlight(lang: str, code: str) -> dict:
 
 
 def _similar(q: str, limit: int = 3) -> dict:
-    """「你是不是问过类似的问题」：拿最近 N 条用户消息跟 Java 算相似度。"""
+    """「你是不是问过类似的问题」：拿最近若干条用户消息跟 Java 算相似度。
+
+    两条性能口径（都实测过）：
+    - 候选来自 **SQL 索引**（`recent_user_texts`，5 ms），不再读整个 messages.jsonl
+      —— 74 MB 的 JSONL 每条消息读一遍是几秒级；
+    - 相似度用 **批量命令**，一次进程往返算 40 个候选；
+      单个候选各调一次是 40 × 2 ms = 80 ms。
+    """
     q = str(q or "").strip()
     if len(q) < 2:
         return {"ok": False, "error": "问题太短"}
-    recent: list[str] = []
     try:
-        rows = _read_jsonl(MSG_JSONL)
+        recent = _index().recent_user_texts(40)
     except Exception:                                          # noqa: BLE001
-        rows = []
-    for e in reversed(rows[-400:]):
-        if e.get("role") == "user" and e.get("text"):
-            t = str(e["text"]).strip()
-            # 不要把「和问题一模一样」的那条排除掉 —— 用户重复问同一件事，
-            # 恰恰是最该提示「你问过」的场景
-            if 2 <= len(t) <= 200:
-                recent.append(t)
-        if len(recent) >= 60:
-            break
+        recent = []
+    if not recent:
+        # 索引还没建好时的兜底：只读尾部，不整文件解析
+        try:
+            with MSG_JSONL.open("rb") as f:
+                f.seek(max(0, MSG_JSONL.stat().st_size - 262144))
+                tail = f.read().decode("utf-8", "replace").splitlines()[1:]
+            for line in reversed(tail):
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("role") == "user" and e.get("text"):
+                    t = str(e["text"]).strip()
+                    if 2 <= len(t) <= 200:
+                        recent.append(t)
+                if len(recent) >= 40:
+                    break
+        except OSError:
+            recent = []
+
     p = _ext_plugin("similar")
-    hits = []
-    if p is not None:
-        for t in recent:
-            try:
-                res = p.call("similar", [], f"{q}\u0001{t}", {})
-                score = float(str(res.get("reply") or "0"))
-            except Exception:                                  # noqa: BLE001
-                continue
-            if score >= 0.4:
-                hits.append({"text": t, "score": round(score, 3)})
-    else:
+    hits: list[dict] = []
+    by = "python"
+    if p is not None and recent:
+        try:
+            payload = q + "\u0001" + "\u0002".join(recent)
+            res = p.call("similar_batch", [], payload, {})
+            scores = json.loads(res.get("reply") or "[]")
+            by = "java"
+            for text, sc in zip(recent, scores):
+                if float(sc) >= 0.4:
+                    hits.append({"text": text, "score": round(float(sc), 3)})
+        except Exception as e:                                 # noqa: BLE001
+            logger.warning("批量相似度失败，退回 difflib：%s", e)
+            p = None
+    if p is None:
         import difflib
         for t in recent:
             score = difflib.SequenceMatcher(None, q, t).ratio()
             if score >= 0.4:
                 hits.append({"text": t, "score": round(score, 3)})
+
+    # Dice 2-gram 的刻度（实测见 docs/POLYGLOT.md）：
+    # 完全不相关 = 0.00，换个说法问同一件事 = 0.38~0.67。
+    # 阈值取 0.4，再把重复文案去重（同一句话可能在群里出现很多次）。
     hits.sort(key=lambda x: -x["score"])
-    return {"ok": True, "hits": hits[:limit], "scanned": len(recent),
-            "by": "java" if p is not None else "python"}
+    seen: set[str] = set()
+    uniq = []
+    for h in hits:
+        if h["text"] in seen:
+            continue
+        seen.add(h["text"])
+        uniq.append(h)
+    return {"ok": True, "hits": uniq[:limit], "scanned": len(recent), "by": by}
 
 
-def _market() -> dict:
+#: 市场清单缓存：目录 mtime 变了才重扫（实测一次 145 ms，面板每次进插件页都调）
+_MARKET_CACHE: dict = {"ts": 0.0, "sig": "", "data": None}
+
+
+def _market(max_age: float = 30.0) -> dict:
     """插件市场清单：PHP 扫一遍目录（含统计与分类）。"""
+    try:
+        # 目录 mtime 只在「新增/删除文件」时变，改一个插件的内容不会动它 ——
+        # 所以签名要取「所有插件文件的最大 mtime + 总大小」，否则改完插件数量/命令数不刷新
+        py = list(FEATURES_DIR.glob("*.py"))
+        sig = f"{len(py)}:{max((p.stat().st_mtime_ns for p in py), default=0)}:" \
+              f"{sum(p.stat().st_size for p in py)}"
+        ext = list((FEATURES_DIR / "ext").glob("*.ext.json")) if (FEATURES_DIR / "ext").is_dir() else []
+        sig += f":{len(ext)}:{max((p.stat().st_mtime_ns for p in ext), default=0)}"
+    except OSError:
+        sig = ""
+    if (_MARKET_CACHE["data"] is not None and sig == _MARKET_CACHE["sig"]
+            and time.time() - _MARKET_CACHE["ts"] < max_age):
+        return _MARKET_CACHE["data"]
     p = _ext_plugin("market")
     if p is None:
         return {"ok": False, "error": "市场索引插件没启用"}
     try:
         res = p.call("manifest", [], "", {})
-        return json.loads(res.get("reply") or "{}")
+        data = json.loads(res.get("reply") or "{}")
     except Exception as e:                                     # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    _MARKET_CACHE.update(ts=time.time(), sig=sig, data=data)
+    return data
 
 
 def _palette(name: str, refresh: bool = False) -> dict:
@@ -1687,10 +1806,9 @@ def _palette(name: str, refresh: bool = False) -> dict:
     from bot import palette as pal
     cid = str(name or "").strip().lower() or _active_cid()
     if refresh:
-        try:
-            (STATE_DIR / "charpalette.json").unlink()
-        except OSError:
-            pass
+        # 只失效**这一个**角色。以前是删整个 charpalette.json，
+        # 于是「刷新可莉的配色」会把另外五个角色的缓存一起清掉，下次全部重算。
+        pal.drop(cid)
     return pal.compute(cid)
 
 
@@ -2787,6 +2905,9 @@ class Handler(BaseHTTPRequestHandler):
         _CHAR_CACHE.update(ts=0.0, data=None)      # 写操作之后别再吐旧的角色/插件快照
         _PLUG_CACHE.clear()                        # 拆成 lite/full 两份后不能再 update(ts=…)
         if u.path == "/api/highlight":
+            # 其它 POST 都过 guard，这个漏了 —— 虽然只算文本，但没理由开一个例外
+            if not self._guard():
+                return
             b = self._body()
             self._json(_highlight(str(b.get("lang") or "js"), str(b.get("code") or "")))
             return

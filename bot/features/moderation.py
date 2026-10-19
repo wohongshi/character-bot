@@ -2,13 +2,17 @@
 
 settings 可配：``bad_words``（列表）、``reply``（回复文案）、``cooldown``（秒，默认 60，
 冷却期内静默拦截不回复，防刷屏）。
+
+**词表 ≥ 64 时用 Rust 的 Aho-Corasick**（见 docs/POLYGLOT.md 的交叉点实测），
+更小就留在 Python —— ctypes 一次调用有 6 µs 底噪，词少时反而更慢。
+两条路径**必须走同一套拦截逻辑**，否则「换个词量就换了个行为」。
 """
 
 import time
 
 NAME = "屏蔽词"
 DESCRIPTION = "屏蔽词过滤：命中就拦下来不回。词表空着就等于没开"
-VERSION = "1.0"
+VERSION = "1.1"
 
 # 面板「插件 → 设置」按这个 schema 自动出表单（AstrBot _conf_schema 风格）
 CONFIG_SCHEMA = {
@@ -16,7 +20,7 @@ CONFIG_SCHEMA = {
     "reply": {"type": "str", "default": "这些不聊啦～换个话题吧",
               "description": "命中后回复的文案", "max_len": 200},
     "cooldown": {"type": "int", "default": 60, "min": 0, "max": 3600,
-                 "description": "冷却（秒）：冷却期内静默拦截，不回复"},
+                 "description": "冷却（秒）：冷却期内静默拦截，不回复；0 = 不冷却"},
 }
 
 DEFAULT_REPLY = "这些不聊啦～换个话题吧"
@@ -29,32 +33,25 @@ def register(api):
         return
 
     reply = str(api.settings.get("reply") or DEFAULT_REPLY)
-    cooldown = float(api.settings.get("cooldown") or 60)
+    # 不能用 `x or 60`：面板上 0 是合法值（意思是「不冷却」），`0 or 60` 会把它变成 60
+    raw_cd = api.settings.get("cooldown", 60)
+    try:
+        cooldown = 60.0 if raw_cd is None else float(raw_cd)
+    except (TypeError, ValueError):
+        cooldown = 60.0
 
-    # 词表规模决定用哪套实现（实测在 docs/POLYGLOT.md）：
-    #   ≤ 64 词：Python 的 `w in text` 走 str 快搜，比 ctypes 调用还快（1.9 µs vs 6.4 µs 底噪）
-    #   ≥ 64 词：Rust 的 Aho-Corasick 一次扫描搞定，500 词时快 1.7×，且随词表增大差距继续拉
-    # 两套结果一致（都返回命中词），所以这里只切路径，不动语义。
     use_native = len(words) >= 64
     if use_native:
         api.log("启用 Rust 扫描器（%d 个词）", len(words))
 
-    async def check(ctx):
-        if use_native:
-            try:
-                from bot import native as _native
-                hit = _native.scan(ctx.text or "", words)
-                if hit:
-                    return await _block()
-            except Exception:                        # noqa: BLE001
-                pass                                  # 原生层出问题就退回 Python 版
-        low = (ctx.text or "").lower()
-        for w in words:
-            if w.lower() in low:
-                return await _block()
-        return None
+    async def _block(ctx):
+        """拦截的统一出口：冷却判定 + 回复 + BLOCK。
 
-    async def _block():
+        必须把 ctx 传进来 —— 之前写成闭包零参数，`ctx` 在 register 作用域里不存在，
+        于是命中屏蔽词时抛 NameError：小词表下消息**根本没被拦住**，
+        大词表下因为进过一次冷却反而「静默拦截」（连回复都没有）。
+        两套表现都是错的，而且都不报错。
+        """
         if cooldown > 0:
             now = time.monotonic()
             if now < api.state.get("last", 0.0):
@@ -62,6 +59,21 @@ def register(api):
             api.state["last"] = now + cooldown
         await ctx.reply(reply)
         return api.BLOCK
+
+    async def check(ctx):
+        text = ctx.text or ""
+        if use_native:
+            try:
+                from bot import native as _native
+                if _native.scan(text, words):
+                    return await _block(ctx)
+            except Exception as e:                  # noqa: BLE001
+                api.log("原生扫描失败，本次退回 Python：%s", e)
+        low = text.lower()
+        for w in words:
+            if w.lower() in low:
+                return await _block(ctx)
+        return None
 
     api.on_message(check, priority=10)
     api.log("启用，%d 个词（冷却 %ds）", len(words), int(cooldown))

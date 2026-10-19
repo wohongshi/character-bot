@@ -190,19 +190,66 @@ def palette(rgba: bytes, w: int, h: int, n: int = 5, step: int = 2) -> list[str]
                     for i in range(max(0, got))]
         except Exception:                                        # noqa: BLE001
             pass
-    return []
+    # 没有 .so 也要能用：粗量化直方图（慢一些，但「缺 .so 就回落 Python」这句话得是真的）
+    return _py_palette(rgba, w, h, n, step)
+
+
+def _py_palette(rgba: bytes, w: int, h: int, n: int, step: int = 8) -> list[str]:
+    from collections import Counter
+    c: Counter = Counter()
+    stride = max(1, int(step))
+    for y in range(0, h, stride):
+        row = y * w * 4
+        for x in range(0, w, stride):
+            i = row + x * 4
+            if i + 3 >= len(rgba) or rgba[i + 3] < 8:
+                continue
+            # 量化到 5 bit/通道，和 C++ 版同一个桶宽
+            c[(rgba[i] >> 3 << 3, rgba[i + 1] >> 3 << 3, rgba[i + 2] >> 3 << 3)] += 1
+    if not c:
+        return []
+    # 按「占比 × 饱和度 × 中等亮度」排，和 C++ 版口径近似
+    scored = []
+    for (r, g, b), cnt in c.items():
+        mx, mn = max(r, g, b), min(r, g, b)
+        sat = 0 if mx == 0 else (mx - mn) / mx
+        lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        mid = max(0.15, 1 - abs(lum - 0.55) * 1.1)
+        scored.append((cnt * (0.25 + sat) * mid, r, g, b))
+    scored.sort(reverse=True)
+    out = []
+    for _score, r, g, b in scored:
+        c_hex = "#%02x%02x%02x" % (r, g, b)
+        if all(abs(r - int(o[1:3], 16)) + abs(g - int(o[3:5], 16)) + abs(b - int(o[5:7], 16)) > 72
+               for o in out):
+            out.append(c_hex)
+        if len(out) >= n:
+            break
+    return out
 
 
 def luma(rgba: bytes, w: int, h: int, step: int = 2) -> int:
     """平均亮度 0..255（决定覆盖文字用白还是黑）。"""
     lib = _lib("palette", "libklee_palette.so")
-    if lib is None or not rgba:
+    if lib is not None and rgba:
+        try:
+            _bind_palette(lib)
+            return int(lib.klee_luma(rgba, int(w), int(h), int(step)))
+        except Exception:                                        # noqa: BLE001
+            pass
+    if not rgba or w <= 0 or h <= 0:
         return -1
-    try:
-        _bind_palette(lib)
-        return int(lib.klee_luma(rgba, int(w), int(h), int(step)))
-    except Exception:                                            # noqa: BLE001
-        return -1
+    stride = max(1, int(step))
+    total, n = 0.0, 0
+    for y in range(0, h, stride):
+        row = y * w * 4
+        for x in range(0, w, stride):
+            i = row + x * 4
+            if i + 3 >= len(rgba) or rgba[i + 3] < 8:
+                continue
+            total += 0.2126 * rgba[i] + 0.7152 * rgba[i + 1] + 0.0722 * rgba[i + 2]
+            n += 1
+    return int(total / n) if n else -1
 
 
 # ---------------------------------------------------------------- 状态

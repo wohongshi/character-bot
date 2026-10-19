@@ -1548,6 +1548,7 @@ function faces(text){
   });
 }
 let _hlSeq = 0;
+let _hlTimer = null;
 /* 代码块：先按纯文本渲染（服务器不在也能看），随后异步请求 Node 高亮替换。
    为什么要异步：高亮要走一次 /api/highlight（~3 ms），但首屏不该等它。 */
 async function upgradeHighlight(){
@@ -1577,7 +1578,9 @@ function mdLite(h){
   h = h.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (m, lang, c) =>
     `<pre data-code="${esc(c.replace(/^\n+|\n+$/g,""))}" data-lang="${esc(lang || "js")}"` +
     ` data-hlseq="${++_hlSeq}">${c.replace(/^\n+|\n+$/g,"")}</pre>`);
-  setTimeout(upgradeHighlight, 0);
+  // 合并：一次渲染里 fmt() 会被调用几十次，每个都排一个 setTimeout 就是几十次全 DOM 扫描。
+  // 用一个 pending 标记把它们压成一轮。
+  if (!_hlTimer) _hlTimer = setTimeout(() => { _hlTimer = null; upgradeHighlight(); }, 0);
   h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   h = h.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   h = h.replace(/(^|[\s（(])\*([^*\n]{1,80})\*(?=$|[\s，。！？、）」)])/g, "$1<i>$2</i>");

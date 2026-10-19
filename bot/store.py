@@ -334,7 +334,7 @@ class MessageIndex:
             parts = [q]
         return " AND ".join(f'"{p}"' for p in parts[:8])
 
-    def summary(self, days: int = 14) -> dict:
+    def summary(self, days: int = 14, src: str = "messages") -> dict:
         """看板要的聚合，全部下推到 SQL（不再在 Python 里遍历 20 万行）。
 
         返回 {total, user, assistant, today, daily[{date,n}], sources[{chat_id,n,last}]}
@@ -355,9 +355,12 @@ class MessageIndex:
             # 分两条 SQL 会各扫一遍 20 万行（实测 92 + 67 ms），合并后 60 ms
             since_day = time.strftime("%Y-%m-%d", time.localtime(since))
             today = time.strftime("%Y-%m-%d")
+            # 必须限定 src：chat.jsonl 和 messages.jsonl 里存的是同一批消息，
+            # 行键带 src 所以两边都在索引里 —— 不加这个条件，看板数字会翻倍
             rows = con.execute(
                 "SELECT day, role, COUNT(*) FROM msg"
-                " WHERE role IN ('user','assistant') GROUP BY day, role").fetchall()
+                " WHERE role IN ('user','assistant') AND src = ?"
+                " GROUP BY day, role", (src,)).fetchall()
             per_day: dict[str, int] = {}
             for day, role, n in rows:
                 n = int(n)
@@ -373,12 +376,42 @@ class MessageIndex:
             # 来源：按 chat_id 分组（群 / 私聊 / 网页）
             rows = con.execute(
                 "SELECT chat_id, COUNT(*) n, MAX(ts) last"
-                " FROM msg WHERE role IN ('user','assistant') AND chat_id <> ''"
-                " GROUP BY chat_id ORDER BY n DESC LIMIT 8").fetchall()
+                " FROM msg WHERE role IN ('user','assistant') AND src = ? AND chat_id <> ''"
+                " GROUP BY chat_id ORDER BY n DESC LIMIT 8", (src,)).fetchall()
             out["sources"] = [{"chat_id": r[0], "n": int(r[1]), "last": float(r[2] or 0)}
                               for r in rows]
         except sqlite3.Error as e:
             return {**out, "from_sql": False, "error": str(e)}
+        finally:
+            con.close()
+        return out
+
+    def recent_user_texts(self, limit: int = 40, *, min_len: int = 2,
+                          max_len: int = 200, src: str = "messages") -> list[str]:
+        """最近 N 条用户发言（从新到旧）。
+
+        为什么走索引而不是读 JSONL：`/api/similar` 每条消息都会调一次，
+        读 74 MB 的 messages.jsonl 要好几秒；这里走 idx_msg_ts 倒序扫，
+        几十毫秒拿完就停。
+        """
+        limit = max(1, min(int(limit or 40), 500))
+        out: list[str] = []
+        try:
+            con = self._connect()
+        except sqlite3.Error:
+            return out
+        try:
+            cur = con.execute(
+                "SELECT text FROM msg WHERE role='user' AND text <> '' AND src = ?"
+                " ORDER BY ts DESC LIMIT ?", (src, limit * 4))
+            for (text,) in cur:
+                t = str(text or "").strip()
+                if min_len <= len(t) <= max_len:
+                    out.append(t)
+                if len(out) >= limit:
+                    break
+        except sqlite3.Error:
+            return []
         finally:
             con.close()
         return out

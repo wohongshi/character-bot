@@ -169,5 +169,17 @@ def compute(character: str, root: Path | None = None, *, n: int = 6) -> dict:
     return out
 
 
+def drop(character: str) -> bool:
+    """只清掉某个角色的缓存（它立绘改了 / 用户手动刷新）。"""
+    cid = str(character or "").strip().lower()
+    with _LOCK:
+        cache = _load_cache()
+        if cid not in cache:
+            return False
+        cache.pop(cid, None)
+        _save_cache(cache)
+        return True
+
+
 def all_cached() -> dict:
     return _load_cache()

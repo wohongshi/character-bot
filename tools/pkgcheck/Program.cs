@@ -5,8 +5,9 @@
 // 手写一遍容易漏边界。而且它是个**离线 CLI**，不在请求路径上，启动几十毫秒无所谓。
 //
 // 用法：
-//   pkgcheck <zip 路径>         → 输出 JSON 报告（stdout）
-//   pkgcheck --selftest         → 自检（造一个坏包，确认能拦住）
+//   pkgcheck <zip>             → 角色包报告（要 character.json）
+//   pkgcheck <zip> --plugin    → 插件包报告（只收 .py，不要求 character.json）
+//   pkgcheck --selftest        → 自检（造一个坏包，确认能拦住）
 //
 // 退出码：0 = 通过，1 = 有问题，2 = 用法错误
 
@@ -27,9 +28,10 @@ internal static class Program
     private static int Main(string[] argv)
     {
         if (argv.Length == 1 && argv[0] == "--selftest") return SelfTest();
-        if (argv.Length != 1)
+        bool pluginMode = argv.Length == 2 && argv[1] == "--plugin";
+        if (argv.Length != 1 && !pluginMode)
         {
-            Console.Error.WriteLine("usage: pkgcheck <plugin.zip> | pkgcheck --selftest");
+            Console.Error.WriteLine("usage: pkgcheck <file.zip> [--plugin] | pkgcheck --selftest");
             return 2;
         }
         var path = argv[0];
@@ -40,7 +42,7 @@ internal static class Program
         }
         try
         {
-            var report = Inspect(path);
+            var report = Inspect(path, pluginMode);
             Console.WriteLine(Json(report));
             return report.Ok ? 0 : 1;
         }
@@ -66,7 +68,7 @@ internal static class Program
         public string By => "csharp";
     }
 
-    private static Report Inspect(string path)
+    private static Report Inspect(string path, bool pluginMode = false)
     {
         var r = new Report { File = Path.GetFileName(path), Bytes = new FileInfo(path).Length };
         using var zip = ZipFile.OpenRead(path);
@@ -105,13 +107,20 @@ internal static class Program
 
         if (total > MaxTotalBytes) r.Problems.Add($"整包过大：{total / 1024} KB");
 
-        // 必填结构：character.json（角色包）
-        var charJson = r.Files.FirstOrDefault(f => f.Name is "character.json" or "character.json");
-        if (charJson is null)
+        // 必填结构：character.json（角色包才要；插件包只看 .py）
+        var charJson = r.Files.FirstOrDefault(f => f.Name == "character.json");
+        if (pluginMode)
+        {
+            if (r.Files.Count == 0) r.Problems.Add("zip 是空的");
+            foreach (var f in r.Files.Where(f => !f.Name.EndsWith(".py")))
+                if (f.Name is not ("plugin.json" or "README.md"))
+                    r.Problems.Add($"插件包只能放 .py（发现 {f.Name}）");
+        }
+        else if (charJson is null)
         {
             r.Problems.Add("缺少 character.json");
         }
-        else
+        else if (charJson is not null)
         {
             var entry = zip.GetEntry(charJson.Name);
             if (entry is not null)

@@ -38,8 +38,8 @@ struct Node {
     children: Vec<(u8, u32)>,
     /// 失配指针（Aho-Corasick）
     fail: u32,
-    /// >= 0 表示这个节点是某个词的结尾
-    word: i32,
+    /// 这个节点是哪些词的结尾（词表里可能有重复词，全部记下来）
+    words: Vec<i32>,
     /// 沿 fail 链最近的一个「词尾」节点（没有就是 -1）
     out_link: i32,
     /// 这个位置有没有任何输出（自己或后缀链上）—— 没有就不用进收集循环
@@ -53,7 +53,8 @@ struct Trie {
 impl Trie {
     fn new() -> Self {
         Trie {
-            nodes: vec![Node { children: Vec::new(), fail: 0, word: -1, out_link: -1, has_out: false }],
+            nodes: vec![Node { children: Vec::new(), fail: 0, words: Vec::new(),
+                               out_link: -1, has_out: false }],
         }
     }
 
@@ -66,7 +67,7 @@ impl Trie {
                 Some(i) => self.nodes[cur].children[i].1 as usize,
                 None => {
                     let next = self.nodes.len();
-                    self.nodes.push(Node { children: Vec::new(), fail: 0, word: -1,
+                    self.nodes.push(Node { children: Vec::new(), fail: 0, words: Vec::new(),
                                             out_link: -1, has_out: false });
                     let mut kids = std::mem::take(&mut self.nodes[cur].children);
                     kids.push((b, next as u32));
@@ -76,7 +77,7 @@ impl Trie {
                 }
             };
         }
-        self.nodes[cur].word = idx;
+        self.nodes[cur].words.push(idx);
     }
 
     /// BFS 建失配链 —— 建一次，之后扫描是 O(文本长度)，和词表大小无关。
@@ -90,12 +91,12 @@ impl Trie {
         while let Some(u) = queue.pop_front() {
             // 先把 u 的 out_link 定下来
             let f = self.nodes[u].fail as usize;
-            self.nodes[u].out_link = if self.nodes[f].word >= 0 {
+            self.nodes[u].out_link = if !self.nodes[f].words.is_empty() {
                 f as i32
             } else {
                 self.nodes[f].out_link
             };
-            self.nodes[u].has_out = self.nodes[u].word >= 0 || self.nodes[u].out_link >= 0;
+            self.nodes[u].has_out = !self.nodes[u].words.is_empty() || self.nodes[u].out_link >= 0;
             let kids: Vec<(u8, usize)> =
                 self.nodes[u].children.iter().map(|&(c, i)| (c, i as usize)).collect();
             for (ch, v) in kids {
@@ -211,9 +212,12 @@ pub extern "C" fn klee_scan(
         let mut cur = node;
         let mut guard = 0usize;
         loop {
-            let idx = trie.nodes[cur].word;
-            if idx >= 0 && !hits.contains(&idx) {
-                hits.push(idx);
+            // 一个位置可能同时结束多个词（含重复词），全收 —— 和 Python 版
+            // `[i for i, w in enumerate(words) if w in text]` 保持完全一致
+            for &idx in &trie.nodes[cur].words {
+                if !hits.contains(&idx) {
+                    hits.push(idx);
+                }
             }
             let next = trie.nodes[cur].out_link;
             if next < 0 {

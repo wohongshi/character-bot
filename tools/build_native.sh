@@ -28,7 +28,9 @@ fi
 
 # ---------- Rust：多词扫描 ----------
 if command -v rustc >/dev/null 2>&1; then
-  if rustc -O --crate-type cdylib -C panic=abort -o "$OUT/libklee_text.so" "$SRC/klee_text.rs" \
+  # strip=symbols + opt-level=3：不 strip 时这个 .so 有 4.4 MB（调试符号占九成）
+  if rustc -O --crate-type cdylib -C panic=abort -C strip=symbols \
+       -o "$OUT/libklee_text.so" "$SRC/klee_text.rs" \
        >/tmp/klee_text.log 2>&1; then
     say "Rust" "libklee_text.so $(du -h "$OUT/libklee_text.so" | cut -f1)"; ok=$((ok+1))
   else

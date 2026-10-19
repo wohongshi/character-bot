@@ -106,7 +106,11 @@ check("2.1 卡片截断按显示宽度", _cardimg and N.width(short) <= 8, f"{sh
 check("2.2 短名字原样返回", _cardimg.short("可莉", 8) == "可莉")
 mod = (ROOT / "bot" / "features" / "moderation.py").read_text(encoding="utf-8")
 check("2.3 屏蔽词按词表规模切实现（≥64 走 Rust）", "len(words) >= 64" in mod and "native" in mod)
-check("2.4 两条路径共用同一套拦截逻辑", mod.count("await _block()") == 2, str(mod.count("await _block()")))
+# 以前这条只数「出现了几次 await _block()」，而 _block 少传了 ctx 它也照样通过 ——
+# 现在改成看真实调用签名，行为测试在 tests/test_debug_round.py
+check("2.4 两条路径共用同一套拦截逻辑（且都传了 ctx）",
+      mod.count("await _block(ctx)") == 2 and "async def _block(ctx)" in mod,
+      f"调用 {mod.count('await _block(ctx)')} 处 / 定义 {('async def _block(ctx)' in mod)}")
 
 # ---------------------------------------------------------------- 3) 运行时清单
 print("\n· /api/runtime：十种语言都在")
