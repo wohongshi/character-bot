@@ -47,6 +47,8 @@ def _active_character() -> str:
 class WebAdapter(BaseAdapter):
     platform = "web"
     title = "网页"
+    TITLE_EN = "Web"
+    DESCRIPTION_EN = "The panel's built-in web chat. No platform account needed; it is a messaging platform too"
     DESCRIPTION = "面板自带的网页聊天。不用任何平台账号，装上就有；它也是「消息平台」之一。"
     VERSION = "1.0"
     DEFAULT_OFF = False          # 常开（见模块说明）

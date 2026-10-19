@@ -38,6 +38,8 @@ class WebhookAdapter(BaseAdapter):
 
     platform = "webhook"
     title = "通用 Webhook"
+    TITLE_EN = "Generic Webhook"
+    DESCRIPTION_EN = "POST JSON to any HTTP endpoint: Bark / ntfy / DingTalk / your own relay"
     DESCRIPTION = "POST JSON 到任意 HTTP 端点：Bark / ntfy / 钉钉 / 自建中转"
     VERSION = "1.0"
     INGRESS = None                 # 只做出站：入站由平台/别的适配器负责

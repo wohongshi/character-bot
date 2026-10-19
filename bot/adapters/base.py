@@ -121,6 +121,9 @@ class BaseAdapter:
     # ---------- 系统插件元信息（面板「插件」页按这个渲染卡片） ----------
     #: 一句话说明，面板卡片上显示
     DESCRIPTION: str = ""
+    #: 英文名与说明（面板语言切到 English 时用；留空就显示中文原文）
+    TITLE_EN: str = ""
+    DESCRIPTION_EN: str = ""
     VERSION: str = "1.0"
     #: 系统插件默认全部关闭：新装一份仓库，不配任何凭据时它只是「网页聊天」
     DEFAULT_OFF: bool = True
@@ -258,7 +261,9 @@ def system_plugins() -> list:
                      "default_off": bool(getattr(cls, "DEFAULT_OFF", True)),
                      "schema": dict(getattr(cls, "CONFIG_SCHEMA", {}) or {}),
                      "capabilities": dict(getattr(cls, "CAPABILITIES", {}) or {}),
-                     "has_page": cls.page is not BaseAdapter.page})
+                     "has_page": cls.page is not BaseAdapter.page,
+                     "title_en": str(getattr(cls, "TITLE_EN", "") or ""),
+                     "description_en": str(getattr(cls, "DESCRIPTION_EN", "") or "")})
         out.append(info)
     return out
 

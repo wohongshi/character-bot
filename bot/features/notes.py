@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 NAME = "记事本"
+NAME_EN = "Notes"
+DESCRIPTION_EN = "Remember small things per conversation, and look them up later."
 DESCRIPTION = "把值得记住的小事记下来，以后能翻出来。按会话隔离，群和私聊不串。"
 VERSION = "1.0"
 

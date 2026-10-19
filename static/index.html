@@ -1015,6 +1015,18 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 .wcard .wv{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:30px;line-height:1.15;color:var(--ui-accent);margin-top:4px}
 .wcard .ws{font-size:11px;color:var(--ink-soft)}
 .wcard .wl{display:block;margin-top:7px;font-size:11px;color:var(--ui-accent);text-decoration:none;font-weight:700}
+/* 窄屏把看板小卡改成两列：一列时每张卡都撑满整屏、右半边全空，滚动还长一倍 */
+@media(max-width:760px){
+  .wgrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .wcard{padding:11px 12px}
+  .wcard .wt{font-size:13px;gap:5px}
+  .wcard .wv{font-size:26px;margin-top:2px}
+  .wcard .ws{font-size:max(11px, calc(10px * var(--fx)));line-height:1.45}
+  .wcard .wl{font-size:max(11px, calc(10px * var(--fx)));margin-top:5px}
+  .wgrid .wchar,.wgrid .wfull{grid-column:1 / -1}   /* 角色卡带图；单数时最后一张横过来 */
+  .wcard .row{gap:5px!important}
+  .wcard .btn.tiny{min-height:30px;padding:0 9px;font-size:12px}
+}
 
 @media(max-width:760px){
   aside{width:100%;border-right:0;box-shadow:none}
@@ -1190,6 +1202,28 @@ html[data-theme="dark"] .chips button{color:#ecdccb}
 html[data-theme="dark"] .kv,html[data-theme="dark"] .tip{color:#bda48f}
 html[data-theme="dark"] h2.page{color:#f7ecdf}
 
+/* ============ 骨架屏与空状态 ============
+   「正在读取…」这种纯文字占位既不能提示进度、又会让布局跳一下；
+   换成同尺寸的骨架块，内容到位后原地替换，页面不抖。 */
+.skel{display:block;border-radius:8px;height:12px;
+  background:linear-gradient(90deg, var(--surface-3) 25%, var(--surface-2) 37%, var(--surface-3) 63%);
+  background-size:400% 100%;animation:shimmer 1.3s ease-in-out infinite}
+.skel.w40{width:40%}.skel.w60{width:60%}.skel.w80{width:80%}
+.skel.h18{height:18px}.skel.h28{height:28px}
+.skelrow{display:flex;gap:10px;align-items:center;margin:8px 0}
+.skelcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:14px;margin-bottom:10px}
+@keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media(prefers-reduced-motion:reduce){.skel{animation:none;background:var(--surface-3)}}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:38px 16px;text-align:center;color:var(--ink-soft)}
+.empty b{font-size:30px;line-height:1;opacity:.65;font-weight:400}
+.empty span{font-family:var(--font-cute);font-size:15px;color:var(--ink)}
+.empty i{font-style:normal;font-size:12px;opacity:.8}
+/* 键盘可达性：只有键盘聚焦才画环，鼠标点不画 */
+:focus-visible{outline:2px solid color-mix(in srgb,var(--ui-accent) 70%, white);
+  outline-offset:2px;border-radius:10px}
+
 /* ============ 可折叠侧栏（替代底部 dock） ============
    手机：侧栏变成浮层，左上角 ☰ 开；点遮罩/选项关。
    桌面：☰ 把侧栏收成图标条，状态记在 localStorage。 */
@@ -1309,6 +1343,97 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
 <script>
 /* ================= 基础 ================= */
 const $ = id => document.getElementById(id);
+
+/* ================= 语言（跟随系统，可覆盖） =================
+   面板是中文优先的，但“系统是英文”的用户打开时不该满屏中文导航。
+   这里只翻译**外壳**：导航、页面标题、筛选、抽屉与运维的固定词。
+   插件名/角色台词/知识库是内容，不翻 —— 机器翻译内容比不翻更糟。 */
+const I18N = {
+  zh: {
+    "brand.sub": "角色聊天室",
+    "nav.chat": "对话", "nav.chars": "角色", "nav.board": "看板",
+    "nav.persona": "人格 · 知识库", "nav.plugins": "插件", "nav.reminders": "提醒",
+    "nav.ops": "运维", "nav.custom": "自定义", "nav.search": "搜索",
+    "page.chat": "💬 对话", "page.chars": "🎭 角色", "page.board": "📊 看板",
+    "page.persona": "🌸 人格 · 知识库", "page.plugins": "🧩 插件",
+    "page.reminders": "⏰ 提醒", "page.ops": "⚙️ 运维", "page.custom": "✨ 自定义",
+    "filter.all": "全部", "filter.limited": "限定", "filter.general": "通用",
+    "filter.system": "系统", "filter.on": "已启用", "filter.off": "已禁用",
+    "filter.err": "报错", "plug.install": "📦 安装插件包", "plug.search": "搜索插件名 / 命令 / 说明…",
+    "plug.empty": "没有匹配的插件", "plug.notReady": "插件信息还没加载好，稍后再试",
+    "plug.tools": "工具", "plug.commands": "命令", "plug.hits": "命中",
+    "plug.on": "● 已启用", "plug.off": "○ 已停用", "plug.failed": "⚠ 加载失败",
+    "plug.enable": "启用", "plug.disable": "停用",
+    "plug.connected": "● 已连接", "plug.disconnected": "◐ 未连接",
+    "plug.adapter": "适配器", "plug.outbound": "只出站",
+    "owner.system": "系统", "owner.shared": "通用",
+    "ops.panel": "🛰️ 面板", "ops.platforms": "💬 平台", "ops.models": "🧠 聊天模型",
+    "ops.config": "🛠️ 常用配置", "ops.logs": "📜 运行日志",
+    "common.save": "保存", "common.refresh": "刷新", "common.back": "返回",
+    "common.loading": "正在读取…", "common.empty": "还没有内容",
+    "status.online": "在线", "status.offline": "离线", "status.running": "运行中",
+    "status.stopped": "已停止", "status.loggedIn": "已登录", "status.notReady": "未就绪",
+  },
+  en: {
+    "brand.sub": "Character chat",
+    "nav.chat": "Chat", "nav.chars": "Characters", "nav.board": "Board",
+    "nav.persona": "Persona · Knowledge", "nav.plugins": "Plugins", "nav.reminders": "Reminders",
+    "nav.ops": "Operations", "nav.custom": "Appearance", "nav.search": "Search",
+    "page.chat": "💬 Chat", "page.chars": "🎭 Characters", "page.board": "📊 Board",
+    "page.persona": "🌸 Persona · Knowledge", "page.plugins": "🧩 Plugins",
+    "page.reminders": "⏰ Reminders", "page.ops": "⚙️ Operations", "page.custom": "✨ Appearance",
+    "filter.all": "All", "filter.limited": "Character", "filter.general": "Shared",
+    "filter.system": "System", "filter.on": "Enabled", "filter.off": "Disabled",
+    "filter.err": "Errors", "plug.install": "📦 Install pack", "plug.search": "Search name / command / description…",
+    "plug.empty": "No matching plugins", "plug.notReady": "Plugin list is still loading — try again in a moment",
+    "plug.tools": "tools", "plug.commands": "cmds", "plug.hits": "hits",
+    "plug.on": "● Enabled", "plug.off": "○ Disabled", "plug.failed": "⚠ Load failed",
+    "plug.enable": "Enable", "plug.disable": "Disable",
+    "plug.connected": "● Connected", "plug.disconnected": "◐ Not connected",
+    "plug.adapter": "adapter", "plug.outbound": "outbound only",
+    "owner.system": "System", "owner.shared": "Shared",
+    "ops.panel": "🛰️ Panel", "ops.platforms": "💬 Platforms", "ops.models": "🧠 Chat model",
+    "ops.config": "🛠️ Settings", "ops.logs": "📜 Logs",
+    "common.save": "Save", "common.refresh": "Refresh", "common.back": "Back",
+    "common.loading": "Loading…", "common.empty": "Nothing here yet",
+    "status.online": "online", "status.offline": "offline", "status.running": "running",
+    "status.stopped": "stopped", "status.loggedIn": "signed in", "status.notReady": "not ready",
+  },
+};
+const LANG_PREF = (() => { try { return localStorage.getItem("ks_lang") || "auto"; } catch(e){ return "auto"; } })();
+const LANG = LANG_PREF === "auto"
+  ? (/^zh\b|^zh-/i.test(navigator.language || "zh") ? "zh" : "en")
+  : LANG_PREF;
+const T = I18N[LANG] || I18N.zh;
+function t(key, ...args){
+  let s = T[key];
+  if (s == null) s = I18N.zh[key];
+  if (s == null) return key;
+  return args.length ? s.replace(/\{(\d+)\}/g, (m, i) => args[i]) : s;
+}
+/* 外壳里那些写死在 HTML 模板里的固定词，渲染完统一刷一遍 */
+/* 插件/平台有英文名就用英文，没有就回落中文原文 —— 不硬翻内容 */
+function bi(zh, en){ return (LANG === "en" && en) ? en : zh; }
+
+function applyChrome(){
+  document.documentElement.lang = (LANG === "en") ? "en" : "zh-CN";
+  const bs = document.querySelector(".brand .bs"); if (bs) bs.textContent = t("brand.sub");
+  document.querySelectorAll("nav button[data-v]").forEach(b => {
+    const el = b.querySelector(".t"); if (el) el.textContent = t("nav." + b.dataset.v);
+    b.title = t("nav." + b.dataset.v);
+  });
+  const cmdBtn = document.querySelector(".cmdkbtn span");
+  if (cmdBtn) cmdBtn.textContent = "🔍 " + t("nav.search");
+  document.querySelectorAll("#view .fbtn[data-pf]").forEach(b => {
+    b.textContent = t("filter." + b.dataset.pf);
+  });
+  const inst = document.querySelector('#view .fbtn[onclick*="pickPluginZip"]');
+  if (inst) inst.textContent = t("plug.install");
+  const ps = $("plugSearch"); if (ps) ps.placeholder = t("plug.search");
+  const h2 = document.querySelector("#view h2.page");
+  if (h2 && V && T["page." + V]) h2.textContent = t("page." + V);
+}
+
 const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const FACE = {"呲牙":"😁","微笑":"🙂","大哭":"😭","流泪":"😢","捂脸":"🤦","调皮":"😜","doge":"🐶","比心":"🫰","点赞":"👍",
  "睡":"😴","抓狂":"😫","亲亲":"😘","委屈":"🥺","偷笑":"🤭","酷":"😎","可怜":"🥹","生气":"😠","疑问":"🤔","鼓掌":"👏",
@@ -1452,6 +1577,11 @@ function flash(text){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("on"), 4200);
 }
+function setLang(v){
+  try { localStorage.setItem("ks_lang", v); } catch(e){}
+  location.reload();          // 整套外壳要重刷，重载最干净（切换不频繁）
+}
+
 function setTheme(mode){
   localStorage.setItem("ks_theme", mode);
   applyTheme();
@@ -1565,11 +1695,18 @@ function cmdkRun(i){
 }
 
 /* ================= 插件详情抽屉 ================= */
-function openPluginDrawer(name, meta){
-  const m = meta || (plMeta && plMeta[name]);
+async function openPluginDrawer(name, meta){
+  let m = meta || (plMeta && plMeta[name]);
   const el = $("pdrawer"); if (!el) return;
-  if (!m){ flash("插件信息还没加载好，稍后再试"); return; }
-  $("pdTitle").textContent = m.title || name;
+  if (!m){ flash(t("plug.notReady")); return; }
+  // 列表接口为了省流量不带命令清单/schema/能力表；抽屉打开时补这一次（1–3 ms）
+  try {
+    const d = await api("/api/plugins/detail?name=" + encodeURIComponent(name));
+    if (d && d.ok && d.meta){ m = Object.assign({}, m, d.meta); plMeta[name] = m; }
+  } catch(e){ /* 拿不到就用列表里那份，抽屉照样能开 */ }
+  // 等这一下的时间里可能已经有人点了「打开插件页」——别把页面盖回设置
+  if ($("pdBody") && $("pdBody").classList.contains("paged")) return;
+  $("pdTitle").textContent = bi(m.title || name, m.title_en);
   $("pdSub").textContent = m.system
     ? `系统插件（适配器） · v${m.version || "1.0"} · ${m.ingress || "只出站"}`
     : (m.external
@@ -1584,7 +1721,7 @@ function openPluginDrawer(name, meta){
         Object.keys(caps).map(k => `<span class="tag" style="${caps[k] ? "" : "opacity:.45"}">${esc(CAP_CN[k] || k)}</span>`).join("")
       }</div>` : "";
   $("pdBody").innerHTML = `
-    <div>${esc(m.description || "（没有说明）")}</div>
+    <div>${esc(bi(m.description, m.description_en) || "（没有说明）")}</div>
     ${m.system ? capLine : ""}
     ${m.has_page ? `<div class="row" style="margin:8px 0 2px">
       <button class="btn primary tiny" onclick="openPluginPage('${esc(name)}')">🧩 打开插件页</button>
@@ -1607,7 +1744,7 @@ function openPluginDrawer(name, meta){
       ${m.locked
         ? '<span class="tag" title="角色限定插件跟角色绑定">🔒 角色限定</span>'
         : `<button class="btn tiny" id="pdToggle" onclick="plugToggle(${esc(JSON.stringify(name))}, ${!m.enabled})">
-             ${m.enabled ? "停用" : "启用"}</button>`}
+             ${m.enabled ? t("plug.disable") : t("plug.enable")}</button>`}
       <span class="kv" id="pdMsg"></span>
     </div>
     ${Object.keys(m.schema || {}).length ? `<h4>设置</h4>
@@ -1679,7 +1816,7 @@ async function openPluginPage(name){
   const dr = $("pdrawer");
   if (dr && !dr.classList.contains("on")){
     const m = (plMeta && plMeta[name]) || {};
-    $("pdTitle").textContent = m.title || name;
+    $("pdTitle").textContent = bi(m.title || name, m.title_en);
     $("pdSub").textContent = "插件自带页面";
     dr.classList.add("on");
   }
@@ -1729,7 +1866,7 @@ async function plugToggle(name, on){
   if (st) st.textContent = real ? "● 已启用" : "○ 已停用";
   if (btn){
     btn.disabled = false;
-    btn.textContent = real ? "停用" : "启用";
+    btn.textContent = real ? t("plug.disable") : t("plug.enable");
     btn.setAttribute("onclick", `plugToggle(${JSON.stringify(name)}, ${!real})`);
   }
   const m = (plMeta || {})[name];
@@ -1847,7 +1984,7 @@ let V = "chat";
 /* ================= 顶栏状态 ================= */
 async function strip(){
   try{
-    const o = await api("/api/overview");
+    const o = await api("/api/overview?lite=1");   // 21 KB → 0.2 KB，顶栏只要三个点
     const a = o.adapter || {};
     const n = o.napcat || {};
     const set = (id, cls, html) => {              // 内容没变就不碰 DOM（8 秒一轮不再引人分心）
@@ -1884,6 +2021,7 @@ function render(){
   const bar = $("bar");
   if (bar){ bar.classList.remove("done"); bar.classList.add("on"); }
   Promise.resolve((views[V] || viewFeed)()).catch(e => console.error(e)).finally(() => {
+    applyChrome();                       // 页面渲染完把外壳的字刷一遍（含标题）
     if (V === "custom") syncThemeSeg();
     if (!bar) return;
     bar.classList.add("done");
@@ -2144,6 +2282,15 @@ async function viewCustom(keep){
           <button data-v="light" onclick="setTheme('light')">浅色</button>
           <button data-v="dark" onclick="setTheme('dark')">深色</button>
         </div>
+      </div>
+      <div class="fld" style="margin-top:10px"><label>界面语言
+        <span class="kv" style="font-weight:400">默认跟系统</span></label>
+        <div class="seg" id="langSeg">
+          <button data-v="auto" class="${LANG_PREF === "auto" ? "on" : ""}" onclick="setLang('auto')">跟随系统</button>
+          <button data-v="zh" class="${LANG_PREF === "zh" ? "on" : ""}" onclick="setLang('zh')">中文</button>
+          <button data-v="en" class="${LANG_PREF === "en" ? "on" : ""}" onclick="setLang('en')">English</button>
+        </div>
+        <div class="kv" style="margin-top:4px">当前：${LANG === "en" ? "English" : "中文"}（${LANG_PREF === "auto" ? "系统语言 " + esc(navigator.language || "") : "手动选择"}）</div>
       </div>
     </div>
     <div class="card">
@@ -2488,7 +2635,7 @@ function renderPlugGrid(){
   (plFiles || []).forEach(f => names.add(String(f.name || "").replace(/\.py$/, "")));
   const rows = [...names].map(name => {
     const m = plMeta[name] || {};
-    return {name, title: m.title || name, description: m.description || "",
+    return {name, title: bi(m.title || name, m.title_en), description: bi(m.description || "", m.description_en),
             system: !!m.system, chars: m.characters || [], locked: !!m.locked,
             enabled: !!m.enabled, error: m.error || "",
             commands: m.commands || 0, hits: m.hits || 0,
@@ -2515,30 +2662,35 @@ function renderPlugGrid(){
     if (a.system !== b.system) return a.system ? -1 : 1;
     return a.title.localeCompare(b.title, "zh");
   });
-  if (!rows.length){ box.innerHTML = `<div class="kv">没有匹配的插件</div>`; return; }
+  if (!rows.length){
+    box.innerHTML = `<div class="empty"><b>🧩</b><span>${t("plug.empty")}</span>
+      <i>${q ? "换个关键词，或清空搜索" : ""}</i></div>`;
+    return;
+  }
   box.innerHTML = rows.map(p => {
     const owner = p.system
-      ? "系统"
+      ? t("owner.system")
       : (!p.chars.length
           ? "通用"
           : (p.chars.includes(ACTIVE.id)
               ? `${PLUG_ICON[ACTIVE.id] || "🎭"} ${esc(ACTIVE.name)}${p.chars.length > 1 ? " · 共享" : ""}`
               : `${PLUG_ICON[p.chars[0]] || "🎭"} ${esc(p.chars[0])}`));
     const sub = p.system
-      ? (p.tools.length ? `工具 · ${p.tools.length} 个` : `适配器 · ${esc(p.ingress || "只出站")}`)
-      : (p.tools.length ? `工具 · ${p.tools.length} 个 · ${esc(p.name)}.py`
+      ? (p.tools.length ? `${t("plug.tools")} · ${p.tools.length}`
+                         : `${t("plug.adapter")} · ${esc(p.ingress || t("plug.outbound"))}`)
+      : (p.tools.length ? `${t("plug.tools")} · ${p.tools.length} · ${esc(p.name)}.py`
       : (p.external
           ? `${esc(p.language || "binary")} · ${esc(p.name)} · v${esc(p.version)}`
           : `${esc(p.name)}.py · v${esc(p.version)}`));
     const ready = p.health && p.health.ok;
     const why = p.error || (p.health && p.health.error) || "";
     const foot = p.system
-      ? `<span title="${esc(why)}">${p.error ? "⚠ 加载失败"
-            : (p.enabled ? (ready ? "● 已连接" : "◐ 未连接") : "○ 已停用")}</span>`
+      ? `<span title="${esc(why)}">${p.error ? t("plug.failed")
+            : (p.enabled ? (ready ? t("plug.connected") : t("plug.disconnected")) : t("plug.off"))}</span>`
         + (why && p.enabled ? `<span title="${esc(why)}">详情</span>` : "")
-      : `<span>${p.error ? "⚠ 加载失败" : (p.enabled ? "● 已启用" : "○ 已停用")}</span>
-         ${p.tools.length ? `<span>工具 ${p.tools.length}</span>`
-                          : `<span>命令 ${p.commands}</span>`}<span>命中 ${p.hits}</span>`;
+      : `<span>${p.error ? t("plug.failed") : (p.enabled ? t("plug.on") : t("plug.off"))}</span>
+         ${p.tools.length ? `<span>${t("plug.tools")} ${p.tools.length}</span>`
+                          : `<span>${t("plug.commands")} ${p.commands}</span>`}<span>${t("plug.hits")} ${p.hits}</span>`;
     return `<div class="plugcard ${p.name === plSel ? "on" : ""} ${p.system ? "syscard" : ""}"
         onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
       <span class="st ${p.error ? "err" : (p.enabled ? "on" : "")}"></span>
@@ -2568,7 +2720,7 @@ async function viewModels(target){
   const visModels = visProv.models || [];
   $(T).innerHTML = `
   <div class="card">
-    <h3>🧠 聊天模型 <span class="kv" style="font-family:var(--font-body)">改完点保存，下一句消息就用新模型</span></h3>
+    <h3>${t("ops.models")} <span class="kv" style="font-family:var(--font-body)">改完点保存，下一句消息就用新模型</span></h3>
     <div class="row">
       <select id="mpProv" onchange="botFillModels()" style="min-width:190px">
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===act.provider?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
@@ -3398,7 +3550,7 @@ function boardWidgets(ov, pl, ch, dash){
     recent: () => `<div class="wcard"><div class="wt">💬 最近消息</div>
       <div class="wv">${m.today || 0}</div><div class="ws">今日消息 · 累计 ${m.total || 0} 条</div>
       <a class="wl" href="javascript:go('feed')">看消息流 →</a></div>`,
-    char: () => `<div class="wcard" style="padding:0;overflow:hidden">
+    char: () => `<div class="wcard wchar" style="padding:0;overflow:hidden">
       <div style="position:relative;height:118px;background:linear-gradient(135deg,${esc(ACTIVE.color)},${esc(ACTIVE.color2)})">
         <img src="${charSrc(ACTIVE.id, "thumb")}" alt=""
              style="width:100%;height:100%;object-fit:cover;object-position:50% 22%;opacity:.95" loading="lazy">
@@ -3423,11 +3575,28 @@ function boardWidgets(ov, pl, ch, dash){
       <div class="wv">${pend}</div><div class="ws">好友 / 入群请求（不会自动同意）</div>
       <a class="wl" href="javascript:go('ops')">去处理 →</a></div>`,
   };
-  const html = mods.map(m => {
-    if (String(m).startsWith("!")) return "";
+  // 窄屏是两列：带图的角色卡如果夹在中间，会把前一张卡挤成孤零零的半行。
+  // 把它挪到末尾，前面的卡就能两两配平。
+  const order = mods.slice();
+  if (window.matchMedia && window.matchMedia("(max-width:760px)").matches) {
+    const i = order.indexOf("char");
+    if (i >= 0 && i !== order.length - 1) { order.splice(i, 1); order.push("char"); }
+  }
+  const items = order.map(m => {
+    if (String(m).startsWith("!")) return null;
     const fn = cards[String(m)];
-    return fn ? fn() : "";
-  }).filter(Boolean).join("");
+    return fn ? { key: String(m), html: fn() } : null;
+  }).filter(Boolean);
+  // 两列排到最后如果只剩一张普通卡，右边会空半行 —— 让它横过来占满
+  const narrow = window.matchMedia && window.matchMedia("(max-width:760px)").matches;
+  if (narrow) {
+    const tiles = items.filter(x => x.key !== "char");
+    if (tiles.length % 2 === 1) {
+      const last = tiles[tiles.length - 1];
+      last.html = last.html.replace('class="wcard"', 'class="wcard wfull"');
+    }
+  }
+  const html = items.map(x => x.html).join("");
   return html ? `<div class="wgrid">${html}</div>` : "";
 }
 
@@ -3486,7 +3655,12 @@ function readyText(note){
 
 async function viewOps(target){
   const T = target || "view";
-  $(T).innerHTML = `${T === "view" ? '<h2 class="page">⚙️ 运维</h2>' : ''}<div class="kv">正在读取…</div>`;
+  $(T).innerHTML = `${T === "view" ? '<h2 class="page">⚙️ 运维</h2>' : ''}
+  <div class="skelcard"><div class="skelrow"><span class="skel" style="width:34px;height:34px;border-radius:50%"></span>
+    <span class="skel w40 h18"></span></div><div class="skelrow"><span class="skel w80"></span></div>
+    <div class="skelrow"><span class="skel w60"></span></div></div>
+  <div class="skelcard"><div class="skelrow"><span class="skel w40 h18"></span></div>
+    <div class="skelrow"><span class="skel w80"></span></div><div class="skelrow"><span class="skel w60"></span></div></div>`;
   const [ov, cfg, pl] = await Promise.all([api("/api/overview"), api("/api/config"), api("/api/plugins")]);
   const a = ov.adapter || {}, g = ov.gateway || {}, n = ov.napcat || {};
   const st = a.stats || {};
@@ -3497,7 +3671,7 @@ async function viewOps(target){
   $(T).innerHTML = `
   <h2 class="page" style="display:none">⚙️ 运维</h2>
   <div class="opsgrid">
-    <div class="card"><h3>🛰️ 面板</h3>
+    <div class="card"><h3>${t("ops.panel")}</h3>
       <div class="opsline">角色：<b>${esc(ACTIVE.emoji + " " + ACTIVE.name)}</b>
         <a href="javascript:go('chars')" style="font-size:12px">切换</a><br>
         状态：<b>${g.active ? "运行中" : "已停止"}</b><br>
@@ -3507,10 +3681,10 @@ async function viewOps(target){
         <button class="btn tiny" onclick="opsAct('restart_gateway')">重载插件</button>
       </div>
     </div>
-    <div class="card"><h3>💬 平台 <span class="kv" style="font-family:var(--font-body)">细节在各插件页里</span></h3>
+    <div class="card"><h3>${t("ops.platforms")} <span class="kv" style="font-family:var(--font-body)">细节在各插件页里</span></h3>
       ${sys.map(p => `<div class="opsline" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">
         <span class="tag" style="flex:none">${p.locked_on ? "常开" : (p.enabled ? "● 开" : "○ 关")}</span>
-        <b style="flex:none">${esc(p.title || p.pid)}</b>
+        <b style="flex:none">${esc(bi(p.title || p.pid, p.title_en))}</b>
         <span class="kv" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
               title="${esc(p.ready_note || p.description || "")}">${esc(p.enabled || p.default_off === false ? readyText(p.ready_note) || p.description || "" : p.description || "")}</span>
         ${p.has_page ? `<button class="btn tiny" style="flex:none" onclick="openPluginPage('${esc(p.pid)}')">插件页</button>` : ""}
@@ -3522,7 +3696,7 @@ async function viewOps(target){
     </div>
   </div>
   <div id="modelSlot"><div class="kv">正在读取模型…</div></div>
-  <div class="card" style="margin-top:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
+  <div class="card" style="margin-top:14px"><h3>${t("ops.config")} <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
     ${cfg.ok ? `<div class="row" style="margin-bottom:10px;flex-wrap:nowrap">
         <input type="text" id="cfgSearch" placeholder="搜索配置项…" style="flex:1;min-width:120px;height:34px" oninput="cfgFilter(this.value)">
         <button class="btn primary" style="flex:none" onclick="opsSaveCfg()">保存配置</button>
@@ -3533,7 +3707,7 @@ async function viewOps(target){
       </div>`
       : `<div class="kv">✗ 读配置失败：${esc(cfg.error || "")}</div>`}
   </div>
-  <div class="card"><h3>📜 运行日志</h3>
+  <div class="card"><h3>${t("ops.logs")}</h3>
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="logGrep" placeholder="过滤词，比如 OneBot / ERROR / KB" style="flex:1;min-width:180px">
       <select id="logN"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>

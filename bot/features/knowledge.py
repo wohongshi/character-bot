@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 NAME = "知识库"
+NAME_EN = "Knowledge base"
+DESCRIPTION_EN = "Look up this character's settings, lines and corpus."
 DESCRIPTION = "按角色查设定、台词、语料。关掉它，回答设定类问题时她就只能靠上下文和人格。"
 VERSION = "1.0"
 

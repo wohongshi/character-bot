@@ -45,6 +45,8 @@ class QQOfficialAdapter(BaseAdapter):
 
     platform = "qqofficial"
     title = "QQ 官方机器人"
+    TITLE_EN = "QQ Official Bot"
+    DESCRIPTION_EN = "QQ open platform: webhook + Ed25519 signature"
     DESCRIPTION = "QQ 开放平台官方接口：群里 @ 它、私聊都能收发（无需协议端）"
     VERSION = "1.0"
     INGRESS = "/qqofficial/event"

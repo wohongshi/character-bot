@@ -31,6 +31,8 @@ class FeishuAdapter(BaseAdapter):
 
     platform = "feishu"
     title = "飞书（Lark）"
+    TITLE_EN = "Feishu (Lark)"
+    DESCRIPTION_EN = "Feishu custom app: works in group @mentions and direct messages"
     DESCRIPTION = "飞书自建应用：群聊 @ 与单聊都能收发"
     VERSION = "1.0"
     INGRESS = "/feishu/event"

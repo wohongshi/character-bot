@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 NAME = "时间与计算"
+NAME_EN = "Time & math"
+DESCRIPTION_EN = "Current time (any timezone) and arithmetic."
 DESCRIPTION = "看当前时间（可指定时区）、算算术表达式。"
 VERSION = "1.0"
 

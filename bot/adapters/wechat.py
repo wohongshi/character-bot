@@ -36,6 +36,8 @@ class WeChatAdapter(BaseAdapter):
 
     platform = "wechat"
     title = "微信公众号"
+    TITLE_EN = "WeChat Official Account"
+    DESCRIPTION_EN = "Official account messages: plaintext mode + customer-service replies"
     DESCRIPTION = "公众号消息：明文模式 + 客服消息回复（需认证服务号）"
     VERSION = "1.0"
     INGRESS = "/wechat/event"

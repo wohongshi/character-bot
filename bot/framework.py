@@ -909,7 +909,8 @@ class FeatureManager:
         info = {"description": "", "title": name, "version": "", "enabled": False,
                 "error": "", "file": path.name,
                 "usage": "", "author": "", "homepage": "", "schema": {},
-                "characters": [], "locked": False, "system": False, "tools": []}
+                "characters": [], "locked": False, "system": False, "tools": [],
+                "title_en": "", "description_en": ""}
         try:
             mod_name = f"onebot_feature_{name}_{int(time.time() * 1000)}"
             spec = _ilu.spec_from_file_location(mod_name, path)
@@ -936,6 +937,10 @@ class FeatureManager:
         meta = meta if isinstance(meta, dict) else {}
         info["description"] = str(meta.get("description") or desc)
         info["title"] = str(meta.get("name") or getattr(module, "NAME", "") or name)
+        # 英文名（面板切英文时用）；不写就回落中文，不强制每个插件都有
+        info["title_en"] = str(meta.get("name_en") or getattr(module, "NAME_EN", "") or "")
+        info["description_en"] = str(
+            meta.get("description_en") or getattr(module, "DESCRIPTION_EN", "") or "")
         info["version"] = str(meta.get("version") or getattr(module, "VERSION", "") or "")
         info["usage"] = str(meta.get("usage") or getattr(module, "USAGE", "") or "")
         info["author"] = str(meta.get("author") or getattr(module, "AUTHOR", "") or "")
@@ -1288,6 +1293,8 @@ class FeatureManager:
                  "file": p.get("file", ""),
                  # 外部插件（其他语言）：面板上要显示语言徽章与入口
                  "system": bool(p.get("system")),
+                 "title_en": p.get("title_en", ""),
+                 "description_en": p.get("description_en", ""),
                  "has_page": n in pages,
                  "tools": [t["name"] for t in tool_rows if t["plugin"] == n],
                  "external": bool(p.get("external")),

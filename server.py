@@ -1609,20 +1609,33 @@ def apply_plugins_config(cur: dict, body: dict, known: set) -> tuple[dict, str]:
     return cur, "要 enabled / set / config 三者之一"
 
 
-_PLUG_CACHE = {"ts": 0.0, "data": None}
+#: 两份缓存：lite（列表）和 full（抽屉/详情）。别共用一个槽 ——
+#: 抽屉刚写完再回列表，会把 89 KB 的完整版当成列表数据发出去。
+_PLUG_CACHE: dict = {}
 
 
-def _plugins_get(max_age: float = 2.0) -> dict:
-    """插件页要读 config.json + 47 个文件头；2 秒内复用。"""
+def _plugins_get(max_age: float = 2.0, *, lite: bool = True) -> dict:
+    """插件页要读 config.json + 47 个文件头；2 秒内复用。
+
+    `lite=True`（默认）：给列表用的轻量行 —— 命令清单、配置 schema、能力表
+    这些只有抽屉里才要的字段不传。135 个插件省 20 KB（gzip 后 ~3 KB）。
+    抽屉打开时再打 `/api/plugins/detail?name=` 取那一份完整的。
+    """
+    key = "lite" if lite else "full"
+    slot = _PLUG_CACHE.setdefault(key, {"ts": 0.0, "data": None})
     now = time.time()
-    if _PLUG_CACHE["data"] is not None and now - _PLUG_CACHE["ts"] < max_age:
-        return _PLUG_CACHE["data"]
-    data = _plugins_uncached()
-    _PLUG_CACHE.update(ts=now, data=data)
+    if slot["data"] is not None and now - slot["ts"] < max_age:
+        return slot["data"]
+    data = _plugins_uncached(lite=lite)
+    slot.update(ts=now, data=data)
     return data
 
 
-def _plugins_uncached() -> dict:
+#: 列表页不需要的字段（只有抽屉/编辑表单才用）
+_PLUG_HEAVY = ("command_list", "schema", "capabilities", "entry", "ext_note")
+
+
+def _plugins_uncached(*, lite: bool = True) -> dict:
     cfg = None
     try:
         cfg = json.loads((FEATURES_DIR / "config.json").read_text(encoding="utf-8"))
@@ -1644,6 +1657,9 @@ def _plugins_uncached() -> dict:
     for pid, row in sysmeta.items():
         meta.setdefault(pid, row)
         meta[pid].update({k: row[k] for k in ("system", "enabled", "title") if k in row})
+    if lite:
+        meta = {n: {k: v for k, v in row.items() if k not in _PLUG_HEAVY}
+                for n, row in meta.items()}
     return {"ok": True, "config": cfg, "files": files, "dir": str(FEATURES_DIR),
             "meta": meta, "system": sorted(sysmeta), "system_enabled": _system_enabled()}
 
@@ -1922,6 +1938,26 @@ def _dashboard(days: int = 14) -> dict:
 _OVERVIEW_CACHE: dict = {"ts": 0.0, "data": {}}
 
 
+def _overview_lite() -> dict:
+    """顶栏三颗药丸只要三个布尔值。
+
+    整份 overview 是 21 KB（插件列表 + 指标 + 告警），每 15 秒为三个点拉一次
+    纯属浪费 —— 这里只回 strip() 真正读的字段，~200 B。
+    """
+    bst = BOT.status() if BOT else {"ok": False}
+    nap = _napcat_status_cached()
+    stats = bst.get("stats") or {}
+    return {"lite": True,
+            "gateway": {"active": bool(bst.get("ok"))},
+            "adapter": {"connected": bool(bst.get("online")),
+                        "age": bst.get("last_event_age_s"),
+                        "stats": {"events": stats.get("events", 0),
+                                  "sent": stats.get("sent", 0)}},
+            "napcat": {"ok": nap.get("ok"), "is_login": nap.get("is_login"),
+                       "phase": nap.get("phase"), "uin": nap.get("uin"),
+                       "nick": nap.get("nick")}}
+
+
 def _overview(max_age: float = 2.0) -> dict:
     """面板顶栏 + 看板都会打这个接口；2 秒内复用，避免重复读插件快照。"""
     now = time.time()
@@ -2103,7 +2139,7 @@ _SENSITIVE_GET = frozenset({
     "/api/chat/sessions", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
-    "/api/kb/recent", "/api/search", "/api/plugin/page",
+    "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
 })
 
 
@@ -2158,6 +2194,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Accept-Encoding")
         for k, v in (extra or []):
             self.send_header(k, v)
+        if getattr(self, "_head_only", False):
+            self.end_headers()          # HEAD：头部照发，正文一个字节都不写
+            return
         self.end_headers()
         try:
             self.wfile.write(payload)
@@ -2237,7 +2276,8 @@ class Handler(BaseHTTPRequestHandler):
                              cache="no-cache, must-revalidate")   # 治「手机上看到旧页面」
             return
         if u.path == "/api/overview":
-            self._json(_overview())
+            self._json(_overview_lite() if (q.get("lite") or [""])[0] in ("1", "true")
+                       else _overview())
             return
         if u.path == "/api/bot":
             self._json(BOT.status() if BOT else {"ok": False, "error": _BOT_IMPORT_ERR or "bot 未启动"})
@@ -2374,7 +2414,22 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/api/plugins":
-            self._json(_plugins_get())
+            full = (q.get("full") or [""])[0] in ("1", "true")
+            self._json(_plugins_get(lite=not full))
+            return
+        if u.path == "/api/plugins/detail":
+            name = (q.get("name") or [""])[0].strip()
+            if not name:
+                self._json({"ok": False, "error": "缺少 name"}, 400)
+                return
+            full = _plugins_get(lite=False).get("meta") or {}
+            row = full.get(Path(name).stem)
+            if not row:
+                self._json({"ok": False, "name": Path(name).stem,
+                            "error": "没有这个插件"}, 404)
+                return
+            self._json({"ok": True, "name": Path(name).stem, "meta": row,
+                        "schema": _plugin_schema(name)})
             return
         if u.path == "/api/plugin/page":
             name = (q.get("name") or [""])[0].strip()
@@ -2504,6 +2559,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     # ---- POST ----
+    def do_HEAD(self):
+        """HEAD = GET 的头部（静态探活、CDN/反代预检都会用）。
+
+        以前直接 501，`curl -I` 得到的是错误页；现在给正确的 Content-Length /
+        Content-Type / ETag，但不写正文。
+        """
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
     def do_POST(self):
         u = urlparse(self.path)
         _CHAR_CACHE.update(ts=0.0, data=None)      # 写操作之后别再吐旧的角色/插件快照

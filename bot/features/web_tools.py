@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 NAME = "联网"
+NAME_EN = "Web access"
+DESCRIPTION_EN = "Search the web / fetch a page. Turn it off and she can't go online at all."
 DESCRIPTION = "搜索网页 / 抓取正文。关掉它，她就不会联网，只能靠知识库和自己的记忆。"
 VERSION = "1.0"
 SYSTEM = True          # 归到「系统」分类（框架能力，不是角色功能）

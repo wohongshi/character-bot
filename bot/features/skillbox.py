@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 NAME = "技能盒子"
+NAME_EN = "Skill box"
+DESCRIPTION_EN = "Let her discover and call other plugins (gacha, tarot, builds…) as skills."
 DESCRIPTION = "让她能发现并主动调用别的插件（抽卡、塔罗、练度……）当技能用。"
 VERSION = "1.0"
 

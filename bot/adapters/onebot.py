@@ -28,6 +28,8 @@ class OneBotAdapter(BaseAdapter):
 
     platform = "onebot11"
     title = "OneBot 11（QQ / NapCat）"
+    TITLE_EN = "OneBot 11 (QQ / NapCat)"
+    DESCRIPTION_EN = "NapCat / Lagrange protocol endpoint: the most complete (members, recall, approvals)"
     DESCRIPTION = "接 NapCat / Lagrange 等协议端：功能最全（群成员、撤回、审批）"
     VERSION = "1.0"
     INGRESS = "/onebot/event"
