@@ -34,6 +34,10 @@ DEFAULT_CONFIG = {
     "owner_id": "",             # 主人 QQ（agent/.agent 权限、部分插件命令用）
     "napcat_http": "http://127.0.0.1:3101",
     "napcat_token": "",
+    # 公网地址（如 https://bot.example.com）。只用来给平台后台拼「回调地址」：
+    # QQ 官方 / 微信 / 飞书 都要求你把这个完整 URL 填进它们的后台，少一个字都收不到消息。
+    # 留空时面板只显示相对路径，并提示「要能被外网访问」。
+    "public_base": "",
     # ---- 飞书 ----
     "feishu_app_id": "",
     "feishu_app_secret": "",

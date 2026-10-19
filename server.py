@@ -2791,6 +2791,11 @@ def _system_meta() -> dict:
             "commands": 0, "command_list": [], "hits": 0, "errors": 0,
             "error": "" if ad is not None or pid not in on else "已启用但实例没建起来",
         })
+        sch = row.get("schema") if isinstance(row.get("schema"), dict) else {}
+        cfgv = (BOT.config if BOT else {}) or {}
+        row["missing"] = [k for k, f in sch.items()
+                          if isinstance(f, dict) and f.get("required")
+                          and not str(cfgv.get(k, "") or "").strip()]
         if ad is not None:
             # 健康检查失败 ≠ 插件报错：NapCat 没登录、飞书没填 key 都只是「未就绪」，
             # 塞进 error 会让「报错」筛选里堆满正常离线状态。
@@ -2806,16 +2811,64 @@ def _system_meta() -> dict:
     return out
 
 
+def _adapter_patch(schema: dict, values: dict, clear=()) -> dict:
+    """把面板提交的字段算成配置补丁。
+
+    两条规则都是被真实误操作逼出来的：
+    - **密钥字段留空 = 不改**：浏览器不会回填密码框里的旧值，若按「留空即清空」处理，
+      用户只想关掉沙箱，AppSecret 就没了；
+    - **要清空必须显式列在 `clear` 里**：让「清除」成为一个明确的动作，而不是手滑。
+    """
+    clear = {str(x) for x in (clear or []) if str(x)}
+    patch = {}
+    for k, f in (schema or {}).items():
+        if k in clear:
+            patch[k] = ""
+            continue
+        if k not in (values or {}):
+            continue
+        if f.get("secret") and not str(values.get(k) or "").strip():
+            continue
+        try:
+            patch[k] = coerce_setting(f, values[k])
+        except ValueError as e:
+            raise ValueError(f"{k}：{e}") from e
+    return patch
+
+
+def _callback_url(ingress: str) -> dict:
+    """给平台后台填的回调地址。`public_base` 没填时只给相对路径 + 说明。"""
+    ing = str(ingress or "").strip()
+    if not ing:
+        return {}
+    base = str((BOT.config if BOT else {}).get("public_base") or "").strip().rstrip("/")
+    return {"path": ing, "url": (base + ing) if base else "", "public_base": base,
+            "absolute": bool(base)}
+
+
 def _plugin_schema(name: str) -> dict:
     stem = Path(name).stem
     sysmeta = _system_meta().get(stem)
     if sysmeta:
         schema = sysmeta.get("schema") if isinstance(sysmeta.get("schema"), dict) else {}
         vals = BOT.config if BOT else {}
+        shown, secret_set = {}, {}
+        for k, f in schema.items():
+            v = vals.get(k, f.get("default"))
+            if f.get("secret"):
+                # **绝不把密钥回传前端**：页面只需要知道「填过没有、几位」，
+                # 不需要知道内容。以前这里是原样返回，任何人打开面板都能看到 AppSecret。
+                s_val = str(v or "")
+                shown[k] = ""
+                secret_set[k] = {"set": bool(s_val), "len": len(s_val)}
+            else:
+                shown[k] = v
         return {"ok": True, "name": stem, "title": sysmeta.get("title", stem),
                 "usage": "", "author": "", "system": True,
-                "schema": schema,
-                "values": {k: vals.get(k, f.get("default")) for k, f in schema.items()},
+                "schema": schema, "values": shown, "secret_set": secret_set,
+                "callback": _callback_url(sysmeta.get("ingress")),
+                "missing": [k for k, f in schema.items()
+                            if f.get("required") and not str(vals.get(k, "") or "").strip()],
                 "has_schema": bool(schema)}
     meta = _plugin_meta().get(stem) or {}
     schema = meta.get("schema") if isinstance(meta.get("schema"), dict) else {}
@@ -5201,15 +5254,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not schema:
                     self._json({"ok": False, "error": f"{name} 没有可配置项"}, 400)
                     return
-                patch = {}
-                for k, f in schema.items():
-                    if k not in values:
-                        continue
-                    try:
-                        patch[k] = coerce_setting(f, values[k])
-                    except ValueError as e:
-                        self._json({"ok": False, "error": f"{k}：{e}"}, 400)
-                        return
+                clear = {str(x) for x in (body.get("clear") or []) if str(x)}
+                try:
+                    patch = _adapter_patch(schema, values, clear)
+                except ValueError as e:
+                    self._json({"ok": False, "error": str(e)}, 400)
+                    return
                 if not BOT:
                     self._json({"ok": False, "error": "bot 未启动"}, 503)
                     return
@@ -5256,6 +5306,47 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"ok": True, "name": name, "errors": errors,
                         "values": _plugin_schema(name)["values"]})
+            return
+        if u.path == "/api/adapters/test":
+            # 当场用自己的凭据打一次平台接口：填错 AppSecret 立刻看到原文错误，
+            # 而不是「启用了但群里没反应」再回头翻日志。
+            name = Path(str(body.get("name") or "")).stem.lower()
+            if not BOT:
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            if name not in {x.get("name") for x in _system_meta_rows()}:
+                self._json({"ok": False, "error": f"没有这个平台：{name or '（空）'}"}, 400)
+                return
+            t0 = time.time()
+            box = {}
+
+            def _run():
+                try:
+                    from bot.adapters import build as _build
+                    ad = _build(dict(BOT.config or {}), platform=name)
+                    box["res"] = (ad.health() if hasattr(ad, "health")
+                                  else {"ok": False, "error": "这个平台没有自检"})
+                except Exception as e:                             # noqa: BLE001
+                    box["res"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+            th = threading.Thread(target=_run, daemon=True)
+            th.start()
+            th.join(20.0)
+            ms = round((time.time() - t0) * 1000)
+            if th.is_alive():
+                self._json({"ok": False, "ms": ms, "name": name,
+                            "error": "20 秒没回应（网络/凭据都可能有问题）"}, 200)
+                return
+            res = box.get("res") or {"ok": False, "error": "自检没有返回"}
+            out = {"ok": bool(res.get("ok")), "name": name, "ms": ms, "detail": res}
+            if not res.get("ok"):
+                msg = str(res.get("error") or res.get("detail") or "未就绪")
+                # 别把内部异常类名甩给用户（AdapterError: / OneBotError: / HttpError: …）
+                for pref in ("AdapterError: ", "OneBotError: ", "HttpError: ", "VisionError: "):
+                    if msg.startswith(pref):
+                        msg = msg[len(pref):]
+                out["error"] = msg[:300]
+            self._json(out)
             return
         if u.path == "/api/agent":
             if not BOT:

@@ -56,15 +56,15 @@ class QQOfficialAdapter(BaseAdapter):
         "request_approval": False, "recall": False,
     }
     CONFIG_SCHEMA = {
-        "qq_app_id": {"type": "str", "label": "AppID", "default": "",
-                      "description": "QQ 开放平台 → 机器人资料"},
-        "qq_app_secret": {"type": "str", "label": "AppSecret", "default": "",
-                          "secret": True, "description": "同一页"},
+        "qq_app_id": {"type": "str", "label": "AppID", "required": True, "default": "",
+                      "description": "QQ 开放平台 → 机器人 → 开发设置"},
+        "qq_app_secret": {"type": "str", "label": "AppSecret", "required": True, "default": "",
+                          "secret": True, "description": "同一页，只显示一次，丢了要重置"},
         "qq_bot_secret": {"type": "str", "label": "机器人密钥（BotSecret）",
-                          "default": "", "secret": True,
-                          "description": "Ed25519 校验用，32 字节"},
+                          "required": True, "default": "", "secret": True,
+                          "description": "同一页的「机器人密钥」，Ed25519 校验用（32 字节）"},
         "qq_sandbox": {"type": "bool", "label": "沙箱环境", "default": False,
-                       "description": "刚创建的机器人可先用沙箱联调"},
+                       "description": "刚创建的机器人先用沙箱联调，正式上线再关"},
     }
 
     def __init__(self, config: Optional[dict] = None, **kw) -> None:

@@ -34,7 +34,7 @@ class OneBotAdapter(BaseAdapter):
     VERSION = "1.0"
     INGRESS = "/onebot/event"
     CONFIG_SCHEMA = {
-        "napcat_http": {"type": "str", "label": "协议端地址", "default": "http://127.0.0.1:3101",
+        "napcat_http": {"type": "str", "label": "协议端地址", "required": True, "default": "http://127.0.0.1:3101",
                         "description": "NapCat 的 HTTP 服务地址（不是 WebUI 端口）"},
         "napcat_token": {"type": "str", "label": "访问 Token", "default": "",
                          "secret": True,

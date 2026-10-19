@@ -47,12 +47,12 @@ class WeChatAdapter(BaseAdapter):
         "request_approval": False, "recall": False,
     }
     CONFIG_SCHEMA = {
-        "wechat_app_id": {"type": "str", "label": "AppID", "default": "",
+        "wechat_app_id": {"type": "str", "label": "AppID", "required": True, "default": "",
                           "description": "公众号后台 → 设置与开发 → 基本配置"},
-        "wechat_app_secret": {"type": "str", "label": "AppSecret", "default": "",
-                              "secret": True, "description": "同上"},
-        "wechat_token": {"type": "str", "label": "服务器 Token", "default": "",
-                         "description": "服务器配置里自己填的 Token，用于验签"},
+        "wechat_app_secret": {"type": "str", "label": "AppSecret", "required": True, "default": "",
+                              "secret": True, "description": "同一页，重置后旧密钥立刻失效"},
+        "wechat_token": {"type": "str", "label": "服务器 Token", "required": True, "default": "",
+                         "description": "同一后台 → 服务器配置 → Token：自己定，必须和这里完全一致"},
     }
 
     def __init__(self, config: Optional[dict] = None, **kw) -> None:

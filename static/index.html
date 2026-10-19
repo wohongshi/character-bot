@@ -385,6 +385,7 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .plrow{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink)}
 .plrow span{color:var(--ink-soft)}
 .plrow i{font-style:normal;opacity:.75}
+.plrow .req{color:var(--red);font-weight:700}
 .plrow input,.plrow select{border-radius:10px;border:2px solid var(--line);background:var(--surface-2);
   color:var(--ink);padding:6px 9px;font-size:12.5px;font-family:var(--font-body)}
 .mpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:2px 14px;
@@ -2176,6 +2177,7 @@ async function openPluginDrawer(name, meta){
     ${Object.keys(m.schema || {}).length ? `<h4>设置</h4>
       <div id="pdForm" class="kv">正在读取当前值…</div>
       <div class="row" style="margin-top:8px"><button class="btn primary tiny" onclick="plugSaveSettings(${esc(JSON.stringify(name))})">保存设置</button>
+        ${m.system ? `<button class="btn tiny" onclick="testAdapter(${esc(JSON.stringify(name))})">测一下</button>` : ""}
         <span class="kv" id="pdSMsg"></span></div>` : ""}`;
   el.classList.add("on");
   if (Object.keys(m.schema || {}).length) loadPluginSchema(name);
@@ -2388,12 +2390,18 @@ async function loadPluginSchema(name){
   const d = await api("/api/plugins/schema?name=" + encodeURIComponent(name));
   if (!d || !d.ok || !d.has_schema){ box.textContent = "这个插件没有声明配置项"; return; }
   const fields = Object.entries(d.schema || {});
+  const ss = d.secret_set || {};
+  window.__pdSchema = d.schema || {};
   box.className = "pdform";
   box.innerHTML = fields.map(([k, f]) => {
     const v = d.values ? d.values[k] : f.default;
     const val = v === null || v === undefined ? "" : String(v);
+    // 字段名要能一眼认出「这是 AppID 还是 AppSecret」——以前这里把 description
+    // 当标题用，于是三个必填框分别显示成「同一页」「同一页」「Ed25519 校验用」，
+    // 用户根本不知道该往哪个框里贴什么。
+    const label = esc(f.label || k);
     const hint = esc(f.description || "");
-    const label = hint || esc(k);          // 中文说明优先，没有才退回键名
+    const req = f.required ? ' <b class="req" title="必填">*</b>' : "";
     let ctl;
     if (f.type === "bool" || typeof f.default === "boolean"){
       ctl = `<select id="pls_${esc(k)}"><option value="true" ${val === "true" ? "selected" : ""}>开</option>
@@ -2401,24 +2409,121 @@ async function loadPluginSchema(name){
     } else if (Array.isArray(f.choices)){
       ctl = `<select id="pls_${esc(k)}">${f.choices.map(o =>
         `<option ${String(o) === val ? "selected" : ""}>${esc(String(o))}</option>`).join("")}</select>`;
+    } else if (f.secret){
+      /* 密钥类字段：服务端不回传明文，所以这里**永远**是空框。
+         「填过没有」用 placeholder 说，改的时候留空就不动它，
+         要抹掉得按「清除」—— 否则改个开关就会把 AppSecret 顺手清空。 */
+      const info = ss[k] || {};
+      ctl = `<div class="row" style="gap:6px;flex-wrap:nowrap;align-items:center">
+        <input type="password" id="pls_${esc(k)}" data-secret="1" autocomplete="new-password"
+               value="" placeholder="${info.set ? `已保存 ${info.len} 位 · 留空不改` : "还没填"}"
+               style="flex:1;min-width:0" oninput="this.dataset.dirty='1';this.dataset.clear=''">
+        <button class="btn tiny" style="flex:none" onclick="peekSecret('pls_${esc(k)}',this)">显示</button>
+        ${info.set ? `<button class="btn tiny" style="flex:none" onclick="clearSecret('pls_${esc(k)}',this)">清除</button>` : ""}
+      </div>`;
     } else {
       ctl = `<input type="text" id="pls_${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : val)}"
              placeholder="${esc(String(f.default ?? ""))}">`;
     }
-    return `<label class="plrow" title="${esc(k)}"><span>${label}</span>${ctl}</label>`;
-  }).join("");
+    return `<label class="plrow" title="${esc(k)}"><span><b>${label}</b>${req}${
+      hint ? ` <i>${hint}</i>` : ""}</span>${ctl}</label>`;
+  }).join("") + (d.callback && d.callback.path ? callbackRowHTML(d.callback) : "")
+    + missingHTML(d, fields);
+}
+
+/* 平台后台要填的回调地址：拼好、能一键复制，说不清就等于让人去猜。 */
+function callbackRowHTML(cb){
+  const url = cb.url || cb.path;
+  return `<div class="plrow" style="margin-top:2px"><span>回调地址（填到平台后台）</span>
+    <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:center">
+      <code id="pdCb" style="flex:1;min-width:0;overflow:auto;white-space:nowrap;padding:6px 9px;
+            border-radius:10px;background:var(--surface-2)">${esc(url)}</code>
+      <button class="btn tiny" style="flex:none" onclick="copyPlain(${esc(JSON.stringify(url))},this)">复制</button>
+    </div>
+    <i class="kv">${cb.absolute
+      ? "这个地址必须能从公网访问（https 优先），否则平台推不过来"
+      : "还没填「公网地址」，现在只有相对路径 —— 去运维 → 连接与账号 补上"}</i></div>`;
+}
+
+/* 必填项没填全就别让人以为「已经配好了」：清单直接列出来。 */
+function missingHTML(d, fields){
+  const miss = (d.missing || []).map(k => {
+    const f = (d.schema || {})[k] || {};
+    return f.label || k;
+  });
+  if (!miss.length) return "";
+  return `<div class="kv" style="color:var(--red);margin-top:2px">
+    还差 ${miss.length} 项：${esc(miss.join(" / "))} —— 填完点「保存设置」，再点「测一下」</div>`;
+}
+
+function peekSecret(id, btn){
+  const el = document.getElementById(id); if (!el) return;
+  const hidden = el.type === "password";
+  el.type = hidden ? "text" : "password";
+  if (btn) btn.textContent = hidden ? "隐藏" : "显示";
+}
+
+/* 「清除」不立刻生效：标一下，保存时才真的清 —— 免得手滑点掉一个对的密钥。 */
+function clearSecret(id, btn){
+  const el = document.getElementById(id); if (!el) return;
+  el.value = ""; el.dataset.clear = "1"; el.dataset.dirty = "";
+  el.placeholder = "保存后清空";
+  if (btn) btn.disabled = true;
+}
+
+async function copyPlain(text, btn){
+  const t = String(text || "");
+  try { await navigator.clipboard.writeText(t); if (btn) btn.textContent = "已复制"; }
+  catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); if (btn) btn.textContent = "已复制"; }
+    catch(e2){ if (btn) btn.textContent = "复制不了"; }
+    ta.remove();
+  }
+  setTimeout(() => { if (btn) btn.textContent = "复制"; }, 1600);
+}
+
+/* 当场打一次平台接口：填错 AppSecret 立刻看到平台原文错误，
+   而不是「启用了但群里没反应」再回头翻日志。 */
+async function testAdapter(name){
+  const el = $("pdSMsg");
+  if (el) el.textContent = "正在连平台…（最多 20 秒）";
+  const d = await post("/api/adapters/test", {name});
+  if (!el) return;
+  el.style.color = d && d.ok ? "" : "var(--red)";
+  el.textContent = d && d.ok ? `✓ 连通（${d.ms} ms）` : `✗ ${(d && d.error) || "没连上"}`;
 }
 
 async function plugSaveSettings(name){
   const box = $("pdForm"), msg = $("pdSMsg");
   if (!box) return;
-  const values = {};
-  box.querySelectorAll("[id^=pls_]").forEach(el => { values[el.id.slice(4)] = el.value; });
-  const d = await post("/api/plugins/settings", {name, values});
+  const values = {}, clear = [];
+  box.querySelectorAll("[id^=pls_]").forEach(el => {
+    const k = el.id.slice(4);
+    if (el.dataset.clear === "1"){ clear.push(k); return; }        // 「清除」按了才算清
+    // 密钥框是空的：可能是没动过（保留原值），也可能是用户真想要空 —— 后者得按「清除」。
+    if (el.dataset.secret === "1" && !String(el.value || "").length) return;
+    values[k] = el.value;
+  });
+  // 必填项漏了就先说清楚，别让服务端存一半、界面看着像成功
+  const schema = window.__pdSchema || {};
+  const miss = Object.entries(schema)
+    .filter(([k, f]) => f.required && !clear.includes(k)
+            && !String(values[k] ?? "").trim())
+    .map(([, f]) => f.label || "");
+  if (miss.length && msg){
+    msg.style.color = "var(--red)";
+    msg.textContent = "还差必填：" + miss.join(" / ");
+    return;
+  }
+  const d = await post("/api/plugins/settings", {name, values, clear});
+  if (msg) msg.style.color = "";
   if (!d || !d.ok){ if (msg) msg.textContent = "✗ " + ((d && d.error) || "失败"); return; }
   if (msg) msg.textContent = (d.errors && d.errors.length)
     ? "✓ 已保存（有 " + d.errors.length + " 项被纠正：" + d.errors.slice(0, 2).join("；") + "）"
-    : "✓ 已保存，8 秒内生效";
+    : "✓ 已保存，已经生效";
+  loadPluginSchema(name);          // 刷新「已保存 N 位」与缺项提示
 }
 function cmdHelpText(c){
   const h = String(c.help || "");
@@ -3846,7 +3951,7 @@ function renderPlugGrid(){
             usage: m.usage || "", version: m.version || "1.0",
             external: !!m.external, language: m.language || "",
             ingress: m.ingress || "", health: m.health || null,
-            tools: m.tools || []};
+            missing: m.missing || [], tools: m.tools || []};
   }).filter(p => {
     // 角色限定插件与角色绑定：不是当前角色的，直接不显示
     if (!p.system && p.chars.length && !p.chars.includes(ACTIVE.id)) return false;
@@ -3889,7 +3994,8 @@ function renderPlugGrid(){
     const ready = p.health && p.health.ok;
     const why = p.error || (p.health && p.health.error) || "";
     const foot = p.system
-      ? `<span title="${esc(why)}">${p.error ? t("plug.failed")
+      ? `${p.missing.length ? `<span style="color:var(--red)" title="还差：${esc(p.missing.join(" / "))}">缺 ${p.missing.length} 项</span>` : ""}`
+        + `<span title="${esc(why)}">${p.error ? t("plug.failed")
             : (p.enabled ? (ready ? t("plug.connected") : t("plug.disconnected")) : t("plug.off"))}</span>`
         + (why && p.enabled ? `<span title="${esc(why)}">详情</span>` : "")
       : `<span>${p.error ? t("plug.failed") : (p.enabled ? t("plug.on") : t("plug.off"))}</span>
@@ -4758,6 +4864,8 @@ const CFG_GROUPS = [
   {id: "conn", emoji: "🔌", title: "连接与账号", open: true,
    note: "NapCat 地址 / Token、主人 QQ、命令前缀",
    fields: [
+     {k:"public_base", label:"公网地址", ph:"https://bot.example.com",
+      hint:"只用来拼平台回调地址；QQ 官方 / 微信 / 飞书 都要把这个地址填进它们的后台"},
      {k:"napcat_http", label:"NapCat 地址", ph:"http://127.0.0.1:3101"},
      {k:"napcat_token", label:"NapCat Token", secret:true},
      {k:"self_id", label:"机器人 QQ", hint:"首次收到消息会自动填"},
@@ -5261,8 +5369,11 @@ async function viewOps(target){
       ${sys.map(p => `<div class="opsline" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">
         <span class="tag" style="flex:none">${p.locked_on ? "常开" : (p.enabled ? "● 开" : "○ 关")}</span>
         <b style="flex:none">${esc(bi(p.title || p.pid, p.title_en))}</b>
+        ${(p.missing || []).length ? `<span class="tag" style="flex:none;color:var(--red)"
+              title="还差：${esc((p.missing || []).join(" / "))}">缺 ${p.missing.length} 项</span>` : ""}
         <span class="kv" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
               title="${esc(p.ready_note || p.description || "")}">${esc(p.enabled || p.default_off === false ? readyText(p.ready_note) || p.description || "" : p.description || "")}</span>
+        <button class="btn tiny" style="flex:none" onclick="go('plugins');setTimeout(()=>openPluginDrawer('${esc(p.pid)}'),260)">账号</button>
         ${p.has_page ? `<button class="btn tiny" style="flex:none" onclick="openPluginPage('${esc(p.pid)}')">插件页</button>` : ""}
       </div>`).join("")}
       <div class="row" style="margin-top:10px">

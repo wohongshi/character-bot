@@ -42,16 +42,16 @@ class FeishuAdapter(BaseAdapter):
         "request_approval": False, "recall": False,
     }
     CONFIG_SCHEMA = {
-        "feishu_app_id": {"type": "str", "label": "App ID", "default": "",
+        "feishu_app_id": {"type": "str", "label": "App ID", "required": True, "default": "",
                           "description": "开发者后台 → 凭证与基础信息"},
-        "feishu_app_secret": {"type": "str", "label": "App Secret", "default": "",
+        "feishu_app_secret": {"type": "str", "label": "App Secret", "required": True, "default": "",
                               "secret": True, "description": "同上，注意保密"},
         "feishu_verification_token": {"type": "str", "label": "Verification Token",
-                                      "default": "",
-                                      "description": "事件订阅页里的 Token，用来校验回调来源"},
+                                      "required": True, "default": "",
+                                      "description": "事件订阅 → Verification Token，用来校验回调来源"},
         "feishu_bot_open_id": {"type": "str", "label": "机器人 open_id（可选）",
                                "default": "",
-                               "description": "填了才能准确判断群里是不是 @ 了它"},
+                               "description": "填了才能准确判断群里是不是 @ 了它（机器人信息里能查到）"},
     }
 
     def __init__(self, config: Optional[dict] = None, **kw) -> None:
