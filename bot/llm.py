@@ -21,6 +21,46 @@ import urllib.request
 from pathlib import Path
 
 log = logging.getLogger("klee.bot.llm")
+
+# ---------------------------------------------------------------- 用量记录
+# 模型返回里的 `usage` 是最准的（网关给什么就是什么）；网关不给时按字符数估一个，
+# 并打上 `est=True` —— 看板上「估算」和「实测」必须能分开，否则数字没法对账。
+_USAGE_HOOK = None
+_USAGE_LOCK = threading.Lock()
+
+
+def set_usage_hook(fn) -> None:
+    """注册一个回调：每次模型调用结束都会被叫一次（失败不影响主流程）。"""
+    global _USAGE_HOOK
+    _USAGE_HOOK = fn
+
+
+def _emit_usage(provider: str, model: str, usage: dict, ms: float, kind: str) -> None:
+    hook = _USAGE_HOOK
+    if hook is None:
+        return
+    try:
+        hook({"ts": time.time(), "provider": provider, "model": model,
+              "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+              "completion_tokens": int(usage.get("completion_tokens") or 0),
+              "total_tokens": int(usage.get("total_tokens") or 0),
+              "est": bool(usage.get("est")), "ms": round(float(ms), 1), "kind": kind})
+    except Exception as e:                                       # noqa: BLE001
+        log.info("用量回调出错（已忽略）：%s", e)
+
+
+def _estimate(messages: list, text: str) -> dict:
+    """按字符估 token：中文约 1 字 ≈ 1 token，英文约 4 字符 ≈ 1 token。
+
+    不追求精确 —— 只为了让「网关不返回 usage」时看板还有个量级。
+    """
+    def size(s: str) -> float:
+        cjk = sum(1 for ch in str(s) if "\u4e00" <= ch <= "\u9fff")
+        return cjk + (len(str(s)) - cjk) / 4.0
+    pin = sum(size(str(m.get("content") or "")) + 4 for m in (messages or []))
+    pout = size(text)
+    return {"prompt_tokens": int(pin), "completion_tokens": int(pout),
+            "total_tokens": int(pin + pout), "est": True}
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _SAVE_LOCK = threading.Lock()
 
@@ -168,6 +208,7 @@ def _read_sse(resp, on_delta=None) -> dict | None:
     """
     content: list[str] = []
     reason: list[str] = []
+    usage: dict = {}
     calls: dict[int, dict] = {}
     finish = ""
     saw_any = False
@@ -188,6 +229,12 @@ def _read_sse(resp, on_delta=None) -> dict | None:
             saw_any = True
             # 有的网关不在 HTTP 层报错，而是在流里塞一条 {"error": {...}}（配额/超长/过载）。
             # 当成普通 chunk 跳过的话，最后只剩「模型返回空内容」，真正的原因全丢了。
+            # 用了 stream_options.include_usage 的网关会在最后单独发一条带 usage 的包
+            u = obj.get("usage")
+            if isinstance(u, dict) and u.get("total_tokens") is not None:
+                usage = {"prompt_tokens": int(u.get("prompt_tokens") or 0),
+                         "completion_tokens": int(u.get("completion_tokens") or 0),
+                         "total_tokens": int(u.get("total_tokens") or 0)}
             if obj.get("error"):
                 err = obj.get("error")
                 msg = err.get("message") if isinstance(err, dict) else str(err)
@@ -244,7 +291,8 @@ def _read_sse(resp, on_delta=None) -> dict | None:
             continue
         out.append({"id": slot["id"] or f"call_{len(out)}", "name": slot["name"],
                     "arguments": slot["args"] or "{}"})
-    return {"text": text, "tool_calls": out, "finish_reason": finish}
+    return {"text": text, "tool_calls": out, "finish_reason": finish,
+            "usage": usage}
 
 
 class ModelStore:
@@ -479,6 +527,10 @@ class ModelStore:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
+        if payload.get("stream"):
+            # 让网关在流末尾补一条 usage；不支持的会忽略这个字段（少数会 400，
+            # 那种情况下面 _read_sse 退回非流式，仍然能拿到用量）
+            payload["stream_options"] = {"include_usage": True}
         if extra_body:                       # reasoning_effort 等可选参数（不认识的模型会忽略）
             for k, v in extra_body.items():
                 if v is not None:
@@ -490,6 +542,7 @@ class ModelStore:
                      **({"Authorization": f"Bearer {key}"} if key else {})},
             method="POST",
         )
+        _t0 = time.monotonic()
         # 一次调用只有一份超时预算：流式先花掉一部分，退回非流式时只能用剩下的。
         # 以前是在 `with` 里直接再发一次、又给满额 timeout —— 等于把 agent 的
         # 整步预算翻倍，最后变成「agent 超时」，明明是能救回来的。
@@ -503,6 +556,13 @@ class ModelStore:
                 if stream:
                     got = _read_sse(r, on_delta)
                     if got is not None:
+                        # 流式：网关给了 usage 就用，没给就按字符估
+                        gu = got.get("usage") if isinstance(got.get("usage"), dict) else {}
+                        if not gu:
+                            gu = _estimate(messages, str(got.get("text") or ""))
+                        got["usage"] = gu
+                        _emit_usage(str(prov.get("id") or provider or ""), str(model or ""), gu,
+                                    (time.monotonic() - _t0) * 1000.0, "stream")
                         return got                # 流式成功：结构与非流式完全一致
                     # 服务端没按 SSE 回（直接吐了整段 JSON / 或者干脆不支持）：
                     # 这一份响应已经被读掉了，**先退出 with** 再重发。
@@ -555,8 +615,16 @@ class ModelStore:
                           "name": name,
                           "arguments": fn.get("arguments") if isinstance(fn.get("arguments"), str)
                           else json.dumps(fn.get("arguments") or {}, ensure_ascii=False)})
+        u = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        usage = ({"prompt_tokens": int(u.get("prompt_tokens") or 0),
+                  "completion_tokens": int(u.get("completion_tokens") or 0),
+                  "total_tokens": int(u.get("total_tokens") or 0)} if u
+                 else _estimate(messages, text))
+        _emit_usage(str(prov.get("id") or provider or ""), str(model or ""), usage,
+                    (time.monotonic() - _t0) * 1000.0, "chat")
         return {"text": text, "tool_calls": calls,
-                "finish_reason": str(choice.get("finish_reason") or "")}
+                "finish_reason": str(choice.get("finish_reason") or ""),
+                "usage": usage}
 
     def chat(self, messages: list, *, model: str | None = None, provider: str | None = None,
              timeout: float = 90,

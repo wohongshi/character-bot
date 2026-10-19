@@ -211,23 +211,35 @@ def main() -> int:
     check("3.3 不传 on_delta 时不带 stream（老路径不变）", "stream" not in seen_kw, str(seen_kw.keys()))
 
     print("\n[4] 半成品文本的投递（_delta_sink）")
-    S._chat_state["running"] = {"session": sess, "text": "x", "started": time.time(), "partial": ""}
-    sink = S._delta_sink({"session": sess})
+    # 运行状态现在按 (会话, 角色) 分格（并发时互不覆盖）
+    cid = "klee"
+    S._chat_runs.clear()
+    S._run_begin({"session": sess}, cid)
+    sink = S._delta_sink({"session": sess, "character": cid})
     sink("第一段")
-    check("4.1 写进 running.partial", S._chat_state["running"]["partial"] == "第一段",
-          str(S._chat_state["running"]))
+    check("4.1 写进这一格的 partial", (S._run_get(sess, cid) or {}).get("partial") == "第一段",
+          str(S._run_get(sess, cid)))
     sink("同一毫秒内的更新")            # 节流：80ms 内不重复写
-    other = S._delta_sink({"session": "别的会话"})
+    check("4.2 节流窗口内不重复写", (S._run_get(sess, cid) or {}).get("partial") == "第一段",
+          str(S._run_get(sess, cid)))
+    other = S._delta_sink({"session": "别的会话", "character": cid})
     other("不该写进去")
-    check("4.2 别的会话收不到", S._chat_state["running"]["partial"] == "第一段",
-          str(S._chat_state["running"]))
+    check("4.2b 别的会话收不到", (S._run_get(sess, cid) or {}).get("partial") == "第一段",
+          str(S._run_get(sess, cid)))
     time.sleep(0.1)
     sink("很久之后")
-    check("4.3 过了节流窗口会更新", S._chat_state["running"]["partial"] == "很久之后",
-          str(S._chat_state["running"]))
-    S._chat_state["running"] = None
+    check("4.3 过了节流窗口会更新", (S._run_get(sess, cid) or {}).get("partial") == "很久之后",
+          str(S._run_get(sess, cid)))
+    S._run_end({"session": sess}, cid)
     sink("收尾后不再写")
-    check("4.4 没有在跑的任务时什么也不做", S._chat_state["running"] is None)
+    check("4.4 没有在跑的任务时什么也不做", S._run_get(sess, cid) is None)
+    check("4.5 并发时另一格不受影响",
+          (lambda: (S._run_begin({"session": "s-x"}, "c1"),
+                    S._run_begin({"session": "s-x"}, "c2"),
+                    S._delta_sink({"session": "s-x", "character": "c1"})("只有 c1"),
+                    (S._run_get("s-x", "c2") or {}).get("partial") == ""
+                    and (S._run_get("s-x", "c1") or {}).get("partial") == "只有 c1",
+                    S._chat_runs.clear())[-2])())
 
     print("\n[5] 引用：落到数据里，并拼进模型看到的那一轮")
     check("5.1 有引用时前缀带谁说了什么",

@@ -74,6 +74,8 @@ check("1.4 未知角色回退当前/默认不炸", bool(S._persona_text("nope").
 check("1.2 缺 SOUL 时有兜底", S._persona_text.__doc__ is not None)
 
 print("[2] 真实 worker：入队 → 出回复")
+# worker 池现在由 main() 起（import server 不会顺手开线程），测试里显式拉起
+S._start_workers()
 S._persona_text = S._persona_text          # 保持真实实现
 S._kb_context = lambda text, cid="": ""
 sess = "chat-test-1"

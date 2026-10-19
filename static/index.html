@@ -4310,6 +4310,9 @@ async function viewReminders(manual){
   let ann = {items: [], total: 0};
   try { ann = await api("/api/anniversaries"); }
   catch (e) { ann = {items: [], total: 0, error: String(e && e.message || e)}; }
+  let sch = {items: [], max: 20, characters: []};
+  try { sch = await api("/api/scheduled"); }
+  catch (e) { sch = {items: [], max: 20, characters: [], error: String(e && e.message || e)}; }
   const items = d.items || [];
   const now = d.now || (Date.now() / 1000);
   const rows = items.map(it => {
@@ -4337,8 +4340,31 @@ async function viewReminders(manual){
       <span class="kv" style="flex:none;margin:0;min-width:110px;text-align:right">${esc(it.user_name || "")} · ${scope}</span>
     </div>`;
   }).join("");
+  const schRows = (sch.items || []).map(it => {
+    const on = it.enabled !== false;
+    const chars = (sch.characters || []).find(c => c.id === it.character) || {};
+    const last = it.last_ts ? hhmm(it.last_ts) : "还没跑过";
+    const err = it.last_error
+      ? `<span class="kv" style="color:var(--red);margin:0">${esc(String(it.last_error).slice(0, 40))}</span>` : "";
+    return `<div class="kbhit" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;${on ? "" : "opacity:.55"}">
+      <span class="tag" style="flex:none">${on ? "🔁" : "⏸"} ${esc(it.when_text || "—")}</span>
+      <span style="flex:1;min-width:150px">
+        <b>${esc(it.name || "")}</b>
+        <span class="kv" style="display:block;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          ${esc(String(it.prompt || "").slice(0, 60))}</span></span>
+      <span class="kv" style="flex:none;margin:0;min-width:92px;text-align:right">${on ? esc(it.next_text || "") : "已暂停"}</span>
+      <span class="kv" style="flex:none;margin:0;min-width:118px;text-align:right">${esc(chars.name || it.character || "")} · 跑了 ${it.runs || 0} 次<br>${esc(last)}</span>
+      ${err}
+      <span style="flex:none">
+        <button class="btn tiny" onclick="schedRun(${it.id})">立即跑</button>
+        <button class="btn tiny" onclick="schedToggle(${it.id})">${on ? "暂停" : "启用"}</button>
+        <button class="btn tiny" onclick="schedDel(${it.id})">删除</button>
+      </span>
+    </div>`;
+  }).join("");
+  const schTotal = (sch.items || []).length;
   const annTotal = (ann && (ann.total ?? (ann.items || []).length)) || 0;
-  const rhash = JSON.stringify([items, ann.items || [], annTotal]);
+  const rhash = JSON.stringify([items, ann.items || [], annTotal, sch.items || []]);
   if ($("remindList") && !manual && rhash === remindHash){
     return;                                    // 每 30 秒自动刷新：没变化就一个字节都不碰（不再闪）
   }
@@ -4348,6 +4374,7 @@ async function viewReminders(manual){
     $("remindList").innerHTML = rows || '<div class="kv">还没有提醒</div>';
     $("annCount").textContent = annTotal;
     $("annList").innerHTML = annRows || '<div class="kv">还没有纪念日</div>';
+    if ($("schList")) $("schList").innerHTML = schRows || '<div class="kv">还没有定时任务</div>';
     if (manual && $("remindMsg")) $("remindMsg").textContent = "更新于 " + hhmmss(Date.now() / 1000);
     return;
   }
@@ -4363,6 +4390,32 @@ async function viewReminders(manual){
     <div style="margin-top:10px" id="remindList">${rows || '<div class="kv">还没有提醒</div>'}</div>
   </div>
   <div class="card">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <span class="kv" style="margin:0">🤖 定时任务 · <b id="schCount">${schTotal}</b> 个 ·
+        到点让她自己去做（结果进「⏰ 任务名」那段会话）</span>
+      <button class="btn tiny" onclick="schedFormToggle()">＋ 新增</button>
+    </div>
+    <div id="schedForm" style="display:none;margin-top:10px">
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <input id="schName" placeholder="名字，如 早安播报" style="flex:1;min-width:120px">
+        <input id="schWhen" placeholder="每天8:00 / 每周一 9:00 / 每2h" style="flex:1;min-width:150px">
+      </div>
+      <textarea id="schPrompt" rows="2" placeholder="要她做什么：用一句话跟我说早安，顺便报今天日期。"
+                style="width:100%;margin-top:8px"></textarea>
+      <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+        <select id="schChar">${(sch.characters || []).map(c =>
+          `<option value="${esc(c.id)}" ${c.id === ACTIVE.id ? "selected" : ""}>${esc(c.emoji || "")} ${esc(c.name || c.id)}</option>`).join("")}</select>
+        <select id="schTarget">
+          <option value="own">自己开一段会话</option>
+          <option value="main">发进主对话</option>
+        </select>
+        <button class="btn primary tiny" onclick="schedAdd()">加上</button>
+        <span class="kv" id="schMsg"></span>
+      </div>
+    </div>
+    <div style="margin-top:10px" id="schList">${schRows || '<div class="kv">还没有定时任务</div>'}</div>
+  </div>
+  <div class="card">
     <div class="row" style="justify-content:space-between">
       <span class="kv" style="margin:0">📅 纪念日 · <b id="annCount">${annTotal}</b> 个 · 每 30 秒刷新</span>
     </div>
@@ -4373,6 +4426,47 @@ async function viewReminders(manual){
     if (V === "reminders") viewReminders(false);
     else { clearInterval(remindTimer); remindTimer = null; }
   }, 30000);
+}
+
+/* ---------- 定时任务 ---------- */
+function schedFormToggle(){
+  const f = $("schedForm");
+  if (!f) return;
+  f.style.display = f.style.display === "none" ? "" : "none";
+  if (f.style.display === ""){ const n = $("schName"); if (n) n.focus(); }
+}
+async function schedAdd(){
+  const msg = $("schMsg");
+  const name = ($("schName") || {}).value || "";
+  const when = ($("schWhen") || {}).value || "";
+  const prompt = ($("schPrompt") || {}).value || "";
+  if (!when.trim()){ flash("时间怎么写？例：每天8:00"); return; }
+  if (!prompt.trim()){ flash("得写清楚要她做什么"); return; }
+  const r = await post("/api/scheduled/add", {name: name.trim(), when: when.trim(),
+    prompt: prompt.trim(), character: ($("schChar") || {}).value || ACTIVE.id,
+    target: ($("schTarget") || {}).value || "own"});
+  if (!r || !r.ok){ if (msg) msg.textContent = (r && r.error) || "加不上"; return; }
+  if (msg) msg.textContent = "";
+  ["schName", "schWhen", "schPrompt"].forEach(id => { const el = $(id); if (el) el.value = ""; });
+  flash(`加上了：${(r.item && r.item.when_text) || ""} ${(r.item && r.item.name) || ""}`);
+  viewReminders(true);
+}
+async function schedRun(id){
+  const r = await post("/api/scheduled/run", {id});
+  if (!r || !r.ok){ flash((r && r.error) || "跑不起来"); return; }
+  flash("已经排上队了，去「⏰」那段会话看结果");
+}
+async function schedToggle(id){
+  const r = await post("/api/scheduled/toggle", {id});
+  if (!r || !r.ok){ flash((r && r.error) || "改不了"); return; }
+  viewReminders(true);
+}
+async function schedDel(id){
+  if (!confirm("删掉这条定时任务？（已经跑出来的记录不会删）")) return;
+  const r = await post("/api/scheduled/delete", {id});
+  if (!r || !r.ok){ flash((r && r.error) || "删不掉"); return; }
+  flash("删掉了");
+  viewReminders(true);
 }
 
 /* ================= 消息流 ================= */
@@ -4571,10 +4665,11 @@ let boardTimer = null;
 let boardHash = null;
 async function viewBoard(target){
   const T = target || "view";
-  const [d, ov, pl, ch] = await Promise.all([
-    api("/api/dashboard"), api("/api/overview"), api("/api/plugins"), api("/api/characters")
+  const [d, ov, pl, ch, us] = await Promise.all([
+    api("/api/dashboard"), api("/api/overview"), api("/api/plugins"), api("/api/characters"),
+    api("/api/usage?days=7").catch(() => null)
   ]);
-  const bhash = JSON.stringify(d, (k, v) => (k === "generated" ? undefined : v));   // generated 每回都变，别拿它当指纹
+  const bhash = JSON.stringify([d, us], (k, v) => (k === "generated" ? undefined : v));   // generated 每回都变，别拿它当指纹
   if ($("bdChart") && bhash === boardHash){
     await viewFeed("feedSlot");                // 看板不重绘，但消息照常刷新
     return;
@@ -4612,6 +4707,42 @@ async function viewBoard(target){
     </div>`;
   }).join("");
   const widgets = boardWidgets(ov || {}, pl || {}, ch || {}, d || {});
+  const U = us && us.ok ? us : null;
+  const ut = (U && U.totals) || {};
+  const fmtK = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + "M"
+                  : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0);
+  const uModels = ((U && U.models) || []).map((m, i) => `<div class="bd-row">
+      <span class="bd-mk">${["🥇","🥈","🥉"][i] || (i + 1) + "."}</span>
+      <span class="bd-nm"><b>${esc(String(m.model).split("/").pop())}</b>
+        <span class="kv" style="margin:0">${esc(String(m.model).split("/")[0])}</span></span>
+      <span class="bd-tag" style="min-width:104px;text-align:right">${m.requests} 次 · ${fmtK(m.total)} tokens</span>
+      <span class="bd-tag" style="min-width:90px;text-align:right">平均 ${(m.ms / Math.max(1, m.requests) / 1000).toFixed(1)}s</span>
+    </div>`).join("");
+  const uDaily = ((U && U.daily) || []);
+  const uMax = Math.max(1, ...uDaily.map(x => Number(x.total) || 0));
+  const uBars = uDaily.map(x => {
+    const n = Number(x.total) || 0;
+    const h = n ? Math.max(4, Math.round(n / uMax * 56)) : 2;
+    return `<div class="bd-col" title="${esc(x.date)}：${n} tokens / ${x.requests} 次">
+      <div class="bd-bar${n ? "" : " zero"}" style="height:${h}px"></div>
+      <div class="bd-lb">${esc(x.date)}</div></div>`;
+  }).join("");
+  const uCard = `<div class="card" style="margin-top:14px">
+    <div class="row" style="justify-content:space-between">
+      <span class="kv" style="margin:0">🧮 模型用量 · 近 <b>${(U && U.days) || 7}</b> 天
+        ${ut.est ? `<span class="tag" title="网关没返回 usage，按字符估算">含 ${ut.est} 次估算</span>` : ""}</span>
+      <button class="btn tiny" onclick="viewBoard()">⟳ 刷新</button>
+    </div>
+    <div class="bd-kpi">
+      <div class="b"><b>${fmtK(ut.total || 0)}</b><span>总 tokens</span></div>
+      <div class="b"><b>${fmtK(ut.prompt || 0)}</b><span>输入</span></div>
+      <div class="b"><b>${fmtK(ut.completion || 0)}</b><span>输出</span></div>
+      <div class="b"><b>${ut.requests || 0}</b><span>调用次数</span></div>
+      <div class="b"><b>${((ut.avg_ms || 0) / 1000).toFixed(1)}s</b><span>平均耗时</span></div>
+    </div>
+    ${uBars ? `<div class="bd-chart" style="height:80px">${uBars}</div>` : ""}
+    ${uModels || '<div class="kv">还没有模型调用记录～聊一句就有了</div>'}
+  </div>`;
   $(T).innerHTML = `
   <h2 class="page">📊 看板</h2>
   ${widgets}
@@ -4629,6 +4760,7 @@ async function viewBoard(target){
     </div>
     <div class="bd-chart" id="bdChart">${bars || '<div class="kv">还没有消息记录</div>'}</div>
   </div>
+  ${uCard}
   <div class="card" style="margin-top:14px">
     <div class="kv" style="margin:0 0 6px">💬 活跃来源（按消息量）</div>
     ${srcs || '<div class="kv">还没有来源数据～</div>'}

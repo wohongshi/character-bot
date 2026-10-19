@@ -91,7 +91,9 @@ for grp in re.findall(r"u\.path\s+in\s+\(([^)]+)\)", srv):
     routes |= set(re.findall(r'"([^"]+)"', grp))
 # 这些是有意保留给脚本 / 测试 / 外部调用方的，不是死接口
 KEEP = {"/api/napcat/qr", "/qr.png", "/qr", "/onebot/event", "/index.html", "/",
-        "/api/docs", "/api/themes", "/api/characters/theme", "/api/logs/meta"}
+        "/api/docs", "/api/themes", "/api/characters/theme", "/api/logs/meta",
+        # 诊断口：服务卡住时用 curl 看「谁拿着全局锁」，设计上不给面板用
+        "/api/lock"}
 dead = sorted(r for r in routes
               if r.startswith("/api") and r not in KEEP and r not in PANEL_AND_PLUGINS)
 check("没有面板调不到的 /api 写接口", not dead, str(dead))

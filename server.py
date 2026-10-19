@@ -28,6 +28,7 @@ import json
 import logging
 import mimetypes
 import os
+import collections
 import queue
 import re
 import shutil
@@ -165,9 +166,165 @@ KB_URL = "http://127.0.0.1:8797"
 
 CHAT_TIMEOUT = 240
 
-_chat_q: "queue.Queue[dict]" = queue.Queue()
-_chat_state = {"running": None}                 # {"session","text","started"} | None
-_lock = threading.Lock()
+CHAT_WORKERS = 3          # 同时在跑的对话数（同一个会话永远只有 1 个）
+
+
+class _JobQueue:
+    """按「会话 + 角色」串行的作业队列，允许多个 worker 并发。
+
+    为什么不能直接 `queue.Queue` + 多个 worker：
+    - 同一段会话被两个 worker 同时跑 → 界面上一问配两答、流式正文互相盖；
+    - 只用一个 worker → 定时任务、QQ 消息、面板聊天互相排队，一个慢的全堵。
+    所以：**不同会话可以并行，同一会话严格串行**。
+    """
+
+    def __init__(self) -> None:
+        self._cv = threading.Condition()
+        self._pending: "collections.deque[dict]" = collections.deque()
+        self._busy: set[tuple] = set()
+        self._closed = False
+
+    @staticmethod
+    def key(job: dict) -> tuple:
+        """队列键。**入队时定死**：`_run_job` 会补 `character`（缺省角色），
+        如果 get()/done() 各自再算一遍，两边算出的键可能不一样 ——
+        那样 done() 就清不掉 busy，这个会话从此再也排不进去（永久卡住）。"""
+        k = job.get("_qkey")
+        if isinstance(k, tuple) and len(k) == 2:
+            return k
+        return (str(job.get("session") or ""), str(job.get("character") or ""))
+
+    def put(self, job):
+        with self._cv:
+            if job is None:
+                self._closed = True
+            else:
+                job["_qkey"] = (str(job.get("session") or ""),
+                                str(job.get("character") or ""))
+                self._pending.append(job)
+            self._cv.notify_all()
+
+    def get(self, timeout: float | None = None):
+        """领一个作业。`timeout=None` 一直等（worker 用）；给了秒数就超时返回 None（测试/抽干用）。"""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        with self._cv:
+            while True:
+                if self._closed and not self._pending:
+                    return None
+                for i, job in enumerate(self._pending):
+                    k = self.key(job)
+                    if k in self._busy:
+                        continue          # 这个会话正在跑：跳过，先做别的会话
+                    del self._pending[i]
+                    self._busy.add(k)
+                    return job
+                if deadline is not None:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return None
+                    self._cv.wait(left)
+                else:
+                    self._cv.wait(1.0)
+
+    def done(self, job) -> None:
+        with self._cv:
+            self._busy.discard(self.key(job))
+            self._cv.notify_all()
+
+    def qsize(self) -> int:
+        with self._cv:
+            return len(self._pending)
+
+    def busy(self) -> list[tuple]:
+        with self._cv:
+            return sorted(self._busy)
+
+
+_chat_q = _JobQueue()
+# 每个 (会话, 角色) 一格运行状态。以前是单个槽位 —— 并发之后会互相覆盖：
+# A 在跑时 B 开始，B 把 running 顶掉，A 的流式正文就写不进去了。
+_chat_runs: dict[tuple, dict] = {}
+
+
+def _run_begin(job: dict, cid: str) -> dict:
+    info = {"session": job["session"], "character": cid, "text": job.get("text") or "",
+            "started": time.time(), "partial": ""}
+    with _lock:
+        _chat_runs[(str(job["session"]), str(cid))] = info
+    return info
+
+
+def _run_end(job: dict, cid: str) -> None:
+    with _lock:
+        _chat_runs.pop((str(job["session"]), str(cid)), None)
+
+
+def _run_get(session: str, cid: str = "") -> dict | None:
+    """取某会话的运行状态；cid 为空时按「只按会话」找（删除/编辑这些接口用）。"""
+    with _lock:
+        for (sess, ch), info in list(_chat_runs.items()):
+            if sess != str(session):
+                continue
+            if cid and ch != str(cid):
+                continue
+            return dict(info)
+    return None
+
+
+def _run_all() -> list[dict]:
+    with _lock:
+        return [dict(v) for v in list(_chat_runs.values())]
+class _Mutex:
+    """带「谁拿着、拿了多久」的锁。
+
+    普通 Lock 卡住时完全没法排查：dump 里只能看到一堆线程在 `with _lock:`，
+    却不知道持有者是谁（它可能正在做一件慢事，也可能已经不在任何栈上）。
+    这里记录持有者线程名和最久持有时间，`/api/lock` 一眼就能看出来。
+    """
+
+    def __init__(self) -> None:
+        # 用 RLock 而不是 Lock：真有人写了嵌套 `with _lock`，用 Lock 是**永久卡死**
+        # 整个服务（HTTP 线程全排在这把锁上，看板/聊天全无响应，日志里什么都看不出来）。
+        # 换成 RLock 之后最坏只是「多拿了一次」，同时下面会把这件事吼出来。
+        self._m = threading.RLock()
+        self.owner = ""
+        self.since = 0.0
+        self.waited = 0.0
+        self._depth = 0
+        self._warned = 0
+
+    def __enter__(self):
+        t0 = time.monotonic()
+        ok = self._m.acquire()
+        if ok:
+            self.waited = time.monotonic() - t0
+            self.owner = threading.current_thread().name
+            self.since = time.time()
+            self._depth += 1
+            if self._depth > 1 and self._warned < 5:
+                self._warned += 1
+                logger.error("同一线程重复拿全局锁（第 %d 次）—— 这是嵌套 with 的写法问题，"
+                             "换成 Lock 会直接把服务卡死", self._depth)
+                if self._warned == 1:
+                    import traceback
+                    logger.error("现场：%s", "".join(traceback.format_stack()[-4:]))
+        return self
+
+    def __exit__(self, *exc):
+        self._depth = max(0, self._depth - 1)
+        if self._depth == 0:
+            self.owner = ""
+            self.since = 0.0
+        self._m.release()
+        return False
+
+    def info(self) -> dict:
+        held = time.time() - self.since if self.since else 0.0
+        return {"owner": self.owner, "held_s": round(held, 2),
+                "last_wait_s": round(self.waited, 3)}
+
+
+_lock = _Mutex()
 _napcat_cache: dict = {"ts": 0.0, "data": None}
 BOT = None                     # BotService（main() 里启动）
 
@@ -1322,7 +1479,7 @@ def _apply_quote(text: str, quote) -> str:
 
 
 def _delta_sink(job: dict):
-    """把流式增量写进 _chat_state['running']['partial']，前端轮询就能边生成边看。
+    """把流式增量写进这一格运行状态的 partial，前端轮询就能边生成边看。
 
     节流 80ms：轮询本身 500ms 一次，写太勤只是白白抢锁。
     """
@@ -1334,9 +1491,9 @@ def _delta_sink(job: dict):
             return
         last[0] = now
         with _lock:
-            run = _chat_state.get("running")
-            if (isinstance(run, dict) and run.get("session") == job.get("session")
-                    and run.get("character") == job.get("character")):
+            run = _chat_runs.get((str(job.get("session") or ""),
+                                  str(job.get("character") or "")))
+            if isinstance(run, dict):
                 run["partial"] = str(text or "")[-2000:]
 
     return cb
@@ -1472,204 +1629,423 @@ def _build_backup() -> bytes:
     return buf.getvalue()
 
 
+# ---------- 模型用量（tokens / 耗时） ----------
+# 每次模型调用落一行 JSONL。**只记数，不记内容**：提示词里可能有私人东西，
+# 看板只需要「花了多少」，不需要知道「聊了什么」。
+USAGE_JSONL = STATE_DIR / "usage.jsonl"
+USAGE_KEEP = 20000          # 最多留这么多行，超了从头部裁掉
+_usage_lines = [0]
+
+
+def _usage_record(rec: dict) -> None:
+    try:
+        _append_jsonl(USAGE_JSONL, rec)
+    except Exception as e:                                       # noqa: BLE001
+        logger.info("用量记录失败：%s", e)
+        return
+    # 每 500 条检查一次文件大小，别每次都去 stat
+    _usage_lines[0] += 1
+    if _usage_lines[0] % 500 == 0:
+        try:
+            rows = USAGE_JSONL.read_text(encoding="utf-8", errors="replace").splitlines()
+            if len(rows) > USAGE_KEEP:
+                USAGE_JSONL.write_text("\n".join(rows[-USAGE_KEEP:]) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _usage_rows(days: int = 7) -> list[dict]:
+    rows = []
+    try:
+        with open(USAGE_JSONL, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+    except OSError:
+        return []
+    if days > 0:
+        floor = time.time() - days * 86400
+        rows = [r for r in rows if float(r.get("ts") or 0) >= floor]
+    return rows
+
+
+def _usage_summary(days: int = 7) -> dict:
+    rows = _usage_rows(days)
+    tot = {"requests": 0, "prompt": 0, "completion": 0, "total": 0, "ms": 0.0, "est": 0}
+    by_model: dict[str, dict] = {}
+    by_day: dict[str, dict] = {}
+    for r in rows:
+        p_tok = int(r.get("prompt_tokens") or 0)
+        c_tok = int(r.get("completion_tokens") or 0)
+        t_tok = int(r.get("total_tokens") or (p_tok + c_tok))
+        ms = float(r.get("ms") or 0)
+        tot["requests"] += 1
+        tot["prompt"] += p_tok
+        tot["completion"] += c_tok
+        tot["total"] += t_tok
+        tot["ms"] += ms
+        if r.get("est"):
+            tot["est"] += 1
+        key = f"{r.get('provider') or '?'}/{r.get('model') or '?'}"
+        m = by_model.setdefault(key, {"model": key, "requests": 0, "prompt": 0,
+                                      "completion": 0, "total": 0, "ms": 0.0})
+        m["requests"] += 1
+        m["prompt"] += p_tok
+        m["completion"] += c_tok
+        m["total"] += t_tok
+        m["ms"] += ms
+        day = time.strftime("%m-%d", time.localtime(float(r.get("ts") or 0)))
+        d = by_day.setdefault(day, {"date": day, "requests": 0, "total": 0})
+        d["requests"] += 1
+        d["total"] += t_tok
+    models = sorted(by_model.values(), key=lambda x: -x["total"])[:8]
+    series = sorted(by_day.values(), key=lambda x: x["date"])
+    return {"ok": True, "days": days, "rows": len(rows),
+            "totals": {**tot, "avg_ms": round(tot["ms"] / tot["requests"], 1) if tot["requests"] else 0},
+            "models": models, "daily": series,
+            "hint": "数字来自模型返回的 usage；网关不返回时按字符估算（标 est）"}
+
+
+# ---------- 定时任务（到点让她自己去做一件事） ----------
+# 和 `.提醒` 不是一回事：提醒是「到点对你说句话」，这里是「到点跑一轮 agent」，
+# 结果落进一段独立会话（面板能翻、能搜索），不打断主对话。
+SCHEDULED = STATE_DIR / "scheduled.json"
+SCHED_MAX = 20
+SCHED_SESSION_PREFIX = "sched-"
+
+
+def _sched_load() -> list[dict]:
+    try:
+        d = json.loads(SCHEDULED.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    items = d.get("items") if isinstance(d, dict) else d
+    return [it for it in (items or []) if isinstance(it, dict)]
+
+
+def _sched_save(items: list[dict]) -> None:
+    tmp = SCHEDULED.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(SCHEDULED)
+
+
+def _sched_view(it: dict) -> dict:
+    """给面板的一行：把 when 规则翻译成人话 + 算好下次时间（不写回文件）。"""
+    from bot import schedule as sched
+    spec = it.get("when") if isinstance(it.get("when"), dict) else {}
+    out = dict(it)
+    out["when_text"] = sched.describe(spec) if spec else "—"
+    out["next_text"] = sched.next_text(spec) if spec else "—"
+    try:
+        out["next_at"] = sched.next_due(spec) if spec else 0
+    except (TypeError, ValueError):
+        out["next_at"] = 0
+    return out
+
+
+def _sched_run(it: dict, *, manual: bool = False) -> str:
+    """真正跑一次：把 prompt 当成「你说的话」排进队列，走完整 agent 链路。
+
+    返回会话名。抛 ValueError 表示这条任务不可执行。
+    """
+    from bot import schedule as sched
+    prompt = str(it.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("任务没有内容")
+    cid = str(it.get("character") or "").strip().lower() or _active_cid()
+    if _char_store().get(cid) is None:
+        cid = _active_cid()
+    target = str(it.get("target") or "own")
+    session = "studio-main" if target == "main" else f"{SCHED_SESSION_PREFIX}{int(it.get('id') or 0)}"
+    if target != "main":
+        # 会话名给个可读标签，面板下拉里一眼认得出是哪条任务
+        meta = _session_meta()
+        meta.setdefault("labels", {})[session] = f"⏰ {str(it.get('name') or '定时任务')[:24]}"
+        _save_session_meta(meta)
+    ts = time.time()
+    eid = f"{ts:.6f}-{os.urandom(4).hex()}"
+    _append_jsonl(CHAT_JSONL, {"id": eid, "ts": ts, "session": session, "character": cid,
+                               "role": "user", "text": prompt[:4000],
+                               "scheduled": str(it.get("name") or "")[:40],
+                               **({"manual": True} if manual else {})})
+    _append_jsonl(MSG_JSONL, {"ts": ts, "chat_id": "web:" + session,
+                              "role": "user", "text": prompt[:800]})
+    _chat_q.put({"session": session, "text": prompt[:4000], "character": cid, "eid": eid,
+                 "in_imgs": [], "agent": False, "quote": None,
+                 "reasoning": str(it.get("reasoning") or "default")[:16]})
+    return session
+
+
+def _sched_tick(now: float | None = None) -> list[str]:
+    """检查一遍到期项；返回这次触发了哪些任务名（测试直接调它）。"""
+    from bot import schedule as sched
+    now = time.time() if now is None else now
+    items = _sched_load()
+    if not items:
+        return []
+    fired: list[str] = []
+    changed = False
+    for it in items:
+        if not it.get("enabled", True):
+            continue
+        spec = it.get("when") if isinstance(it.get("when"), dict) else {}
+        if not spec:
+            continue
+        try:
+            due = float(it.get("next_at") or 0)
+        except (TypeError, ValueError):
+            due = 0.0
+        if not due:                      # 老任务/手改坏了：补一个下次时间，不炸
+            it["next_at"] = sched.next_due(spec, now)
+            changed = True
+            continue
+        if due > now:
+            continue
+        try:
+            _sched_run(it)
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning("定时任务「%s」跑不起来：%s", it.get("name"), e)
+            it["last_error"] = f"{type(e).__name__}: {e}"[:200]
+        else:
+            fired.append(str(it.get("name") or it.get("id")))
+            it["last_error"] = ""
+            it["runs"] = int(it.get("runs") or 0) + 1
+        it["last_ts"] = now
+        it["next_at"] = sched.next_due(spec, now)     # 不管成没成都往后排，别卡死循环
+        changed = True
+    if changed:
+        _sched_save(items)
+    return fired
+
+
+def _sched_loop() -> None:
+    while True:
+        try:
+            names = _sched_tick()
+            if names:
+                logger.info("定时任务触发：%s", "、".join(names))
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning("定时任务调度出错：%s", e)
+        time.sleep(20)
+
+
 # ---------- 对话：队列 + worker ----------
-def _chat_worker() -> None:
+def _run_job(job: dict) -> None:
+    """跑一个对话作业：**外壳只负责「开一格运行状态 / 关一格」**。
+
+    为什么要这层壳：本体里有十来处提前 return（插件命中、纯图、看图失败…），
+    以前只要有一处忘了收尾，「正在生成」就永远挂在那儿 —— 面板显示她一直在想，
+    regen/删除/编辑全被 409 挡住。现在不管从哪条路出去，finally 都会收尾。
+    """
+    cid = str(job.get("character") or _active_cid())
+    job["character"] = cid              # 下面 _delta_sink 要拿它比对
+    _run_begin(job, cid)
+    try:
+        _run_job_body(job, cid)
+    finally:
+        _run_end(job, cid)
+
+
+def _run_job_body(job: dict, cid: str) -> None:
+    """真正的处理流程（从原 `_chat_worker` 里搬出来的，逻辑没变）。"""
+    t0 = time.time()
+    ok, text, err = True, "", None
+    try:
+        if BOT is None:
+            raise RuntimeError(_BOT_IMPORT_ERR or "面板 Bot 没跑起来")
+        rt = BOT.runtime
+
+        # ---- 网页端也走插件层：命令 / 钩子 / NLU 与 QQ 同一套 ----
+        # 以前网页聊天只会「纯聊天」，.祈愿 这类命令在面板里永远不命中。
+        raw = str(job.get("text") or "")
+        if rt is not None:
+            web_reply = _web_plugin_dispatch(rt, job, raw, cid)
+            if web_reply is not None:
+                imgs = job.get("images") or []
+                if imgs:
+                    # **只出图不出字**的命令（.运势 / .塔罗 / .角色卡）走这里。
+                    # 以前「没文字就当被静默拦下」直接 continue，图跟着一起没了。
+                    _append_images(job, cid)
+                if imgs and not str(web_reply or "").strip():
+                    # 图已经落好了，别再写一条空文本行 ——
+                    # 前端 `m.text || "(没接上话…)"` 会在图片下面多出一句
+                    # 「没接上话，再试一次？」。
+                    return
+                if _plugin_silent(web_reply, job):
+                    # 被钩子静默拦下（例如冷却期内）：不回复，也不该进模型
+                    return
+                _append_jsonl(MSG_JSONL, {"ts": time.time(),
+                                          "chat_id": "web:" + job["session"],
+                                          "role": "assistant", "text": str(web_reply)[:800]})
+                _append_jsonl(CHAT_JSONL, {
+                    "ts": time.time(), "session": job["session"], "character": cid,
+                    "role": "assistant", "text": str(web_reply),
+                    "elapsed": round(time.time() - t0, 1),
+                    "via": "plugin",
+                })
+                return
+
+        reasoning = str(job.get("reasoning") or "default")
+        dtxt = job.get("dispatch_text") or job["text"]   # 入站钩子可能改写过的文本
+        dtxt = _apply_quote(dtxt, job.get("quote"))
+        # ---- 用户发来的图：先看图，再把描述并进这一轮的文本 ----
+        # QQ 侧一直是这么做的（runtime._prepare_images），面板以前只能打字。
+        in_imgs = [r for r in (job.get("in_imgs") or []) if r][:3]
+        if in_imgs:
+            from bot import vision as _vision
+            cname = (_char_store().get(cid) or {}).get("name") or cid
+            if not _vision.configured(BOT.models):
+                text = ("这边没装「看图模型」，图片我收下了但看不懂…"
+                        "（自定义 → 看图模型，配一个就行）")
+                _append_jsonl(CHAT_JSONL, {
+                    "ts": time.time(), "session": job["session"], "character": cid,
+                    "role": "assistant", "text": text, "via": "vision",
+                    "elapsed": round(time.time() - t0, 1)})
+                return
+            notes = []
+            for ref in in_imgs:
+                fp = _upload_file(ref)
+                if fp is None:
+                    notes.append("[图片：找不到这个文件]")
+                    continue
+                try:
+                    raw = fp.read_bytes()
+                    desc = _vision.describe(
+                        BOT.models, raw, text=dtxt or "",
+                        name=cname, timeout=min(60.0, float(CHAT_TIMEOUT)))
+                except _vision.VisionUnavailable:
+                    notes.append("[图片：看图模型不可用]")
+                    continue
+                except Exception as e:                       # noqa: BLE001
+                    logger.info("看图失败：%s", e)
+                    notes.append("[图片：没看懂（可能是格式或网络问题）]")
+                    continue
+                notes.append(f"[图片内容: {desc}]")
+            if notes:
+                # 图片描述作为「用户这一轮说的话」交给模型，它才知道要评论什么
+                dtxt = (dtxt + "\n" if dtxt.strip() else "") + "\n".join(notes)
+        # 面板本身就是半个 agent：网页聊天默认就走工具循环，
+        # 不再读 job["agent"]（前端也已经没有那个开关了）。
+        use_agent = rt is not None
+        on_delta = _delta_sink(job)     # 流式增量（前端轮询里显示）
+        try:
+            sys_text = _web_system_text(rt, cid, dtxt, str(job.get("session") or ""))
+        except Exception as e:                               # noqa: BLE001
+            # 技能目录只是锦上添花：拼不出来也要能聊天
+            logger.warning("系统提示拼装失败，退回只有人格：%s", e)
+            sys_text = _persona_text(cid)
+        msgs = [{"role": "system", "content": sys_text}]
+        kb_ctx = _kb_context(dtxt, cid)
+        if kb_ctx:
+            msgs.append({"role": "system", "content": "【相关背景资料】\n" + kb_ctx})
+        hist = [e for e in _read_jsonl(CHAT_JSONL)
+                if e.get("session") == job["session"] and e.get("text")
+                and str(e.get("character") or "klee") == cid][-12:]
+        # 当前这轮已在入队时落盘：按入队时生成的 entry id 精确移除。
+        # （以前按文本从后往前找，连发两条相同消息时会删错别人的那条）
+        eid = job.get("eid")
+        if eid:
+            hist = [e for e in hist if e.get("id") != eid]
+        else:
+            for i in range(len(hist) - 1, -1, -1):
+                if hist[i].get("role") == "user" and str(hist[i].get("text")) == job["text"]:
+                    hist.pop(i)
+                    break
+        for e in hist:
+            if e.get("role") in ("user", "assistant"):
+                msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
+        msgs.append({"role": "user", "content": dtxt})
+
+        # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
+        if use_agent:
+            try:
+                res = _web_agent_call(rt, msgs, cid, reasoning, on_delta=on_delta,
+                                      session=str(job.get("session") or ""))
+                # 技能生成的图片（ctx.images_out）在这里并进 job
+                _merge_agent_images(job, res)
+                reply_agent = str(res.get("text") or "").strip()
+                if not reply_agent and job.get("images"):
+                    # 技能执行成功了、图也生成了，但收尾那句人话没拿到：
+                    # 图先落盘，别让整批丢掉。
+                    _append_images(job, cid)
+                if reply_agent:
+                    text = reply_agent
+                    tool_calls = len(res.get("tool_calls") or [])
+                    _append_jsonl(MSG_JSONL, {"ts": time.time(),
+                                              "chat_id": "web:" + job["session"],
+                                              "role": "assistant", "text": text[:800]})
+                    _append_jsonl(CHAT_JSONL, {
+                        "ts": time.time(), "session": job["session"], "character": cid,
+                        "role": "assistant", "text": text,
+                        "elapsed": round(time.time() - t0, 1),
+                        "tools": tool_calls, "via": "agent",
+                    })
+                    _append_images(job, cid)
+                    return
+            except Exception as e:                             # noqa: BLE001
+                logger.warning("网页 agent 失败，回退普通聊天: %s", e)
+                # 抛出前技能可能已经出图了（res 未赋值，拿不到 images_out，
+                # 但 dispatch 那条路径可能已经填过 job["images"]）
+                if job.get("images"):
+                    _append_images(job, cid)
+                    job["images"] = []
+
+        kw = {}
+        if reasoning and reasoning != "default":
+            # 推理强度：映射到常见参数；不认识的原样透传
+            kw["reasoning_effort"] = reasoning
+        try:
+            text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
+                                   stream=True, on_delta=on_delta, **kw)
+        except TypeError:
+            # 模型层不认 reasoning_effort（或者不认 stream）就别带它们
+            try:
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
+                                       stream=True, on_delta=on_delta)
+            except TypeError:
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
+        _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + job["session"],
+                                  "role": "assistant", "text": text[:800]})
+    except Exception as e:                                 # noqa: BLE001
+        ok, err = False, f"{type(e).__name__}: {e}"[:300]
+    try:
+        _append_jsonl(CHAT_JSONL, {
+            "ts": time.time(), "session": job["session"], "character": cid,
+            "role": "assistant", "text": text if ok else "", "error": err,
+            "elapsed": round(time.time() - t0, 1),
+        })
+    except Exception as e:                                 # noqa: BLE001
+        logger.error("写 chat.jsonl 失败（worker 继续跑）：%s", e)
+
+
+def _chat_worker(name: str = "chat-worker") -> None:
     while True:
         job = _chat_q.get()
         if job is None:
             return
-        cid = str(job.get("character") or _active_cid())
-        job["character"] = cid              # 下面 _delta_sink 要拿它比对
-        with _lock:
-            # character 必须带上：`studio-main` 这个会话名是所有角色共用的，
-            # 只按 session 过滤会让 A 角色生成时 B 角色的窗口也冒出流式气泡。
-            _chat_state["running"] = {"session": job["session"], "character": cid,
-                                      "text": job["text"],
-                                      "started": time.time(), "partial": ""}
-        t0 = time.time()
-        ok, text, err = True, "", None
         try:
-            if BOT is None:
-                raise RuntimeError(_BOT_IMPORT_ERR or "面板 Bot 没跑起来")
-            rt = BOT.runtime
-
-            # ---- 网页端也走插件层：命令 / 钩子 / NLU 与 QQ 同一套 ----
-            # 以前网页聊天只会「纯聊天」，.祈愿 这类命令在面板里永远不命中。
-            raw = str(job.get("text") or "")
-            if rt is not None:
-                web_reply = _web_plugin_dispatch(rt, job, raw, cid)
-                if web_reply is not None:
-                    imgs = job.get("images") or []
-                    if imgs:
-                        # **只出图不出字**的命令（.运势 / .塔罗 / .角色卡）走这里。
-                        # 以前「没文字就当被静默拦下」直接 continue，图跟着一起没了。
-                        _append_images(job, cid)
-                    if imgs and not str(web_reply or "").strip():
-                        # 图已经落好了，别再写一条空文本行 ——
-                        # 前端 `m.text || "(没接上话…)"` 会在图片下面多出一句
-                        # 「没接上话，再试一次？」。
-                        with _lock:
-                            _chat_state["running"] = None
-                        continue
-                    if _plugin_silent(web_reply, job):
-                        # 被钩子静默拦下（例如冷却期内）：不回复，也不该进模型
-                        with _lock:
-                            _chat_state["running"] = None
-                        continue
-                    _append_jsonl(MSG_JSONL, {"ts": time.time(),
-                                              "chat_id": "web:" + job["session"],
-                                              "role": "assistant", "text": str(web_reply)[:800]})
-                    _append_jsonl(CHAT_JSONL, {
-                        "ts": time.time(), "session": job["session"], "character": cid,
-                        "role": "assistant", "text": str(web_reply),
-                        "elapsed": round(time.time() - t0, 1),
-                        "via": "plugin",
-                    })
-                    with _lock:
-                        _chat_state["running"] = None
-                    continue
-
-            reasoning = str(job.get("reasoning") or "default")
-            dtxt = job.get("dispatch_text") or job["text"]   # 入站钩子可能改写过的文本
-            dtxt = _apply_quote(dtxt, job.get("quote"))
-            # ---- 用户发来的图：先看图，再把描述并进这一轮的文本 ----
-            # QQ 侧一直是这么做的（runtime._prepare_images），面板以前只能打字。
-            in_imgs = [r for r in (job.get("in_imgs") or []) if r][:3]
-            if in_imgs:
-                from bot import vision as _vision
-                cname = (_char_store().get(cid) or {}).get("name") or cid
-                if not _vision.configured(BOT.models):
-                    text = ("这边没装「看图模型」，图片我收下了但看不懂…"
-                            "（自定义 → 看图模型，配一个就行）")
-                    with _lock:
-                        _chat_state["running"] = None
-                    _append_jsonl(CHAT_JSONL, {
-                        "ts": time.time(), "session": job["session"], "character": cid,
-                        "role": "assistant", "text": text, "via": "vision",
-                        "elapsed": round(time.time() - t0, 1)})
-                    continue
-                notes = []
-                for ref in in_imgs:
-                    fp = _upload_file(ref)
-                    if fp is None:
-                        notes.append("[图片：找不到这个文件]")
-                        continue
-                    try:
-                        raw = fp.read_bytes()
-                        desc = _vision.describe(
-                            BOT.models, raw, text=dtxt or "",
-                            name=cname, timeout=min(60.0, float(CHAT_TIMEOUT)))
-                    except _vision.VisionUnavailable:
-                        notes.append("[图片：看图模型不可用]")
-                        continue
-                    except Exception as e:                       # noqa: BLE001
-                        logger.info("看图失败：%s", e)
-                        notes.append("[图片：没看懂（可能是格式或网络问题）]")
-                        continue
-                    notes.append(f"[图片内容: {desc}]")
-                if notes:
-                    # 图片描述作为「用户这一轮说的话」交给模型，它才知道要评论什么
-                    dtxt = (dtxt + "\n" if dtxt.strip() else "") + "\n".join(notes)
-            # 面板本身就是半个 agent：网页聊天默认就走工具循环，
-            # 不再读 job["agent"]（前端也已经没有那个开关了）。
-            use_agent = rt is not None
-            on_delta = _delta_sink(job)     # 流式增量（前端轮询里显示）
-            try:
-                sys_text = _web_system_text(rt, cid, dtxt, str(job.get("session") or ""))
-            except Exception as e:                               # noqa: BLE001
-                # 技能目录只是锦上添花：拼不出来也要能聊天
-                logger.warning("系统提示拼装失败，退回只有人格：%s", e)
-                sys_text = _persona_text(cid)
-            msgs = [{"role": "system", "content": sys_text}]
-            kb_ctx = _kb_context(dtxt, cid)
-            if kb_ctx:
-                msgs.append({"role": "system", "content": "【相关背景资料】\n" + kb_ctx})
-            hist = [e for e in _read_jsonl(CHAT_JSONL)
-                    if e.get("session") == job["session"] and e.get("text")
-                    and str(e.get("character") or "klee") == cid][-12:]
-            # 当前这轮已在入队时落盘：按入队时生成的 entry id 精确移除。
-            # （以前按文本从后往前找，连发两条相同消息时会删错别人的那条）
-            eid = job.get("eid")
-            if eid:
-                hist = [e for e in hist if e.get("id") != eid]
-            else:
-                for i in range(len(hist) - 1, -1, -1):
-                    if hist[i].get("role") == "user" and str(hist[i].get("text")) == job["text"]:
-                        hist.pop(i)
-                        break
-            for e in hist:
-                if e.get("role") in ("user", "assistant"):
-                    msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
-            msgs.append({"role": "user", "content": dtxt})
-
-            # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
-            if use_agent:
-                try:
-                    res = _web_agent_call(rt, msgs, cid, reasoning, on_delta=on_delta,
-                                          session=str(job.get("session") or ""))
-                    # 技能生成的图片（ctx.images_out）在这里并进 job
-                    _merge_agent_images(job, res)
-                    reply_agent = str(res.get("text") or "").strip()
-                    if not reply_agent and job.get("images"):
-                        # 技能执行成功了、图也生成了，但收尾那句人话没拿到：
-                        # 图先落盘，别让整批丢掉。
-                        _append_images(job, cid)
-                    if reply_agent:
-                        text = reply_agent
-                        tool_calls = len(res.get("tool_calls") or [])
-                        _append_jsonl(MSG_JSONL, {"ts": time.time(),
-                                                  "chat_id": "web:" + job["session"],
-                                                  "role": "assistant", "text": text[:800]})
-                        _append_jsonl(CHAT_JSONL, {
-                            "ts": time.time(), "session": job["session"], "character": cid,
-                            "role": "assistant", "text": text,
-                            "elapsed": round(time.time() - t0, 1),
-                            "tools": tool_calls, "via": "agent",
-                        })
-                        _append_images(job, cid)
-                        with _lock:
-                            _chat_state["running"] = None
-                        continue
-                except Exception as e:                             # noqa: BLE001
-                    logger.warning("网页 agent 失败，回退普通聊天: %s", e)
-                    # 抛出前技能可能已经出图了（res 未赋值，拿不到 images_out，
-                    # 但 dispatch 那条路径可能已经填过 job["images"]）
-                    if job.get("images"):
-                        _append_images(job, cid)
-                        job["images"] = []
-
-            kw = {}
-            if reasoning and reasoning != "default":
-                # 推理强度：映射到常见参数；不认识的原样透传
-                kw["reasoning_effort"] = reasoning
-            try:
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
-                                       stream=True, on_delta=on_delta, **kw)
-            except TypeError:
-                # 模型层不认 reasoning_effort（或者不认 stream）就别带它们
-                try:
-                    text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
-                                           stream=True, on_delta=on_delta)
-                except TypeError:
-                    text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
-            _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + job["session"],
-                                      "role": "assistant", "text": text[:800]})
-        except Exception as e:                                 # noqa: BLE001
-            ok, err = False, f"{type(e).__name__}: {e}"[:300]
-        try:
-            _append_jsonl(CHAT_JSONL, {
-                "ts": time.time(), "session": job["session"], "character": cid,
-                "role": "assistant", "text": text if ok else "", "error": err,
-                "elapsed": round(time.time() - t0, 1),
-            })
-        except Exception as e:                                 # noqa: BLE001
-            logger.error("写 chat.jsonl 失败（worker 继续跑）：%s", e)
+            _run_job(job)
+        except Exception as e:                                    # noqa: BLE001
+            logger.exception("%s 跑作业时炸了：%s", name, e)
         finally:
-            with _lock:
-                _chat_state["running"] = None
+            _chat_q.done(job)          # 让这个会话重新可调度
 
 
-threading.Thread(target=_chat_worker, daemon=True).start()
+def _start_workers() -> None:
+    """起 worker 池。**放在 main() 里**：import server 不该顺手开 3 个线程 ——
+    测试里 import 一下就把队列抽干，看起来像「任务凭空消失」。
+    """
+    for i in range(CHAT_WORKERS):
+        threading.Thread(target=_chat_worker, kwargs={"name": f"chat-worker-{i + 1}"},
+                         daemon=True, name=f"chat-worker-{i + 1}").start()
+
 
 
 # ---------- 人格 ----------
@@ -3132,14 +3508,13 @@ def _overview_uncached() -> dict:
                "features": bst.get("feature_list") or []}
     nap = _napcat_status_cached()
     qlen = _chat_q.qsize()
-    with _lock:
-        running = _chat_state["running"]
+    runs = _run_all()                    # 并发之后可能同时有好几段在跑
     return {"gateway": {"active": bool(bst.get("ok")), "state": "panel-bot",
                         "restarts": "0", "since": ""},
             "adapter": adapter, "napcat": nap,
             "alerts": read_alerts(5),
             "health": qq_health(),
-            "chat": {"queue": qlen, "running": running},
+            "chat": {"queue": qlen, "running": (runs[0] if runs else None), "runs": runs},
             "bot": bst}
 
 
@@ -3330,7 +3705,7 @@ _SENSITIVE_GET = frozenset({
     "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
-    "/api/memories",
+    "/api/memories", "/api/scheduled", "/api/usage",
 })
 
 
@@ -3509,16 +3884,10 @@ class Handler(BaseHTTPRequestHandler):
             entries = [e for e in _read_jsonl(CHAT_JSONL)
                        if e.get("session") == session
                        and str(e.get("character") or "klee") == cid]
-            with _lock:
-                running = _chat_state["running"]
             self._json({"session": session, "character": cid, "after": after,
                         "total": len(entries), "messages": entries[after:],
                         "queue": _chat_q.qsize(),
-                        # 旧版本写进去的 running 没有 character 字段，缺省当 klee
-                        # （不然升级那一刻正在跑的任务会突然从面板上消失）
-                        "running": running if (running and running["session"] == session
-                                               and str(running.get("character")
-                                                       or _active_cid()) == cid) else None})
+                        "running": _run_get(session, cid)})
             return
         if u.path == "/api/backup":
             try:
@@ -3788,6 +4157,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/config":
             self._json(_read_config_keys())
+            return
+        if u.path == "/api/lock":
+            self._json({"ok": True, "lock": _lock.info(), "queue": _chat_q.qsize(),
+                        "busy": _chat_q.busy(), "runs": _run_all()})
+            return
+        if u.path == "/api/usage":
+            self._json(_usage_summary(_int_param(q, "days", 7, lo=0, hi=365)))
+            return
+        if u.path == "/api/scheduled":
+            from bot import schedule as sched
+            items = [_sched_view(it) for it in _sched_load()]
+            items.sort(key=lambda x: (not x.get("enabled", True), x.get("next_at") or 0))
+            self._json({"ok": True, "items": items, "count": len(items),
+                        "max": SCHED_MAX,
+                        "characters": [{"id": c.get("id"), "name": c.get("name"),
+                                        "emoji": c.get("emoji")}
+                                       for c in (_char_store().list() or [])],
+                        "hint": "写法：每天8:00 / 每周一 9:00 / 每2h"})
             return
         if u.path == "/api/reminders":
             self._json(_reminders())
@@ -4284,10 +4671,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # 正在生成时不许重跑：否则「最后那条用户消息」可能正是在跑的那条，
             # 会再排一个同样的任务，界面上一条提问配两条回复。
-            with _lock:
-                run = _chat_state["running"]
-            if run and run.get("session") == session and \
-                    str(run.get("character") or _active_cid()) == cid:
+            if _run_get(session, cid):
                 self._json({"ok": False, "error": "这条还在生成，等它说完再重新生成"}, 409)
                 return
             cut = float(last_user.get("ts") or 0)
@@ -4307,6 +4691,67 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "queued": True, "removed": removed})
             return
 
+        if u.path in ("/api/scheduled/add", "/api/scheduled/delete",
+                      "/api/scheduled/toggle", "/api/scheduled/run"):
+            from bot import schedule as sched
+            items = _sched_load()
+            if u.path == "/api/scheduled/add":
+                name = str(body.get("name") or "").strip()[:40]
+                prompt = str(body.get("prompt") or "").strip()[:2000]
+                when_raw = str(body.get("when") or "").strip()
+                spec = sched.parse_when(when_raw)
+                if not spec:
+                    self._json({"ok": False,
+                                "error": f"看不懂这个时间：「{when_raw}」～试试 每天8:00 / 每周一 9:00 / 每2h"},
+                               400)
+                    return
+                if not prompt:
+                    self._json({"ok": False, "error": "得写清楚要她做什么"}, 400)
+                    return
+                if len(items) >= SCHED_MAX:
+                    self._json({"ok": False, "error": f"最多 {SCHED_MAX} 条定时任务"}, 400)
+                    return
+                cid = str(body.get("character") or "").strip().lower() or _active_cid()
+                nid = max((int(it.get("id") or 0) for it in items), default=0) + 1
+                item = {"id": nid, "name": name or f"任务 {nid}", "prompt": prompt,
+                        "when": spec, "character": cid,
+                        "target": "main" if str(body.get("target") or "") == "main" else "own",
+                        "enabled": True, "runs": 0, "last_ts": 0,
+                        "next_at": sched.next_due(spec), "last_error": ""}
+                items.append(item)
+                _sched_save(items)
+                self._json({"ok": True, "item": _sched_view(item), "items": [_sched_view(x) for x in items]})
+                return
+            try:
+                tid = int(body.get("id"))
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "缺 id"}, 400)
+                return
+            row = next((it for it in items if int(it.get("id") or 0) == tid), None)
+            if row is None:
+                self._json({"ok": False, "error": "没有这条任务"}, 404)
+                return
+            if u.path == "/api/scheduled/delete":
+                _sched_save([it for it in items if int(it.get("id") or 0) != tid])
+                self._json({"ok": True, "deleted": tid})
+                return
+            if u.path == "/api/scheduled/toggle":
+                row["enabled"] = not bool(row.get("enabled", True))
+                spec = row.get("when") if isinstance(row.get("when"), dict) else {}
+                if row["enabled"] and spec:
+                    row["next_at"] = sched.next_due(spec)      # 重新打开：从现在起算
+                _sched_save(items)
+                self._json({"ok": True, "item": _sched_view(row)})
+                return
+            # run：立即跑一次，但**不动 next_at**（手动跑不该打乱它的节奏）
+            try:
+                session = _sched_run(row, manual=True)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            self._json({"ok": True, "session": session, "queued": True})
+            return
+
         if u.path == "/api/chat/edit":
             # 改一句自己说过的话，然后从那里重来：这条之后的回复全部作废。
             # 和「删除 + 重新发送」的区别是：提问被替换掉，不会在历史里留两份。
@@ -4321,10 +4766,7 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._json({"ok": False, "error": "ts 不合法"}, 400)
                 return
-            with _lock:
-                run = _chat_state["running"]
-            if run and run.get("session") == session and \
-                    str(run.get("character") or _active_cid()) == cid:
+            if _run_get(session, cid):
                 self._json({"ok": False, "error": "这条还在生成，等它说完再改"}, 409)
                 return
             target = None
@@ -4405,9 +4847,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/chat/delete":
             session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48] or "studio-main"
             cid = str(body.get("character") or "").strip().lower() or _active_cid()
-            with _lock:
-                run = _chat_state["running"]
-            if run and run.get("session") == session:
+            if _run_get(session):
                 self._json({"ok": False, "error": "这个会话正在生成，等它说完再删"}, 409)
                 return
             removed, left = _chat_drop_session(session, cid)
@@ -4735,6 +5175,14 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
+    # 卡住时能自证：`kill -USR1 <pid>` 会把所有线程的栈打到 journal 里。
+    # （这次并发改造就是靠它发现锁顺序问题的，留着以后排查）
+    try:
+        import faulthandler
+        import signal as _sig
+        faulthandler.register(_sig.SIGUSR1, all_threads=True)
+    except Exception:                                            # noqa: BLE001
+        pass
     global BOT
     if BotService is not None:
         BOT = BotService(STUDIO_HOME)
@@ -4746,6 +5194,13 @@ def main():
     _index_boot()          # 后台把历史补进 SQLite（第一次约 9 秒，不挡启动）
     _warm_caches()         # 预热面板首屏那几个接口，别让第一次打开撞冷计算
     threading.Thread(target=_log_janitor, daemon=True, name="log-janitor").start()
+    _start_workers()
+    threading.Thread(target=_sched_loop, daemon=True, name="sched-loop").start()
+    try:
+        from bot import llm as _llm
+        _llm.set_usage_hook(_usage_record)      # 每次模型调用都记一笔（失败不影响对话）
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[klee-studio] 用量钩子挂不上：{e}", flush=True)
     srv = Server((BIND, PORT), Handler)
     print(f"[klee-studio] http://{BIND}:{PORT}/  (STUDIO_HOME={STUDIO_HOME})", flush=True)
     print(f"[klee-studio] QQ 掉线巡检：每 {ALERT_POLL_S:g}s 一次，连续掉线 ≥{OFFLINE_ALERT_S:g}s 落一条告警 "

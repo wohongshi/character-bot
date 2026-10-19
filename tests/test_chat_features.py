@@ -198,9 +198,14 @@ def _wait_idle(sess: str, char: str, timeout: float = 60.0) -> None:
     end = time.time() + timeout
     while time.time() < end:
         st, d = get(f"/api/chat?session={sess}&character={char}")
-        if not d.get("running"):
-            return
-        time.sleep(1.5)
+        # 光看 running 不够：作业可能还在队列里排着（并发之后更明显），
+        # 那时 running 是空的，但下一轮就会开始跑 → regen 立刻撞 409。
+        if not d.get("running") and not d.get("queue"):
+            time.sleep(0.3)
+            st2, d2 = get(f"/api/chat?session={sess}&character={char}")
+            if not d2.get("running") and not d2.get("queue"):
+                return
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
