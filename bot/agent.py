@@ -116,6 +116,19 @@ def _parse_tool_markup(text: str) -> list[dict]:
     return out
 
 
+def _markup_is_answer(residue: str) -> bool:
+    """去掉调用块之后，剩下的那段是「解释文字」还是「一句话开场」？
+
+    用户问「tool_call 怎么写」时模型会举例，正文里就带着真的可执行块 ——
+    照执行等于把提问当命令跑，还把解释吞掉。
+    判据：有句末标点（。！？）说明是在说话；没有的多半是「好的，我查一下：」这类开场。
+    """
+    r = str(residue or "").strip()
+    if len(r) < 12:
+        return False                      # 太短：更像「好的，我查一下：」这类开场
+    return bool(re.search(r"[。！？!?]", r))   # 有句末标点 = 在说话，不是在调用
+
+
 def _looks_like_debris(text: str) -> bool:
     """正文只剩数字 / 链接 / 标点 —— 那是工具参数漏出来了，不能当回答。"""
     t = re.sub(r"https?://\S+", " ", str(text or ""))
@@ -123,11 +136,23 @@ def _looks_like_debris(text: str) -> bool:
     return len(t) < 2
 
 
+_RE_BLOCK_INVOKE = re.compile(
+    rf"<{_DSML}\s*invoke\b[^>]*>.*?</{_DSML}\s*invoke\s*>", re.S)
+_RE_BLOCK_CALL = re.compile(r"<tool_calls?\b[^>]*>.*?</tool_calls?>", re.S)
+
+
 def _strip_tool_markup(text: str) -> str:
-    """去掉模型误写进正文的工具调用标记（DeepSeek DSML / 常见 XML 形态）。"""
+    """去掉模型误写进正文的工具调用标记（DeepSeek DSML / 常见 XML 形态）。
+
+    先把**整块**（含块里的参数值）删掉再删散落的标签。
+    只删标签是不够的：`<parameter name="query">哥伦比娅</parameter>` 删掉标签后
+    会剩下「哥伦比娅」，于是一段纯调用会被看成「还有内容的正文」。
+    """
     t = str(text or "")
-    t = re.sub(r"</?\s*[｜|]{2}\s*DSML\s*[｜|]{2}[^>]*>", " ", t)
+    t = _RE_BLOCK_INVOKE.sub(" ", t)
+    t = _RE_BLOCK_CALL.sub(" ", t)
     t = re.sub(r"</?\s*(?:function_calls?|tool_calls?|tool_call)\b[^>]*>", " ", t)
+    t = re.sub(r"</?\s*[｜|]{2}\s*DSML\s*[｜|]{2}[^>]*>", " ", t)
     t = re.sub(r"<[｜|]{2}[^>]*>", " ", t)
     t = re.sub(r"[ \t]{2,}", " ", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
@@ -253,10 +278,15 @@ def tool_web_fetch(args: dict, ctx: ToolContext) -> str:
             ctype = str(r.headers.get("Content-Type") or "").lower()
             raw = r.read(3_000_000)
     except Exception as e:                                       # noqa: BLE001
-        if len(_FAILED_HOSTS) > 64:
-            _FAILED_HOSTS.clear()
-        _FAILED_HOSTS[host] = (time.time() + _FAILED_HOSTS_TTL, f"{type(e).__name__}: {e}")
-        return f"抓取失败：{type(e).__name__}: {e}"
+        reason = f"{type(e).__name__}: {e}"
+        # 只记「连不上」。HTTP 404/403/5xx 是**这一页**的问题，不是站点的问题 ——
+        # 把 404 也缓存 10 分钟，会让同一个 wiki 下其余 4 个链接全被拒，
+        # 模型拿到的理由还是「这个站点连不上」，纯属误导。
+        if not isinstance(e, urllib.error.HTTPError):
+            if len(_FAILED_HOSTS) > 64:
+                _FAILED_HOSTS.clear()
+            _FAILED_HOSTS[host] = (time.time() + _FAILED_HOSTS_TTL, reason)
+        return f"抓取失败：{reason}"
     charset = "utf-8"
     m = re.search(r"charset=([\w-]+)", ctype)
     if m:
@@ -666,11 +696,14 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
         nudge = {"role": "system",
                  "content": "时间到了。不要再调用任何工具，也不要输出调用标记或参数。"
                             "用一两句自然的口语直接回答用户，就像在手机上聊天。"}
+        left = deadline - time.monotonic()
+        if left <= 1.0:                      # 总预算已经用光：硬塞 5 秒等于让整条回复超时
+            return ""
         try:
             r = caller(msgs + [nudge], provider=provider or None, model=model or None,
                        tools=None, tool_choice="none", temperature=temperature,
                        max_tokens=max_tokens,
-                       timeout=min(60.0, max(5.0, deadline - time.monotonic())))
+                       timeout=min(60.0, max(2.0, left)))
         except Exception as e:                                   # noqa: BLE001
             log.info("收尾回答失败：%s", e)
             return ""
@@ -688,11 +721,17 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
         calls = res.get("tool_calls") or []
         if not calls and any(m in text for m in _MARKUP_MARKERS):
             parsed = _parse_tool_markup(text)
-            if parsed:
+            # 只有「正文里除了标记几乎没有别的内容」才当成调用。
+            # 用户问「DSML 标记怎么写」、或者模型引用搜索结果里的 <tool_call> 时，
+            # 正文是解释文字，标记只是例子 —— 照执行就等于把用户的问题当成命令跑。
+            residue = _strip_tool_markup(text)
+            if parsed and not _markup_is_answer(residue):
                 log.info("模型把工具调用写成了正文，解析出 %d 个调用（原来会被当正文回给用户）",
                          len(parsed))
                 calls = parsed
                 text = ""                       # 标记不是回答，别让它进历史
+            elif parsed:
+                log.info("正文里夹了工具标记但还有 %d 字解释，按普通文本处理", len(residue))
         if not calls:
             if any(m in text for m in _MARKUP_MARKERS):
                 cleaned = _strip_tool_markup(text)
@@ -716,10 +755,16 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
                                      "function": {"name": c["name"],
                                                   "arguments": c.get("arguments") or "{}"}}
                                     for c in calls]})
-        for c in calls:
+        for _i, c in enumerate(calls):
             left = deadline - time.monotonic()
             if left <= 0.5:
-                break                                   # 总超时：别再跑工具，交给外面收尾
+                # 总超时：别再跑工具，交给外面收尾。
+                # 但**必须**给剩下的调用补一条 tool 响应 —— 声明了 tool_calls
+                # 却没有对应的 tool 消息，下一次请求会被上游按格式错误拒掉。
+                for rest in calls[_i:]:
+                    msgs.append({"role": "tool", "tool_call_id": rest["id"],
+                                 "content": "（总时间用完了，这个工具没来得及执行）"})
+                break
             name = str(c.get("name") or "")
             args = _parse_args(c.get("arguments"))
             t0 = time.monotonic()

@@ -57,7 +57,7 @@ internal static class Program
         }
     }
 
-    private sealed record Entry(string Name, long Bytes, string Sha256);
+    private sealed record Entry(string Name, string FullName, long Bytes, string Sha256);
 
     private sealed class Report
     {
@@ -70,6 +70,15 @@ internal static class Program
         public string? CharacterId { get; set; }
         public List<string> Plugins { get; } = new();
         public string By => "csharp";
+    }
+
+    /// <summary>与 server.py::_zip_rel 同口径：`\`→`/`、丢弃空段与 `.` 段。</summary>
+    private static string Normalize(string raw)
+    {
+        var parts = raw.Replace('\\', '/').Split('/')
+            .Where(x => x.Length > 0 && x != ".")
+            .ToList();
+        return string.Join("/", parts);
     }
 
     /// <summary>与 server.py 相同的「单个顶层目录」归一化。</summary>
@@ -98,8 +107,10 @@ internal static class Program
                 r.Problems.Add($"条目太多（>{MaxEntries}）—— 可能是 zip 炸弹");
                 break;
             }
-            // 路径穿越：绝对路径、盘符、越界 ..
-            var name = e.FullName.Replace('\\', '/');
+            // 路径穿越：绝对路径、盘符、越界 ..（判的是原始名，别先归一化掉 ..）
+            var raw = e.FullName.Replace('\\', '/');
+            var name = Normalize(raw);
+            if (name.Length == 0) continue;          // 纯目录/`.` 条目
             if (name.StartsWith('/') || name.Contains(":") || name.Split('/').Any(s => s == ".."))
             {
                 r.Problems.Add($"路径穿越：{name}");
@@ -111,12 +122,12 @@ internal static class Program
             }
             total += e.Length;
             string hash = "";
-            if (!name.EndsWith('/'))     // 目录条目不算
+            if (!raw.EndsWith('/'))      // 目录条目不算
             {
                 using var s = e.Open();
                 using var sha = SHA256.Create();
                 hash = Convert.ToHexString(sha.ComputeHash(s)).ToLowerInvariant()[..16];
-                r.Files.Add(new Entry(name, e.Length, hash));
+                r.Files.Add(new Entry(name, e.FullName, e.Length, hash));
             }
         }
 
@@ -141,9 +152,11 @@ internal static class Program
             foreach (var f in r.Files)
             {
                 var rn = rel(f.Name);
-                if (rn is "plugin.json" or "README.md") continue;
-                if (rn.StartsWith('_')) continue;          // 共享模块：上面那条已经报过
+                // 子目录必须最先判：放在 plugin.json/README/_ 前缀的 continue 之后，
+                // `_shared/util.py` 会被「共享模块」那条静默跳过，安装器却会拒。
                 if (rn.Contains('/')) { r.Problems.Add($"插件文件不能放在子目录：{rn}"); continue; }
+                if (rn is "plugin.json" or "README.md") continue;
+                if (rn.StartsWith('_')) continue;          // 共享模块：不算插件，也不报
                 if (!rn.EndsWith(".py")) { r.Problems.Add($"插件包只能放 .py（发现 {rn}）"); continue; }
                 if (!PluginNameRe.IsMatch(rn))
                     r.Problems.Add($"文件名不合法：{rn}（小写字母开头，字母/数字/_）");
@@ -155,8 +168,15 @@ internal static class Program
         }
         else if (charJson is not null)
         {
-            var entry = zip.GetEntry(charJson.Name);
-            if (entry is not null)
+            // 必须用原始 FullName：归一化过的名字（反斜杠已换成 /）在 zip 里取不到。
+            var entry = zip.GetEntry(charJson.FullName) ?? zip.GetEntry(charJson.Name);
+            if (entry is null)
+            {
+                // 以前这里是静默跳过：能找到 character.json、却读不到，
+                // 于是 id/name 一条都不校验，报告还写 Ok=true。
+                r.Problems.Add("character.json 读不到（zip 条目名和归一化名对不上）");
+            }
+            else
             {
                 using var s = entry.Open();
                 using var reader = new StreamReader(s, Encoding.UTF8);
@@ -228,13 +248,19 @@ internal static class Program
                 // 2) 整包放在一个顶层目录里：安装器接受，这里也不能报错。
                 //    以前按原始路径判 == "character.json"，这种**合法**包会被报
                 //    「缺少 character.json」（server.py 会先剥掉前缀）。
-                ("wrap.zip", false, r => r.CharacterId == "demo"),
+                ("wrap.zip", false, r => r.CharacterId == "demo" && r.Problems.Count == 0),
                 // 3) 插件包：一个顶层目录 + plugin.json/README.md，安装器接受
-                ("plug-wrap.zip", true, r => !r.Problems.Any(x => x.Contains("只能放") || x.Contains("子目录"))),
+                ("plug-wrap.zip", true, r => r.Problems.Count == 0),
                 // 4) 插件包只有 README.md：安装器会拒（zip 里没有 .py）
                 ("plug-no-py.zip", true, r => r.Problems.Any(x => x.Contains("没有 .py"))),
                 // 5) 插件包混进 .txt：必须报
                 ("plug-txt.zip", true, r => r.Problems.Any(x => x.Contains("只能放 .py"))),
+                // 6) 混进子目录：安装器会拒，必须报（以前被 _ 前缀那条静默跳过）
+                ("plug-sub.zip", true, r => r.Problems.Any(x => x.Contains("子目录"))),
+                // 7) `zip -r x.zip .` 的产物（带 ./ 前缀）：安装器接受，不能误报
+                ("dot-prefix.zip", true, r => r.Problems.Count == 0),
+                // 8) 反斜杠路径的角色包：能读到 character.json，不能「假通过」
+                ("backslash.zip", false, r => r.CharacterId == "demo" && r.Problems.Count == 0),
             };
             var okAll = true;
             foreach (var c in cases)
@@ -255,8 +281,19 @@ internal static class Program
                         case "plug-no-py.zip":
                             Put(z, "README.md", "# nothing\n");
                             break;
+                        case "plug-sub.zip":
+                            Put(z, "top.py", "x = 1\n");
+                            Put(z, "_shared/util.py", "y = 2\n");   // 有 _ 前缀，但也在子目录里
+                            break;
+                        case "dot-prefix.zip":
+                            Put(z, "./demo.py", "x = 1\n");
+                            break;
+                        case "backslash.zip":
+                            Put(z, @"demo\character.json", "{\"id\":\"demo\",\"name\":\"演示\"}");
+                            Put(z, @"demo\SOUL.md", new string('人', 120));
+                            break;
                         default:
-                            Put(z, "a.py", "x = 1\n");
+                            Put(z, "demo.py", "x = 1\n");
                             Put(z, "notes.txt", "x");
                             break;
                     }

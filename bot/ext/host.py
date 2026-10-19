@@ -32,6 +32,15 @@ log = logging.getLogger("klee.ext")
 
 __all__ = ["ExtPlugin", "ExtError", "LANG_RUN"]
 
+#: JVM 的字符集必须钉死成 UTF-8。
+#: JDK 18 之前 file.encoding 跟平台 locale 走；即时在 JDK 25，**stdio 的编码**
+#: 仍然由 locale 决定。LANG=C 的机器（服务/嵌入式环境很常见）上：
+#:   · 读 stdin 的中文 → "???"（.similar 的查询直接变乱码）
+#:   · 写 stdout 的中文 → "???"（插件标题、错误信息全变问号）
+#: 而且两者都不报错。加这四个属性一次解决。
+JAVA_UTF8 = ["-Dfile.encoding=UTF-8", "-Dstdin.encoding=UTF-8",
+             "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8"]
+
 #: 语言 → 默认启动命令（entry 会接在后面）
 LANG_RUN = {
     "node": ["node"],
@@ -39,7 +48,7 @@ LANG_RUN = {
     "python": ["python3"],
     "php": ["php"],
     "ruby": ["ruby"],
-    "java": ["java", "-XX:+UseSerialGC", "-Xss256k", "-cp"],
+    "java": ["java", *JAVA_UTF8, "-XX:+UseSerialGC", "-Xss256k", "-cp"],
     "sh": ["sh"],
 }
 
@@ -89,7 +98,13 @@ class ExtPlugin:
         run = self.spec.get("run")
         launcher = [str(x) for x in run] if isinstance(run, list) and run else None
         if launcher:
-            # `run` 给了就照抄，`args` 里的参数原样追加（Java 要的是类名，不是路径）
+            # `run` 给了就照抄，`args` 里的参数原样追加（Java 要的是类名，不是路径）。
+            # 但 Java 的 UTF-8 属性是**正确性**要求，不是偏好：
+            # spec 没写就替它补上（写了就尊重 spec）。
+            if self.language == "java" and not any(
+                    str(x).startswith("-Dstdout.encoding") for x in launcher):
+                head = launcher[:1]
+                launcher = [*head, *JAVA_UTF8, *launcher[1:]]
             args = self.spec.get("args")
             self.cmd = [*launcher, *[str(a) for a in (args or [])]]
             if not self.cmd or not self.cmd[-1:]:

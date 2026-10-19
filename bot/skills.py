@@ -184,8 +184,12 @@ class SkillHub:
                 break
         return "\n".join(lines)
 
-    def _gram_index(self) -> list[tuple[dict, list, set[str]]]:
-        """[(skill, 允许前先不管, 全量 2-gram)]，按重载时间缓存。"""
+    def _gram_index(self) -> list[tuple[dict, str, set[str]]]:
+        """[(skill, 原始 blob, 2-gram 集合)]，按重载时间缓存。
+
+        blob 也要留着：查询只有**一个汉字**时（「骰」「画」「签」——中文里很常见），
+        2-gram 集合是空的，只能靠子串判，光有 gram 集合会一个都匹配不上。
+        """
         stamp = float(getattr(self.mgr, "last_reload_ts", 0.0) or 0.0)
         hit = self._gram_cache.get("all")
         if hit and hit[0] == stamp:
@@ -194,34 +198,45 @@ class SkillHub:
         for s in self.skills():
             blob = " ".join([s["name"], s["title"], s["description"]]
                             + [c["name"] + " " + str(c["help"] or "") for c in s["commands"]])
-            out.append((s, self._grams(blob)))
+            out.append((s, blob.lower(), self._grams(blob)))
         self._gram_cache["all"] = (stamp, out)
         return out
 
     # ---------- 检索 ----------
     def search(self, query: str, *, is_owner: bool = False, is_admin: bool = False,
                is_group: bool = False, limit: int = 12,
-               min_score: float = 0.25) -> list[tuple[float, dict, list]]:
+               min_score: float = 0.12) -> list[tuple[float, dict, list]]:
         """按 2-gram 重合度给技能打分（**不是**子串匹配）。
 
         子串匹配的死法：用户说「今天运势」，技能叫「今日运势」，`"今天运势" in blob`
         直接为假 —— 于是模型拿到「没有匹配的技能」，断定自己做不到。
+        单字查询（「骰」）没有 2-gram，退回子串判。
         """
-        qg = self._grams(query)
+        q = re.sub(r"\s+", "", str(query or "")).lower()
+        qg = self._grams(q)
         if not qg:
             return []
+        short = len(q) < 2
         scored = []
-        for s, gr in self._gram_index():
+        for s, blob, gr in self._gram_index():
             cmds = [c for c in s["commands"]
                     if _allowed(c, is_owner=is_owner, is_admin=is_admin, is_group=is_group)]
             if not cmds:
                 continue
-            hit = len(qg & gr)
-            score = hit / max(1, len(qg))
-            # 门槛不能省：长句里蒙上一个 2-gram 就有分，不设下限时
-            # 「完全不存在的关键词zzz」也能匹到歇后语，反而误导模型。
-            if score >= min_score:
-                scored.append((score, s, cmds))
+            if short:
+                if q not in blob:
+                    continue
+                score = 1.0
+            else:
+                hit = len(qg & gr)
+                score = hit / max(1, len(qg))
+                # 门槛不能省：不设下限时「完全不存在的关键词zzz」也能蒙到歇后语。
+                # 但也不能只看比例：长查询「今天运势怎么样」和「今日运势」只共享
+                # 「运势」一个 2-gram（1/6=0.17），按 0.25 截会把它丢掉 ——
+                # 而那正是用户的原话。命中 ≥2 个直接过，只命中 1 个才看比例。
+                if hit < 2 and score < min_score:
+                    continue
+            scored.append((score, s, cmds))
         scored.sort(key=lambda x: (-x[0], -len(x[2]), x[1]["name"]))
         return scored[:max(1, int(limit))]
 
@@ -231,6 +246,12 @@ class SkillHub:
         t = re.sub(r"\s+", "", str(sv or "")).lower()
         return {t[i:i + 2] for i in range(max(0, len(t) - 1))} if len(t) > 1 else {t} if t else set()
 
+    _HEAD = ("【你能用的技能】这些是已经装好的插件，也就是你的技能。"
+             "有正好对得上的就直接调 use_skill(name=插件名, text=\"命令 参数\")，"
+             "别回答「我做不到」，也别自己编一个替代做法"
+             "（问运势就用 fortune，别拿骰子当占卜）。"
+             "技能返回的文字就是结果，照它说，不要改写数字。")
+
     def hint(self, text: str = "", *, is_owner: bool = False, is_admin: bool = False,
              is_group: bool = False, max_chars: int = 760, pick: int = 6,
              always: int = 8) -> str:
@@ -238,7 +259,9 @@ class SkillHub:
 
         为什么不直接塞 `index_text`（3200 字）：那是每条消息都要付的输入成本，
         而且 40 个技能里 39 个和当前问题无关，反而稀释注意力。
-        这里用 2-gram 重合度挑最相关的几个；一个都对不上就只报名字。
+
+        `max_chars` 是**整段**（含头尾）的上限 —— 以前只拿它比正文、
+        而且判断放在 append 之后，实际长度会超出一截。
         """
         items = []
         for s in self.skills():
@@ -249,32 +272,38 @@ class SkillHub:
             items.append((s, cmds))
         if not items:
             return ""
-        qg = self._grams(text)
-        grams = {s["name"]: gr for s, gr in self._gram_index()}
+        q = re.sub(r"\s+", "", str(text or "")).lower()
+        qg = self._grams(q)
+        short = 0 < len(q) < 2
         scored = []
+        by_name = {s["name"]: (blob, gr) for s, blob, gr in self._gram_index()}
         for s, cmds in items:
-            overlap = len(qg & grams.get(s["name"], set()))
+            blob, gr = by_name.get(s["name"], ("", set()))
+            overlap = (1 if q and q in blob else 0) if short else len(qg & gr)
             scored.append((overlap, s, cmds))
         scored.sort(key=lambda x: (-x[0], -len(x[2]), x[1]["name"]))
         picked = [x for x in scored if x[0] > 0][:pick]
         if len(picked) < always:                      # 相关的不够就补常备的
             names = {x[1]["name"] for x in picked}
             picked += [x for x in scored if x[1]["name"] not in names][:always - len(picked)]
-        lines = []
+
+        tail = f"（一共 {len(items)} 个技能；看全部用 list_skills，看某个的用法用 read_skill）"
+        head = self._HEAD
+        room = max(120, int(max_chars) - len(head) - len(tail) - 2)
+        lines: list[str] = []
+        used = 0
         for _score, s, cmds in picked:
             names = " ".join("." + c["name"] for c in cmds[:5])
             more = "…" if len(cmds) > 5 else ""
-            lines.append(f"- {s['name']}（{s['title']}）：{_clean(s['description'], 46)}｜{names}{more}"
-                         if s["description"] else
-                         f"- {s['name']}（{s['title']}）｜{names}{more}")
-            if sum(len(x) + 1 for x in lines) > max_chars:
+            piece = (f"- {s['name']}（{s['title']}）：{_clean(s['description'], 46)}｜{names}{more}"
+                     if s["description"] else f"- {s['name']}（{s['title']}）｜{names}{more}")
+            if used + len(piece) + 1 > room:
+                # 放不下就停；一条都放不下时截一条放进预算里，别返回空目录
+                if not lines:
+                    lines.append(piece[:max(20, room)])
                 break
-        tail = (f"（一共 {len(items)} 个技能；看全部用 list_skills，看某个的用法用 read_skill）")
-        head = ("【你能用的技能】这些是已经装好的插件，也就是你的技能。"
-                "有正好对得上的就直接调 use_skill(name=插件名, text=\"命令 参数\")，"
-                "别回答「我做不到」，也别自己编一个替代做法"
-                "（问运势就用 fortune，别拿骰子当占卜）。"
-                "技能返回的文字就是结果，照它说，不要改写数字。")
+            lines.append(piece)
+            used += len(piece) + 1
         return head + "\n" + "\n".join(lines) + "\n" + tail
 
     def suggest(self, name: str, limit: int = 2) -> str:

@@ -136,8 +136,26 @@ def _bind_text(lib: ctypes.CDLL) -> None:
                                    ctypes.c_char_p, ctypes.c_size_t]
 
 
+def _needs_unicode_fold(ws: Sequence[str]) -> bool:
+    """词表里有没有「大小写不能用 ASCII 折叠表达」的字符。
+
+    Rust 侧为了快，只折叠 ASCII（`A`→`a`）。中文没有大小写所以无所谓，
+    但**西里尔/希腊/土耳其语有**：`ДУРАК` 和 `дурак` 在 Rust 里永远匹配不上。
+    这种情况下原生结果不可信，必须让 Python 的 `lower()` 再判一次。
+    """
+    for w in ws:
+        for ch in w:
+            if not ch.isascii() and (ch.isupper() or ch.islower()):
+                return True
+    return False
+
+
 def scan(text: str | None, words: Sequence[str]) -> list[int]:
-    """返回**命中的词下标**（按 words 顺序）。空词表/空文本返回 []。"""
+    """返回**命中的词下标**（按 words 顺序）。空词表/空文本返回 []。
+
+    原生实现只做 ASCII 大小写折叠；词表里出现西里尔/希腊这类带大小写的
+    非 ASCII 字符时，原生返回空**不能**当作「没命中」，要再走一遍 Python。
+    """
     s = str(text or "")
     ws = [str(w) for w in (words or []) if str(w)]
     if not s or not ws:
@@ -151,7 +169,11 @@ def scan(text: str | None, words: Sequence[str]) -> list[int]:
             out = (ctypes.c_int * len(ws))()
             n = lib.klee_scan(raw, len(raw), packed, len(packed), out, len(ws))
             if n >= 0:
-                return [int(out[i]) for i in range(n)]
+                hits = [int(out[i]) for i in range(n)]
+                # 命中了直接返回；没命中且词表含「非 ASCII 的大小写」时才回落
+                # （纯中文词表不会触发，快路径不变）
+                if hits or not _needs_unicode_fold(ws):
+                    return hits
         except Exception:                                        # noqa: BLE001
             pass
     low = s.lower()

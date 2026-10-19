@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,26 @@ from bot.framework import FeatureManager                      # noqa: E402
 from bot.skills import SkillHub                               # noqa: E402
 
 PASS, FAIL = [], []
+# 插件出图（.运势/.塔罗/.角色卡）默认写到 bot/features/state/cards ——
+# 那是**运行时目录**。测试不能写生产状态，更不能触发 cleanup_cards 按 mtime
+# 删掉用户已有的卡片。这里把目录钉到临时目录。
+_CARD_TMP = Path(tempfile.mkdtemp(prefix="klee-cards-"))
+
+
+def _pin_cards_dir():
+    mod = sys.modules.get("_cardimg")
+    if mod is None or not hasattr(mod, "cards_dir"):
+        return False
+    mod.cards_dir = lambda settings, base, default="cards": _CARD_TMP
+    return True
+
+
+def _has_pil() -> bool:
+    mod = sys.modules.get("_cardimg")
+    try:
+        return bool(mod and mod.load_pil() is not None)
+    except Exception:                                            # noqa: BLE001
+        return False
 
 
 def check(name, ok, extra=""):
@@ -138,6 +159,7 @@ def main():
     print("\n[6] 技能目录：提示里要说清怎么调")
     mgr = FeatureManager(Adapter())
     mgr.load()
+    _pin_cards_dir()
     hub = SkillHub(mgr)
     hint = hub.hint("今天运势怎么样", is_owner=True)
     check("6.1 提示里有 use_skill 的调用写法", "use_skill" in hint, hint[:120])
@@ -156,7 +178,11 @@ def main():
           str([s["name"] for _s, s, _c in hits]))
 
     ctx = A.ToolContext(skills=hub, chat={"is_owner": True, "is_group": False, "role": "owner"})
-    out = A.tool_list_skills({"query": "完全不存在的关键词zzz"}, ctx)
+    # 用纯 ASCII 乱码：中文「无所谓」的短语会真的命中描述里的字（比如「关键词」），
+    # 那是 2-gram 匹配的正常行为，不是误报。
+    check("7.3a 纯噪声查询 search 返回空", hub.search("zzqxvbnm", is_owner=True) == [],
+          str(hub.search("zzqxvbnm", is_owner=True))[:120])
+    out = A.tool_list_skills({"query": "zzqxvbnm"}, ctx)
     check("7.3 搜不到时列出已有技能，而不是只说「没有」",
           "没有精确匹配" in out and "fortune" in out, out[:160])
     out2 = A.tool_list_skills({}, ctx)
@@ -230,8 +256,17 @@ def main():
     import tempfile
     import server as S2                                       # noqa: E402
 
-    f = next(iter((ROOT / "bot" / "features" / "state" / "cards").glob("*.png")), None)
-    check("11.1 卡片文件存在（前置）", f is not None, str(f))
+    _pix = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
+        "7753de0000000c4944415478da63f8ffff3f0005fe02fea735d6b40000"
+        "000049454e44ae426082")
+    _img_root = Path(tempfile.mkdtemp(prefix="klee-img-"))
+    (_img_root / "cards").mkdir()
+    f = _img_root / "cards" / "t.png"
+    f.write_bytes(_pix)
+    _saved_roots = S2.IMG_ROOTS
+    S2.IMG_ROOTS = (_img_root,)
+    check("11.1 造一个图片（前置）", f.is_file(), str(f))
     if f is not None:
         ref = S2._img_ref(f)
         check("11.2 引用是相对路径", ref.startswith("cards/") and not Path(ref).is_absolute(), ref)
@@ -252,6 +287,10 @@ def main():
         check("11.8 适配器收到了图片", len(wa.images) == 1 and wa.images[0]["ref"].startswith("cards/"),
               str(wa.images))
         check("11.9 图注也留下来了", wa.images[0]["caption"] == "测试卡片", str(wa.images))
+        # 白名单外的路径：要如实返回 success=False（否则插件以为发成功、不降级成文字）
+        bad = _a.run(wa.send_image_file("web:panel", "/etc/passwd"))
+        check("11.9b 白名单外 → success=False，不再装作成功", bad.success is False, str(bad))
+    S2.IMG_ROOTS = _saved_roots
 
     # 只出图不出字：不能判成「静默」
     check("11.10 有图没字 → 不算静默（这正是以前丢掉图片的那条判定）",
@@ -278,12 +317,100 @@ def main():
     # 真插件：.运势 只出卡片不出字
     m2 = FeatureManager(type("A2", (Adapter,), {"active_character": "klee"})())
     m2.load()
+    _pin_cards_dir()
     hub2 = SkillHub(m2)
     r = hub2.run("fortune", ".运势", adapter=wa, is_group=False, group_id="", user_id="1",
                  user_name="主人", role="owner", timeout=15)
-    check("11.16 运势技能产出了图片", r.get("ok") and r.get("images"), str(r)[:200])
-    check("11.17 纯出图的技能文字只是图注", bool(r.get("text")), str(r.get("text"))[:80])
+    if _has_pil():
+        check("11.16 运势技能产出了图片", r.get("ok") and r.get("images"), str(r)[:200])
+        check("11.17 纯出图的技能文字只是图注", bool(r.get("text")), str(r.get("text"))[:80])
+        check("11.18 卡片落在临时目录（没写生产 state/cards）",
+              all(str(_CARD_TMP) in str(i.get("path")) for i in (r.get("images") or [])),
+              str([i.get("path") for i in (r.get("images") or [])])[:200])
+    else:
+        print("  - 跳过 11.16~11.18：本机没有 Pillow（出图走的是可选依赖）")
 
+    print("\n[12] 插件丢后台任务 / 直接 adapter.send：面板也要收得到")
+    import asyncio as _asyncio
+
+    class _MgrBg:
+        def __init__(self):
+            self.seen = []
+
+        def nlu_match(self, text):
+            return None
+
+        async def run_message_hooks(self, ctx):
+            return True
+
+        async def handle_command(self, ctx):
+            self.seen.append(ctx.text)
+            async def worker():
+                await _asyncio.sleep(0.25)          # 模拟 .画画 那样「先返回，后台再出图」
+                await ctx.adapter.send_image_file("web:panel", str(f))
+            _asyncio.get_running_loop().create_task(worker())
+            await ctx.adapter.send("web:panel", "直接发的提示")   # 不走 ctx.reply
+            return True
+
+    class _RtBg:
+        def __init__(self):
+            self.mgr = _MgrBg()
+            self.config = {"feature_prefix": "."}
+
+    _saved2 = S2.IMG_ROOTS
+    S2.IMG_ROOTS = (_img_root,)
+    try:
+        rt_bg = _RtBg()
+        job_bg = {"session": "s"}
+        out_bg = S2._web_plugin_dispatch(rt_bg, job_bg, ".delay", "klee")
+        check("12.1 插件直接 adapter.send 的文字没被吞", "直接发的提示" in str(out_bg), repr(out_bg))
+        check("12.2 关循环前把后台任务跑到出图",
+              len(job_bg.get("images") or []) == 1, str(job_bg.get("images")))
+    finally:
+        S2.IMG_ROOTS = _saved2
+
+    print("\n[13] 这一轮 OCR 的回归点")
+    # 13.1 正文里夹着标记、但还有解释文字 → 不能当调用执行
+    c = script({"text": "写法是这样的：<tool_call>{\"name\":\"now\",\"arguments\":{}}</tool_call>"
+                        " 这就是一条工具调用。", "tool_calls": []})
+    res = A.run(None, [{"role": "user", "content": "tool_call 怎么写"}], max_steps=2, complete=c)
+    check("13.1 解释文字里的标记不会被当成真调用", res["tool_calls"] == [], str(res["tool_calls"]))
+    check("13.2 解释文字本身保留", "写法是这样的" in res["text"], res["text"][:80])
+
+    # 13.3 只有标记、没有正文时才当调用
+    c = script({"text": '<tool_call>{"name":"now","arguments":{}}</tool_call>', "tool_calls": []},
+               {"text": "现在三点", "tool_calls": []})
+    res = A.run(None, [{"role": "user", "content": "几点了"}], max_steps=3, complete=c)
+    check("13.3 纯标记才当调用", res["tool_calls"] == ["now"], str(res["tool_calls"]))
+
+    # 13.4 非 ASCII 大小写：原生扫描只折叠 ASCII，不能拿它的空结果当「没命中」
+    from bot import native as N2
+    check("13.4 西里尔大写能命中小写词", N2.scan("ДУРАК", ["дурак"]) == [0],
+          str(N2.scan("ДУРАК", ["дурак"])))
+    check("13.5 中文不受影响（快路径还在）", N2.scan("这里有屏蔽词", ["屏蔽"]) == [0])
+
+    # 13.6 Java 必须钉 UTF-8：LANG=C 的机器上 stdio 编码跟 locale 走
+    from bot.ext.host import JAVA_UTF8, LANG_RUN
+    check("13.6 Java 启动参数含 stdin/stdout 编码",
+          all(k in LANG_RUN["java"] for k in ("-Dstdin.encoding=UTF-8", "-Dstdout.encoding=UTF-8")),
+          str(LANG_RUN["java"]))
+    check("13.7 自动注入（spec 自己写 run 也补上）",
+          all(k in str(JAVA_UTF8) for k in ("file.encoding", "stdin.encoding", "stdout.encoding")))
+
+    # 13.8 只出图不出字：不能写空文本行
+    with tempfile.TemporaryDirectory() as td:
+        old_chat2 = S2.CHAT_JSONL
+        S2.CHAT_JSONL = Path(td) / "chat.jsonl"
+        try:
+            S2._append_images({"session": "s", "images": [{"ref": "cards/a.png"}]}, "klee")
+            rows = [json.loads(x) for x in S2.CHAT_JSONL.read_text(encoding="utf-8").splitlines() if x.strip()]
+            check("13.8 图片行没有多余的空文本", all(r.get("text") for r in rows) is False
+                  and all(r.get("kind") == "image" for r in rows), str(rows))
+        finally:
+            S2.CHAT_JSONL = old_chat2
+
+    import shutil as _sh
+    _sh.rmtree(_CARD_TMP, ignore_errors=True)
     print(f"\nPASS {len(PASS)} / {len(PASS) + len(FAIL)}")
     if FAIL:
         print("失败：" + "、".join(FAIL))

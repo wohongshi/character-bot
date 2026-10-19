@@ -1325,9 +1325,14 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
     padding:calc(14px + env(safe-area-inset-top)) 10px calc(8px + env(safe-area-inset-bottom));
     background:linear-gradient(180deg,var(--paper),color-mix(in srgb,var(--red-soft) 55%,white));
     border-right:1px solid var(--glass-line);border-bottom:0;box-shadow:18px 0 50px rgba(80,40,30,.28);
-    transform:translateX(-104%);transition:transform .22s cubic-bezier(.4,0,.2,1);
+    transform:translateX(-104%);
+    /* visibility 而不是 display:none —— 还能做滑出动画；延迟到动画结束再藏。
+       这也是 inert 的兜底：老 Safari 没有 inert，aria-hidden 又不移出 tab 序。 */
+    visibility:hidden;
+    transition:transform .22s cubic-bezier(.4,0,.2,1),visibility 0s linear .22s;
     overflow:auto;overscroll-behavior:contain}
-  body.nav-open aside{transform:none}
+  body.nav-open aside{transform:none;visibility:visible;
+    transition:transform .22s cubic-bezier(.4,0,.2,1),visibility 0s}
   /* 桌面收条（body.rail）之后把窗口拉窄、或者转到横屏时，rail 类可能还挂着：
      它会把侧栏压成 74px 并把文字全藏掉。浮层模式下必须救回来。
      （JS 的 navSync 也会清掉 rail，这里是不依赖 JS 的兜底。） */
@@ -1822,7 +1827,10 @@ function navSync(){
   const hidden = narrow && !open;       // 桌面的图标条是一直可见的，不能 inert
   try { if ("inert" in a) a.inert = hidden; } catch(e){}
   if (hidden) a.setAttribute("aria-hidden", "true"); else a.removeAttribute("aria-hidden");
-  if (b) b.setAttribute("aria-expanded", String(narrow ? open : false));
+  // 桌面 ☰ 控制的是 body.rail（图标条↔完整侧栏），读屏也要看出这个状态，
+  // 不能永远写 false。
+  const expanded = narrow ? open : !document.body.classList.contains("rail");
+  if (b) b.setAttribute("aria-expanded", String(expanded));
 }
 function navOpen(){
   document.body.classList.add("nav-open");
@@ -1834,13 +1842,15 @@ function navOpen(){
   if (a) { try { a.focus({preventScroll:true}); } catch(e){} }
 }
 function navClose(){
+  const a = document.getElementById("navAside");
   const was = document.body.classList.contains("nav-open");
+  // **先**记下焦点在不在侧栏里：navSync() 会设 inert，支持 inert 的浏览器
+  // 会当场把焦点踢到 <body>，之后再 contains(activeElement) 永远是 false ——
+  // 「焦点还给 ☰」这段就变成了死代码。
+  const focusInside = !!(a && document.activeElement && a.contains(document.activeElement));
   document.body.classList.remove("nav-open");
   navSync();
-  // 用键盘关的，焦点要还回去，不然等于「焦点掉到屏幕外」
-  if (was && isNarrowNav() && document.activeElement &&
-      document.getElementById("navAside") &&
-      document.getElementById("navAside").contains(document.activeElement)){
+  if (was && focusInside && isNarrowNav()){
     const b = document.getElementById("navBtn");
     if (b) { try { b.focus({preventScroll:true}); } catch(e){} }
   }

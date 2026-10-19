@@ -717,6 +717,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
 # 插件自己 catch 住降级成文字 —— 于是 .运势 / .塔罗 / .角色卡 / .画画 的图
 # 在网页里一张都看不到（日志里只有一句「回退文本」）。这里补上整条链路。
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+TASK_DRAIN_SECONDS = 40.0      # 插件 `create_task` 丢下的活最多等这么久（出图要时间）
 IMG_ROOTS = (STUDIO_HOME / "bot" / "features" / "state", STUDIO_HOME / "state",
              STUDIO_HOME / "static" / "img")
 
@@ -769,14 +770,24 @@ class _WebAdapter:
         self.features_dir = ""
         self.feature_prefix = str(rt.config.get("feature_prefix") or ".")
         self.images: list[dict] = []          # 插件发的图，交给 worker 落盘
+        self.texts: list[str] = []            # 插件直接 adapter.send 的文字
 
     async def send(self, chat_id, text, reply_to=None, sentence_split=None, **kw):
-        return SimpleNamespace(success=True)   # 文本由 ctx.reply 的捕获函数处理
+        # 命令走 ctx.reply（已换成捕获函数），但插件里也有直接
+        # `ctx.adapter.send(...)` 的（出图失败时提示用户就是），那种以前被
+        # 直接丢掉、还回 success=True —— 用户看到的是「发出去什么都没发生」。
+        if text:
+            self.texts.append(str(text))
+        return SimpleNamespace(success=True)
 
     async def send_image_file(self, chat_id, path, caption=None, **kw):
         ref = _img_ref(path)
-        if ref:
-            self.images.append({"ref": ref, "caption": str(caption or "")})
+        if not ref:
+            # 目录不在白名单里（自托管时 images_dir 常指到仓库外）——
+            # 不能装作发成功了，否则插件不会降级成文字，用户什么都收不到。
+            logger.warning("插件图片不在白名单目录，没发出去：%s", path)
+            return SimpleNamespace(success=False)
+        self.images.append({"ref": ref, "caption": str(caption or "")})
         return SimpleNamespace(success=True)
 
     def _chat_id(self, is_group, group_id, user_id):
@@ -846,8 +857,24 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
         logger.exception("网页插件分发失败")
         return None
     finally:
+        # 插件里常见写法是 `loop.create_task(worker())` 然后立刻返回（draw.py 就是）。
+        # 以前这里直接 close()，worker 要么还没开始跑、要么停在 await 上被丢掉 ——
+        # 「只出图不出字」的 .画画 就是这么没图的。
+        try:
+            pending = [t for t in _aio.all_tasks(loop) if not t.done()]
+            if pending:
+                loop.run_until_complete(_aio.wait(pending, timeout=TASK_DRAIN_SECONDS))
+                left = [t for t in pending if not t.done()]
+                for t in left:
+                    t.cancel()
+                if left:
+                    loop.run_until_complete(_aio.gather(*left, return_exceptions=True))
+                    logger.warning("插件还有 %d 个后台任务没跑完（已取消）", len(left))
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("插件后台任务收尾失败：%s", e)
         loop.close()
     job["images"] = adapter.images          # 插件发的卡片/图片，worker 负责落盘
+    captured.extend(t for t in adapter.texts if t)
     if captured:
         return "\n".join(captured)
     # 命令真的被消费了才算「已处理」；`.helo` 这种错字以前返回 ""，
@@ -905,6 +932,13 @@ def _chat_worker() -> None:
                         # **只出图不出字**的命令（.运势 / .塔罗 / .角色卡）走这里。
                         # 以前「没文字就当被静默拦下」直接 continue，图跟着一起没了。
                         _append_images(job, cid)
+                    if imgs and not str(web_reply or "").strip():
+                        # 图已经落好了，别再写一条空文本行 ——
+                        # 前端 `m.text || "(没接上话…)"` 会在图片下面多出一句
+                        # 「没接上话，再试一次？」。
+                        with _lock:
+                            _chat_state["running"] = None
+                        continue
                     if _plugin_silent(web_reply, job):
                         # 被钩子静默拦下（例如冷却期内）：不回复，也不该进模型
                         with _lock:
@@ -923,13 +957,18 @@ def _chat_worker() -> None:
                         _chat_state["running"] = None
                     continue
 
-            cname = (_char_store().get(cid) or {}).get("name") or cid
             reasoning = str(job.get("reasoning") or "default")
             dtxt = job.get("dispatch_text") or job["text"]   # 入站钩子可能改写过的文本
             # 面板本身就是半个 agent：网页聊天默认就走工具循环，
             # 不再读 job["agent"]（前端也已经没有那个开关了）。
             use_agent = rt is not None
-            msgs = [{"role": "system", "content": _web_system_text(rt, cid, dtxt)}]
+            try:
+                sys_text = _web_system_text(rt, cid, dtxt)
+            except Exception as e:                               # noqa: BLE001
+                # 技能目录只是锦上添花：拼不出来也要能聊天
+                logger.warning("系统提示拼装失败，退回只有人格：%s", e)
+                sys_text = _persona_text(cid)
+            msgs = [{"role": "system", "content": sys_text}]
             kb_ctx = _kb_context(dtxt, cid)
             if kb_ctx:
                 msgs.append({"role": "system", "content": "【相关背景资料】\n" + kb_ctx})
@@ -960,6 +999,10 @@ def _chat_worker() -> None:
                                       "caption": str(i.get("caption") or "")}
                                      for i in (res.get("images") or []) if i.get("path")]
                     reply_agent = str(res.get("text") or "").strip()
+                    if not reply_agent and job.get("images"):
+                        # 技能执行成功了、图也生成了，但收尾那句人话没拿到：
+                        # 图先落盘，别让整批丢掉。
+                        _append_images(job, cid)
                     if reply_agent:
                         text = reply_agent
                         tool_calls = len(res.get("tool_calls") or [])
@@ -978,6 +1021,11 @@ def _chat_worker() -> None:
                         continue
                 except Exception as e:                             # noqa: BLE001
                     logger.warning("网页 agent 失败，回退普通聊天: %s", e)
+                    # 抛出前技能可能已经出图了（res 未赋值，拿不到 images_out，
+                    # 但 dispatch 那条路径可能已经填过 job["images"]）
+                    if job.get("images"):
+                        _append_images(job, cid)
+                        job["images"] = []
 
             kw = {}
             if reasoning and reasoning != "default":
