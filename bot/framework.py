@@ -656,6 +656,14 @@ class FeatureManager:
         self._nlu_seq = 0
         self.plugins = {}
         self.pages = {}
+        # 命令的作用域/权限覆盖（面板里调，见 bot/cmdpolicy.py）。
+        # 读不到就是空表 = 完全按插件声明，行为不变。
+        try:
+            from . import cmdpolicy as _cp
+            self.overrides = _cp.load(self.dir)
+        except Exception as e:                                     # noqa: BLE001
+            logger.warning("OneBot: 读命令权限覆盖失败（按默认处理）：%s", e)
+            self.overrides = {"commands": {}, "plugins": {}}
         # 工具表跟着一起清：插件装不上 / 被关掉，它的工具就不该还挂在模型面前
         toolbox.reset(self)
         self.load_error = ""
@@ -1114,35 +1122,79 @@ class FeatureManager:
         parts = body.split()
         return parts[0], parts[1:]
 
-    async def handle_command(self, ctx: FeatureContext) -> bool:
-        """命中并消费返回 True；没命中返回 False（继续正常流程）。"""
+    def explain_command(self, ctx: FeatureContext) -> dict:
+        """命令这一层的判定 —— **不执行 handler、不改冷却**（纯查表）。
+
+        分发（`handle_command`）和面板的「模拟器 / 命令中心」都走这里，
+        这样「试跑说会执行」和「聊天里真的执行」不可能对不上（以前两边
+        各写一份判断，改一边就漂）。
+
+        返回 `{token, args, cmd, action, reason}`，action 三选一：
+          - `none`：根本不是命令（或没有这个命令）→ 继续后面的流程；
+          - `skip`：是命令但不该执行（作用域/权限/冷却不过）→ 消息被吃掉；
+          - `run` ：会执行。
+        """
         parsed = self._split_command(ctx.text)
         if not parsed:
-            return False
+            return {"action": "none", "reason": "不是命令（没有前缀）"}
         token, args = parsed
         with self._lock:                    # 热重载会在另一个线程重置字典
             cmd = self.commands.get(token.lower())
         if cmd is None:
-            return False
-
-        # 作用域 / 权限 / 冷却 —— 任何一项不过都静默吞掉（别喂给 LLM）
-        if cmd.scope == "group" and not ctx.is_group:
-            return True
-        if cmd.scope == "dm" and ctx.is_group:
-            return True
-        ok = (cmd.permission == "all"
-              or (cmd.permission == "owner" and ctx.is_owner)
-              or (cmd.permission == "admin" and (ctx.is_admin or ctx.is_owner)))
+            return {"action": "none", "token": token, "args": args,
+                    "reason": f"没有命令「{token}」"}
+        scope, perm = cmd.scope, cmd.permission
+        source = "插件默认"
+        try:
+            from . import cmdpolicy as _cp
+            eff = _cp.effective(cmd, getattr(self, "overrides", {}) or {})
+            scope, perm = eff["scope"], eff["permission"]
+            if eff["override"]:
+                source = "面板覆盖"
+        except Exception:                                          # noqa: BLE001
+            pass
+        out = {"token": token, "args": args, "cmd": cmd, "scope": scope,
+               "permission": perm, "rule_source": source}
+        if scope == "group" and not ctx.is_group:
+            return {**out, "action": "skip", "reason": "这条命令只在群里可用"}
+        if scope == "dm" and ctx.is_group:
+            return {**out, "action": "skip", "reason": "这条命令只在私聊可用"}
+        ok = (perm == "all"
+              or (perm == "owner" and ctx.is_owner)
+              or (perm == "admin" and (ctx.is_admin or ctx.is_owner)))
         if not ok:
-            logger.info("OneBot: 命令 .%s 权限不足（%s role=%s）", cmd.name, ctx.user_id, ctx.role or "-")
-            self._bump(f"{cmd.plugin}:denied")
+            return {**out, "action": "skip",
+                    "reason": ("只有主人能用" if perm == "owner" else "只有群主/群管理能用")}
+        if cmd.cooldown > 0:
+            key = (cmd.name.lower(), ctx.user_id)
+            if time.monotonic() < self.cooldowns.get(key, 0.0):
+                return {**out, "action": "skip",
+                        "reason": f"冷却中（{cmd.cooldown:g} 秒一次）", "cooldown": cmd.cooldown}
+            out["cooldown"] = cmd.cooldown
+        return {**out, "action": "run"}
+
+    async def handle_command(self, ctx: FeatureContext) -> bool:
+        """命中并消费返回 True；没命中返回 False（继续正常流程）。"""
+        verdict = self.explain_command(ctx)
+        action = verdict["action"]
+        if action == "none":
+            return False
+        cmd = verdict.get("cmd")
+        if cmd is None:
+            return False
+        if action == "skip":
+            # 作用域 / 权限 / 冷却 —— 任何一项不过都静默吞掉（别喂给 LLM）
+            if verdict.get("reason", "").startswith(("只有", "这条命令")):
+                logger.info("OneBot: 命令 .%s 被拦下（%s %s role=%s）",
+                            cmd.name, verdict["reason"], ctx.user_id, ctx.role or "-")
+                self._bump(f"{cmd.plugin}:denied")
+            else:
+                logger.info("OneBot: 命令 .%s %s（%s）", cmd.name, verdict["reason"], ctx.user_id)
             return True
+        args = verdict["args"]
         if cmd.cooldown > 0:
             key = (cmd.name.lower(), ctx.user_id)
             now = time.monotonic()
-            if now < self.cooldowns.get(key, 0.0):
-                logger.info("OneBot: 命令 .%s 冷却中（%s）", cmd.name, ctx.user_id)
-                return True
             if len(self.cooldowns) > 2000:      # 长跑防膨胀：过期项清一波（OCR low）
                 self.cooldowns = {k: v for k, v in self.cooldowns.items() if v > now}
             self.cooldowns[key] = now + cmd.cooldown

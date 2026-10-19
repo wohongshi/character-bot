@@ -2069,6 +2069,51 @@ def _usage_summary(days: int = 7) -> dict:
             "hint": "数字来自模型返回的 usage；网关不返回时按字符估算（标 est）"}
 
 
+# ---------- 管控：命令权限 / 会话策略 / 模拟器 ----------
+def _control_snapshot() -> dict:
+    """面板「管控」页要的全部事实：命令的有效权限 + 会话策略 + 全局策略。"""
+    from bot import chatpolicy, cmdpolicy
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    mgr = getattr(rt, "mgr", None) if rt is not None else None
+    overrides = getattr(mgr, "overrides", None) or cmdpolicy.load(FEATURES_DIR)
+    rows = []
+    for c in (_commands_list().get("commands") or []):
+        cmd = None
+        try:
+            cmd = (mgr.commands or {}).get(str(c["name"]).lower()) if mgr else None
+        except Exception:                                         # noqa: BLE001
+            cmd = None
+        eff = cmdpolicy.effective(cmd, overrides) if cmd is not None else {
+            "scope": c.get("scope") or "both", "permission": c.get("permission") or "all",
+            "override": ""}
+        rows.append({**c, "scope_eff": eff["scope"], "permission_eff": eff["permission"],
+                     "override": eff["override"]})
+    chats = chatpolicy.load(STATE_DIR).get("chats") or {}
+    # 面板还要知道「有哪些会话」：策略表里没设过的群也该能选（从索引里取活跃的）
+    known = []
+    try:
+        for src in (_index().summary(30, "messages").get("sources") or [])[:20]:
+            cid = str(src.get("chat_id") or "")
+            if cid:
+                known.append({"id": cid, "n": int(src.get("n") or 0),
+                              "last": float(src.get("last") or 0)})
+    except Exception:                                             # noqa: BLE001
+        known = []
+    global_mode = str((BOT.config or {}).get("group_policy") if BOT else "") or "mention"
+    return {"ok": True,
+            "global_mode": global_mode,
+            "owner_id": str((BOT.config or {}).get("owner_id") or "") if BOT else "",
+            "modes": {k: chatpolicy.MODES_CN[k] for k in chatpolicy.MODES},
+            "perms": {"all": "所有人", "admin": "群主/群管理", "owner": "仅主人"},
+            "scopes": {"all": "私聊 + 群聊", "group": "仅群聊", "dm": "仅私聊",
+                       "both": "私聊 + 群聊"},
+            "commands": rows,
+            "counts": {"commands": len(rows),
+                       "overridden": sum(1 for r in rows if r.get("override")),
+                       "chats": len(chats)},
+            "chats": chats, "known_chats": known}
+
+
 # ---------- 系统自检 ----------
 # 见 bot/selfcheck.py：那边只认「传进来的事实」，不 import server，
 # 所以单测能直接喂临时目录；这里负责把运行时事实凑齐。
@@ -4581,6 +4626,7 @@ _SENSITIVE_GET = frozenset({
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
+    "/api/control",
 })
 
 
@@ -5124,6 +5170,13 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/lock":
             self._json({"ok": True, "lock": _lock.info(), "queue": _chat_q.qsize(),
                         "busy": _chat_q.busy(), "runs": _run_all()})
+            return
+        if u.path == "/api/control":
+            try:
+                self._json(_control_snapshot())
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("读取管控配置失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
             return
         if u.path == "/api/insights":
             days = _int_param(q, "days", 30, lo=1, hi=120)
@@ -5803,6 +5856,81 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": str(e)}, 400)
                     return
             self._json({"ok": True, "session": session, "queued": True})
+            return
+
+        if u.path == "/api/control/cmd":
+            from bot import cmdpolicy
+            try:
+                data = cmdpolicy.set_override(
+                    FEATURES_DIR,
+                    command=str(body.get("command") or ""),
+                    plugin=str(body.get("plugin") or ""),
+                    scope=str(body.get("scope") or ""),
+                    permission=str(body.get("permission") or ""))
+            except cmdpolicy.PolicyError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            except OSError as e:
+                self._json({"ok": False, "error": f"写不进去：{e}"}, 400)
+                return
+            # 立刻生效：分发时读的是 mgr.overrides（不用等热重载）
+            rt = getattr(BOT, "runtime", None) if BOT else None
+            if rt is not None and getattr(rt, "mgr", None) is not None:
+                rt.mgr.overrides = data
+            self._json({"ok": True, "overrides": data, "after": _control_snapshot()})
+            return
+
+        if u.path == "/api/control/chat":
+            from bot import chatpolicy
+            try:
+                res = chatpolicy.set_chat(
+                    STATE_DIR, str(body.get("chat_id") or ""),
+                    **{k: body[k] for k in ("mode", "quiet", "quiet_mention", "note")
+                       if k in body})
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            except OSError as e:
+                self._json({"ok": False, "error": f"写不进去：{e}"}, 400)
+                return
+            self._json({"ok": True, **res, "after": _control_snapshot()})
+            return
+
+        if u.path == "/api/simulate":
+            from bot import simulator
+            text = str(body.get("text") or "")[:2000]
+            if not text.strip():
+                self._json({"ok": False, "error": "先打一句要试的话"}, 400)
+                return
+            rt = getattr(BOT, "runtime", None) if BOT else None
+            mgr = getattr(rt, "mgr", None) if rt is not None else None
+            if mgr is None:
+                self._json({"ok": False, "error": "插件框架还没起来"}, 503)
+                return
+            model = {}
+            try:
+                model = BOT.models.active()
+            except Exception:                                     # noqa: BLE001
+                model = {}
+            try:
+                res = simulator.simulate(
+                    text=text, mgr=mgr, state_dir=STATE_DIR,
+                    is_group=bool(body.get("is_group")),
+                    mentioned=bool(body.get("mentioned")),
+                    user_id=str(body.get("user_id") or "10001")[:32],
+                    user_name=str(body.get("user_name") or "访客")[:32],
+                    role=str(body.get("role") or "member")[:16],
+                    owner_id=str((BOT.config or {}).get("owner_id") or "") if BOT else "",
+                    base_policy=str((BOT.config or {}).get("group_policy") or "mention")
+                    if BOT else "mention",
+                    chat_id=str(body.get("chat_id") or "")[:80],
+                    group_id=str(body.get("group_id") or "")[:32],
+                    model_ready=bool(model.get("model")))
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("模拟失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json({"ok": True, **res})
             return
 
         if u.path == "/api/selfcheck/fix":

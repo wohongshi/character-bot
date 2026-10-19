@@ -615,6 +615,20 @@ class BotRuntime(RuntimeFeatures):
         except Exception:                                          # noqa: BLE001
             logger.debug("%s 钩子链异常（已忽略）", kind)
 
+    def policy_for(self, chat_id: str, now: float | None = None) -> dict:
+        """这个会话此刻生效的策略（含静默时段）。见 bot/chatpolicy.py。
+
+        失败按全局策略处理：策略文件坏了不该让消息完全不处理。
+        """
+        try:
+            from . import chatpolicy
+            return chatpolicy.resolve(self.state_dir, chat_id, self.group_policy, now=now)
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("会话策略读取失败（按全局 %s）：%s", self.group_policy, e)
+            return {"mode": self.group_policy, "global_mode": self.group_policy,
+                    "configured": "inherit", "quiet": False, "quiet_win": [],
+                    "quiet_mention": False, "note": "", "why": ""}
+
     async def handle_event(self, ev: dict) -> None:
         try:
             await self._handle(ev)
@@ -712,8 +726,11 @@ class BotRuntime(RuntimeFeatures):
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
         self._log_msg(chat_id, "user", chat_text)
 
-        # 群聊策略 disabled = 群聊完全不理（连命令也不接，和面板/INSTALL 的措辞一致）
-        if is_group and self.group_policy == "disabled":
+        # 会话策略 disabled = 完全不理（连命令也不接，和面板/INSTALL 的措辞一致）。
+        # 以前只看全局 group_policy；现在每个群/私聊可以单独设（state/chat_policy.json），
+        # 没设的仍然跟全局，行为不变。
+        pol = self.policy_for(chat_id)
+        if is_group and pol["mode"] == "disabled":
             return
 
         ctx = FeatureContext(
@@ -769,13 +786,18 @@ class BotRuntime(RuntimeFeatures):
                 return
 
         chime = False
-        if is_group and self.group_policy == "mention" and not mentioned:
+        if is_group and pol["mode"] == "mention" and not mentioned:
             chime = self._maybe_chime(group_id)
             if not chime:
                 return                                            # 闲聊/ NLU 必须被叫到
         # open = 群里的每条都看；mention 已在上面的分支筛过；私聊永远看
-        allow_chat = (not ctx.is_group or self.group_policy == "open"
+        allow_chat = (not ctx.is_group or pol["mode"] == "open"
                       or ctx.mentioned or chime)
+        # 静默时段：只接命令（上面已经查过），不跑模型；被 @ 是否例外由设定决定
+        if allow_chat and pol["quiet"] and not (mentioned and pol["quiet_mention"]):
+            logger.info("静默时段（%s），这条不聊天：%s", "~".join(pol.get("quiet_win") or []),
+                        text[:40])
+            return
 
         # 3) 自然语言（只有被叫到/私聊/开放模式才尝试）
         if allow_chat:

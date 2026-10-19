@@ -590,6 +590,27 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
     overflow:hidden;text-overflow:ellipsis}
 }
 
+/* ============ 管控页 ============ */
+.ctl-cmd{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed var(--line);
+  font-size:12.5px;flex-wrap:wrap}
+.ctl-cmd:last-child{border-bottom:0}
+.ctl-cmd code{flex:none;min-width:104px;font-family:var(--font-mono,ui-monospace);font-size:12px}
+.ctl-cmd .pl{flex:none;color:var(--dim);font-size:max(11px, calc(11px * var(--fx)));
+  min-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctl-cmd .h{flex:1;min-width:120px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.ctl-cmd select{flex:none;height:28px;padding:0 4px;font-size:12px}
+.ctl-ov{border-left:2px solid var(--ui-accent);padding-left:6px;margin-left:-8px}
+.ctl-steps{display:flex;flex-direction:column;gap:5px;margin-top:8px}
+.ctl-step{display:flex;gap:8px;align-items:baseline;font-size:12.5px;flex-wrap:wrap}
+.ctl-step .badge{flex:none;min-width:52px;text-align:center;border-radius:99px;padding:0 7px;
+  font-size:max(11px, calc(11px * var(--fx)));border:1px solid var(--line);color:var(--dim)}
+.ctl-step.pass .badge{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,var(--line))}
+.ctl-step.block .badge{color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,var(--line))}
+.ctl-step .lb{flex:none;min-width:96px;font-weight:600}
+.ctl-step .dt{flex:1;min-width:120px;color:var(--dim);word-break:break-word}
+.ctl-verdict{margin-top:10px;padding:8px 10px;border-radius:12px;background:var(--surface-3);
+  font-size:13px;line-height:1.6}
 /* ============ 自检 ============ */
 .chk{display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line);
   font-size:13px;flex-wrap:wrap}
@@ -1991,6 +2012,7 @@ const PAGES = [
   ["persona", "🌸", "人格 · 知识库", "SOUL 与检索"],
   ["plugins", "🧩", "插件", "系统适配器 + 角色限定 + 通用"],
   ["reminders", "⏰", "提醒", "提醒与纪念日"],
+  ["control", "🎚", "管控", "命令权限 · 会话策略 · 消息模拟"],
   ["ops", "⚙️", "运维", "平台、配置、日志、模型"],
   ["custom", "✨", "自定义", "配色、气泡、模块"],
 ];
@@ -2807,7 +2829,8 @@ function render(){
   vw.classList.remove("fadein"); void vw.offsetWidth; vw.classList.add("fadein");   // 切页淡入
   const views = {chat: viewChat, chars: viewChars, custom: viewCustom,
                  persona: viewPersona, kb: viewPersona, plugins: viewPlugins,
-                 reminders: viewReminders, board: viewBoard, ops: viewOps};
+                 reminders: viewReminders, board: viewBoard, ops: viewOps,
+                 control: viewControl};
   const bar = $("bar");
   if (bar){ bar.classList.remove("done"); bar.classList.add("on"); }
   Promise.resolve((views[V] || viewFeed)()).catch(e => console.error(e)).finally(() => {
@@ -5924,6 +5947,243 @@ async function selfFix(id, btn){
   flash(id === "all" ? "修好了" : done);
   chkLast = null;
   selfCheck(true);
+}
+
+/* ================= 管控：命令权限 / 会话策略 / 模拟器 ================= */
+let ctlData = null, ctlFilter = "all", ctlQuery = "";
+function chatLabel(id){
+  const s = String(id || "");
+  if (s.startsWith("group:")) return "群 " + (s.slice(6) || "（临时）");
+  if (s.startsWith("private:")) return "私聊 " + (s.slice(8) || "（临时）");
+  return s || "（临时会话）";
+}
+async function viewControl(){
+  const T = $("view");
+  T.innerHTML = `<h2 class="page">🎚 管控</h2>
+    <div class="card"><div class="kv" style="margin:0;line-height:1.7">
+      三层开关各管一件事：<b>命令权限</b>决定「谁能用这条命令」，<b>会话策略</b>决定
+      「这个群里她多主动、几点闭嘴」，<b>模拟器</b>让你在发出去之前就知道会发生什么。
+      所有改动立即生效，不用重启。
+    </div></div>
+    <div class="card" id="ctlCmdCard">
+      <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span class="kv" style="margin:0">🔐 命令权限 <span id="ctlCmdMeta"></span></span>
+        <span class="row" style="gap:6px">
+          <span class="ins-seg" id="ctlFilter">
+            <button data-f="all" class="on" onclick="ctlSetFilter('all')">全部</button>
+            <button data-f="over" onclick="ctlSetFilter('over')">改过的</button>
+            <button data-f="group" onclick="ctlSetFilter('group')">群里受限</button>
+          </span>
+          <input id="ctlQ" placeholder="搜命令 / 插件" style="width:150px;height:30px"
+                 oninput="ctlQuery=this.value;ctlRenderCmds()">
+        </span>
+      </div>
+      <div id="ctlCmds" class="kv" style="margin-top:8px">读取中…</div>
+    </div>
+    <div class="card" id="ctlChatCard">
+      <div class="kv" style="margin:0 0 6px">🌙 会话策略 <span id="ctlChatMeta"></span></div>
+      <div id="ctlChats"></div>
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+        <input id="ctlNewChat" placeholder="群号或 private:QQ号" style="flex:1;min-width:150px">
+        <button class="btn tiny" onclick="ctlAddChat()">＋ 加一个会话</button>
+        <span class="kv">留空的项就跟随全局（全局：<b id="ctlGlobal"></b>）</span>
+      </div>
+    </div>
+    <div class="card" id="ctlSimCard">
+      <div class="kv" style="margin:0 0 6px">🧪 消息模拟器
+        <span class="kv" style="margin:0">不发送、不执行、不写历史</span></div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <input id="simText" placeholder="打一句要试的话，比如 .待办清 确认"
+               style="flex:1;min-width:200px"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();ctlSim()}}">
+        <select id="simWhere" style="min-width:96px">
+          <option value="dm">私聊</option><option value="group">群聊</option>
+        </select>
+        <select id="simRole" style="min-width:110px">
+          <option value="member">群友</option><option value="admin">群管理</option>
+          <option value="owner">群主</option><option value="me">主人自己</option>
+        </select>
+        <label class="check" style="font-size:12px"><input type="checkbox" id="simAt"> 被 @</label>
+        <input id="simChat" placeholder="会话（可空）" style="width:130px">
+        <button class="btn primary tiny" onclick="ctlSim()">试一下</button>
+      </div>
+      <div id="simOut"></div>
+    </div>`;
+  await ctlLoad();
+}
+async function ctlLoad(){
+  const d = await api("/api/control");
+  if (!d || !d.ok){
+    const box = $("ctlCmds");
+    if (box) box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  ctlData = d;
+  const g = $("ctlGlobal");
+  if (g) g.textContent = (d.modes || {})[d.global_mode] || d.global_mode;
+  ctlRenderCmds();
+  ctlRenderChats();
+}
+function ctlSetFilter(f){ ctlFilter = f;
+  document.querySelectorAll("#ctlFilter button").forEach(b => b.classList.toggle("on", b.dataset.f === f));
+  ctlRenderCmds(); }
+function ctlRenderCmds(){
+  const box = $("ctlCmds"), meta = $("ctlCmdMeta");
+  if (!box || !ctlData) return;
+  const q = ctlQuery.trim().toLowerCase();
+  let rows = ctlData.commands || [];
+  if (ctlFilter === "over") rows = rows.filter(r => r.override);
+  if (ctlFilter === "group") rows = rows.filter(r => (r.scope_eff || "all") !== "all"
+                                              && (r.scope_eff || "both") !== "both");
+  if (q) rows = rows.filter(r => (r.name + " " + r.plugin + " " + (r.help || ""))
+                                  .toLowerCase().includes(q));
+  if (meta) meta.textContent = `· ${ctlData.counts.commands} 条`
+    + (ctlData.counts.overridden ? `，${ctlData.counts.overridden} 条被改过` : "");
+  if (!rows.length){ box.innerHTML = '<div class="kv">没有匹配的命令</div>'; return; }
+  const perms = ctlData.perms || {}, scopes = ctlData.scopes || {};
+  const opt = (map, cur) => Object.keys(map).map(k =>
+    `<option value="${esc(k)}"${k === cur ? " selected" : ""}>${esc(map[k])}</option>`).join("");
+  // 只渲染前 400 条（115 条命令 × 每行 2 个 select，全量渲染在手机上会卡）
+  box.innerHTML = rows.slice(0, 400).map(r => `<div class="ctl-cmd ${r.override ? "ctl-ov" : ""}"
+      title="${esc(r.help || "")}">
+      <code>.${esc(r.name)}</code>
+      <span class="pl">${esc(r.title || r.plugin || "")}</span>
+      <span class="h">${esc((r.help || "").replace(/^\.[^\s]+\s*/, "").slice(0, 40))}</span>
+      <select onchange="ctlSetCmd(${jsq(r.name)}, 'scope', this.value)">
+        ${opt(scopes, r.scope_eff || "both")}</select>
+      <select onchange="ctlSetCmd(${jsq(r.name)}, 'permission', this.value)">
+        ${opt(perms, r.permission_eff || "all")}</select>
+      ${r.override ? `<button class="btn tiny" onclick="ctlResetCmd(${jsq(r.name)})">默认</button>`
+                   : '<span class="kv" style="flex:none;min-width:44px"></span>'}
+    </div>`).join("");
+}
+async function ctlSetCmd(name, field, value){
+  const body = {command: name};
+  body[field] = value;
+  const d = await post("/api/control/cmd", body);
+  if (!d || !d.ok){ flash("没保存：" + ((d && d.error) || "未知")); return; }
+  ctlData = d.after;
+  ctlRenderCmds();
+  flash("已生效：" + name);
+}
+async function ctlResetCmd(name){
+  const d = await post("/api/control/cmd", {command: name});
+  if (!d || !d.ok){ flash("没恢复：" + ((d && d.error) || "未知")); return; }
+  ctlData = d.after; ctlRenderCmds(); flash("已回到插件默认：" + name);
+}
+let ctlExtra = [];          // 刚「加」进来、还没设任何项的会话（只在页面上挂着）
+function ctlRenderChats(){
+  const box = $("ctlChats"), meta = $("ctlChatMeta");
+  if (!box || !ctlData) return;
+  const saved = ctlData.chats || {};
+  const known = ctlData.known_chats || [];
+  const modes = ctlData.modes || {};
+  const ids = Object.keys(saved);
+  // 设过的排前面，然后是新加的，最后补上「最近聊过的」（方便直接挑）
+  ctlExtra.forEach(id => { if (!ids.includes(id)) ids.push(id); });
+  known.forEach(k => { if (!ids.includes(k.id)) ids.push(k.id); });
+  if (meta) meta.textContent = ids.length ? `· 设了 ${Object.keys(saved).length} 个` : "· 都跟随全局";
+  const opt = (cur) => Object.keys(modes).map(k =>
+    `<option value="${esc(k)}"${k === (cur || "inherit") ? " selected" : ""}>${esc(modes[k])}</option>`).join("");
+  if (!ids.length){
+    box.innerHTML = '<div class="kv">还没有设过。上面输入群号加一个，或用模拟器先看看效果。</div>';
+    return;
+  }
+  box.innerHTML = ids.slice(0, 30).map(id => {
+    const r = saved[id] || {};
+    const q = Array.isArray(r.quiet) ? r.quiet : ["", ""];
+    return `<div class="ctl-cmd" data-chat="${esc(id)}">
+      <code style="min-width:118px">${esc(chatLabel(id))}</code>
+      <select data-k="mode" onchange="ctlSaveChat(${jsq(id)})">${opt(r.mode)}</select>
+      <input data-k="q1" value="${esc(q[0] || "")}" placeholder="23:30" style="width:66px"
+             title="静默开始（留空 = 没静默）">
+      <span class="kv" style="flex:none">~</span>
+      <input data-k="q2" value="${esc(q[1] || "")}" placeholder="07:00" style="width:66px">
+      <label class="check" style="font-size:12px"><input type="checkbox" data-k="qm"
+        ${r.quiet_mention ? "checked" : ""}> 静默时 @ 也回</label>
+      <input data-k="note" value="${esc(r.note || "")}" placeholder="备注" style="width:90px">
+      ${Object.keys(saved).includes(id)
+        ? `<button class="btn tiny" onclick="ctlClearChat(${jsq(id)})">删</button>`
+        : `<button class="btn tiny" onclick="ctlForget(${jsq(id)})">移除</button>`}
+    </div>`;
+  }).join("");
+}
+async function ctlSaveChat(id){
+  const row = document.querySelector(`[data-chat="${id}"]`);
+  if (!row) return;
+  const get = k => (row.querySelector(`[data-k="${k}"]`) || {}).value || "";
+  const body = {chat_id: id, mode: get("mode"), note: get("note")};
+  const q1 = get("q1").trim(), q2 = get("q2").trim();
+  body.quiet = (q1 && q2) ? [q1, q2] : [];
+  const qm = row.querySelector('[data-k="qm"]');
+  body.quiet_mention = !!(qm && qm.checked);
+  const d = await post("/api/control/chat", body);
+  if (!d || !d.ok){ flash("没保存：" + ((d && d.error) || "未知")); return; }
+  ctlData = d.after; ctlRenderChats(); flash("已保存：" + chatLabel(id));
+}
+async function ctlClearChat(id){
+  const d = await post("/api/control/chat", {chat_id: id, mode: "inherit", quiet: [],
+                                             quiet_mention: false, note: ""});
+  if (!d || !d.ok){ flash("没删掉：" + ((d && d.error) || "未知")); return; }
+  ctlData = d.after; ctlRenderChats(); flash("已恢复成跟随全局");
+}
+function ctlForget(id){
+  ctlExtra = ctlExtra.filter(x => x !== id);
+  ctlRenderChats();
+}
+async function ctlAddChat(){
+  const el = $("ctlNewChat");
+  const raw = (el && el.value || "").trim();
+  if (!raw){ flash("先填群号或 private:QQ号"); return; }
+  const id = /^(group|private):/.test(raw) ? raw
+    : (/^\d{5,}$/.test(raw) ? "group:" + raw : "private:" + raw);
+  if (id === "group:" || id === "private:"){ flash("群号/QQ号没填"); return; }
+  // 只在页面上挂一行：默认值不落盘（「全默认 = 等于没设」），
+  // 用户真改了某一项再写进去。以前这里直接提交一个全默认的条目，
+  // 被规范化丢掉，看起来像「加了但没出现」。
+  if (!ctlExtra.includes(id)) ctlExtra.unshift(id);
+  if (el) el.value = "";
+  ctlRenderChats();
+  flash("加上了一行：" + chatLabel(id) + "，改哪项就存哪项");
+}
+async function ctlSim(){
+  const out = $("simOut"), text = ($("simText") || {}).value || "";
+  if (!text.trim()){ flash("先打一句要试的话"); return; }
+  const where = ($("simWhere") || {}).value || "dm";
+  const role = ($("simRole") || {}).value || "member";
+  const isGroup = where === "group";
+  // 「主人自己」要真的用配置里的主人 QQ —— 拿别的号去试，权限判定会完全不一样
+  const owner = String((ctlData && ctlData.owner_id) || "");
+  const body = {text, is_group: isGroup, mentioned: !!($("simAt") || {}).checked,
+                role: role === "me" ? (isGroup ? "owner" : "member") : role,
+                user_id: role === "me" ? (owner || "10001") : "10001",
+                user_name: role === "me" ? "主人" : "访客",
+                chat_id: ($("simChat") || {}).value || ""};
+  if (out) out.innerHTML = '<div class="kv" style="margin-top:8px">判定中…</div>';
+  const d = await post("/api/simulate", body);
+  if (!out) return;
+  if (!d || !d.ok){ out.innerHTML = `<div class="kv" style="color:var(--red);margin-top:8px">✗ ${esc((d && d.error) || "失败")}</div>`; return; }
+  const badge = {pass: "通过", block: "拦下", skip: "未模拟", info: "说明"};
+  const color = {ignore: "var(--dim)", command: "var(--green)", rule_reply: "var(--green)",
+                 model: "var(--ui-accent)"};
+  const verdict = {
+    ignore: "不会回复",
+    command: "会执行命令" + (d.command ? " ." + d.command : ""),
+    rule_reply: "会直接回一句",
+    model: "会交给模型"
+  }[d.action] || d.action;
+  out.innerHTML = `<div class="ctl-steps">${(d.steps || []).map(st => `
+      <div class="ctl-step ${esc(st.state)}">
+        <span class="badge">${esc(badge[st.state] || st.state)}</span>
+        <span class="lb">${esc(st.label)}</span>
+        <span class="dt">${esc(st.detail)}</span>
+      </div>`).join("")}</div>
+    <div class="ctl-verdict">
+      <b style="color:${color[d.action] || "inherit"}">${esc(verdict)}</b>
+      ${esc(d.reason || "")}
+      ${d.reply ? `<div class="kv" style="margin-top:4px">会回：${esc(d.reply)}</div>` : ""}
+      <div class="kv" style="margin-top:4px">会话 ${esc(chatLabel(d.chat_id))}</div>
+    </div>`;
 }
 
 async function viewOps(target){
