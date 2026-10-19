@@ -87,7 +87,8 @@ def _wd(spec: dict) -> int:
     """
     try:
         wd = int(spec.get("weekday") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # json 里的 Infinity 会解析成 float('inf')，int(inf) 抛 OverflowError
         wd = 0
     return 6 if wd == 7 else max(0, min(6, wd))
 

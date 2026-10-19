@@ -29,14 +29,22 @@ def raw_args(ctx) -> str:
 def money(x) -> Decimal:
     """金额 → 分。非数字统一翻译成 ValueError（人话）。
 
-    以前 Decimal 的 InvalidOperation 会一路冒到处理器外面，四个命令各写一遍
-    `except (ValueError, InvalidOperation)` 还都直接 `str(e)` ——
-    用户看到的是 `[<class 'decimal.ConversionSyntax'>]`。收在这里处理一次。
+    以前 Decimal 的 InvalidOperation 会一路冒到处理器外面，四个命令各自
+    `str(e)` 回给用户 —— 看到的是 `[<class 'decimal.ConversionSyntax'>]`。
+    现在统一在这里翻成 ValueError（人话），处理器只接 ValueError 就够了。
     """
     try:
-        return Decimal(str(x)).quantize(CENT, rounding=ROUND_HALF_UP)
+        d = Decimal(str(x))
     except InvalidOperation:
         raise ValueError(f"「{x}」不是数字，金额要写成 199 或 199.9") from None
+    if not d.is_finite():
+        raise ValueError(f"「{x}」不是有限的数字")
+    try:
+        return d.quantize(CENT, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        # quantize 也会抛 InvalidOperation：结果超出上下文精度（默认 28 位）时。
+        # 那明明是个合法数字，不能说「不是数字」—— `1e30` 打八折也能撞上。
+        raise ValueError(f"「{x}」太大了，算到分就溢出了") from None
 
 
 def parse_rate(token: str) -> Decimal:
@@ -108,13 +116,8 @@ def register(api):
             return
         try:
             pay, save = discount(parts[0], parts[1])
-        except InvalidOperation:
-            # Decimal(str(x)) 对非数字抛的是 decimal.InvalidOperation，不是 ValueError；
-            # 它的 str() 是 `[<class 'decimal.ConversionSyntax'>]` 这种内部标记，
-            # 直接回给用户等于乱码。
-            await ctx.reply("价格要写数字，比如 .折扣 199 8折")
-            return
         except ValueError as e:
+            # 「不是数字 / 太大」都在 money()/parse_rate() 里翻译成人话了
             await ctx.reply(str(e))
             return
         await ctx.reply(f"🛒 原价 ¥{money(parts[0])}\n实付 ¥{pay}\n省下 ¥{save}"
@@ -127,7 +130,7 @@ def register(api):
             return
         try:
             diff, pct = change(parts[0], parts[1])
-        except (ValueError, InvalidOperation) as e:
+        except ValueError as e:
             await ctx.reply(str(e))
             return
         arrow = "📈 涨了" if diff > 0 else ("📉 跌了" if diff < 0 else "持平")
@@ -150,7 +153,7 @@ def register(api):
             return
         try:
             shares = split(parts[0], people)
-        except (ValueError, InvalidOperation) as e:
+        except ValueError as e:
             await ctx.reply(f"算不了：{e}")
             return
         lines = [f"🧾 总额 ¥{money(parts[0])} · {people} 人"]
@@ -174,7 +177,7 @@ def register(api):
             if years < 0 or years > 100 or times < 1 or times > 365:
                 raise ValueError("年数 0~100，复利次数 1~365")
             end = compound(parts[0], parts[1], years, times)
-        except (ValueError, InvalidOperation) as e:
+        except ValueError as e:
             await ctx.reply(f"算不了：{e}")
             return
         start = money(parts[0])
