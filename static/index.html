@@ -550,19 +550,6 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
   .hero{flex-direction:column;text-align:center}
   .hbub{transform:rotate(0deg)}
 }
-/* 320/360 上角色卡只有两列，名字占掉左列后右列塞不下两枚徽章，会被省略号
-   截成「1…」「20…」。这里改成三行：名字 / 徽章 / 副标题。
-   选择器要带 html 前缀 —— 主规则写在后面的 @media(max-width:760px) 里，
-   同特异性下后写的赢，不加前缀会被盖回去。 */
-@media(max-width:420px){
-  html .chathero .ch{grid-template-columns:minmax(0,1fr);gap:1px 0}
-  html .chathero .nm{grid-area:1/1}
-  html .chathero .badges{grid-area:2/1;justify-content:flex-start;flex-wrap:wrap;
-    overflow:visible;margin-top:3px;gap:4px}
-  html .chathero .tg{grid-area:3/1}
-  html .chathero .badges .tag{max-width:none;overflow:visible;text-overflow:clip}
-  html .chathero .badges .tag:first-child{display:none}   /* 英文名在窄屏省掉 */
-}
 /* 元信息行（「涂山红红 · 20:36 · 用时 2.4 秒 · 🧠 Agent」）在窄屏会被拆成孤行，
    统一改成末尾省略，别在中间断开 */
 @media(max-width:420px){
@@ -718,11 +705,6 @@ body[data-effects="true"]::after{
   html .content{padding:10px 14px 14px}
   html h2.page{font-size:20px;margin-bottom:2px}
   html h2.page::after{width:36px;height:3px;margin-top:3px}
-  /* 横屏只有 ~390px 高：角色大图 + 多行副标题会把对话区挤成一条缝，
-     这里把它压成一行名字，把高度全部让给消息区 */
-  html .chathero{min-height:0;padding:5px 11px;border-radius:12px;align-items:center}
-  html .chathero .nm{font-size:17px;line-height:1.2}
-  html .chathero .tg,html .chathero .badges,html .chathero img.bg{display:none}
   html .chatbar{margin-bottom:6px;gap:6px}
   html #msgs{padding:2px;gap:10px}
   html .chips{margin-top:6px}
@@ -819,22 +801,6 @@ body[data-density="wide"] .card{padding:20px 24px}
 
 /* 对话 */
 #chatWrap{display:flex;flex-direction:column;height:100%;min-height:520px;gap:10px}
-.chathero{
-  position:relative;border-radius:calc(var(--ui-radius) + 6px);overflow:hidden;
-  min-height:132px;display:flex;align-items:flex-end;padding:16px 18px;
-  border:1px solid var(--glass-line);box-shadow:var(--comic-shadow);
-  background:linear-gradient(110deg, color-mix(in srgb,var(--ui-accent) 26%,white), color-mix(in srgb,var(--ui-accent2) 30%,white));
-}
-.chathero img.bg{position:absolute;right:14px;top:50%;transform:translateY(-50%);
-  height:78%;width:auto;max-width:38%;object-fit:cover;object-position:50% 22%;
-  border-radius:18px;border:3px solid rgba(255,255,255,.82);
-  box-shadow:0 12px 28px rgba(80,40,30,.24);filter:saturate(1.04)}
-.chathero .scrim{position:absolute;inset:0;background:linear-gradient(90deg, rgba(255,255,255,.86), rgba(255,255,255,.35) 55%, transparent 78%)}
-.chathero .ch{position:relative;z-index:1;display:flex;flex-direction:column;gap:2px}
-.chathero .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:34px;line-height:1.05;color:var(--ink)}
-.chathero .tg{font-size:12px;color:var(--ink-soft);max-width:min(52vw,520px);line-height:1.6}
-.chathero .badges{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
-.chathero .badges .tag{background:color-mix(in srgb, var(--surface-2) 80%, transparent);color:var(--ink);border-color:var(--glass-line)}
 .chatbar{align-items:center}
 #msgs{gap:14px;padding:6px 2px 2px}
 .msg .bub{
@@ -1086,10 +1052,6 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   main{min-height:0;overflow:hidden}
   #chatWrap{min-height:0;padding-bottom:0}
   h2.page{font-size:25px}
-  .chathero{min-height:108px;padding:12px 14px}
-  .chathero img.bg{height:80%;max-width:42%;right:10px;border-width:2px}
-  .chathero .nm{font-size:27px}
-  .chathero .tg{max-width:62vw;font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .msg{max-width:96%}
 }
 @media(prefers-reduced-motion:reduce){body[data-effects="true"]::after{animation:none}}
@@ -1140,20 +1102,9 @@ html[data-theme="dark"] .msg .bub pre.code .t-a{color:#d0a0ff}
   .brand .bt{font-size:13.5px;letter-spacing:.4px;max-width:none}
   header{padding:4px 10px 5px}
   .pill{font-size:max(11px, calc(10.5px * var(--fx)));padding:1px 8px}
-  #pGw.ok{display:none}                 /* 正常态不必常驻“面板运行中” */
+  #pConn.ok{display:none}                /* 一切正常就不占地方；异常才出来 */
   header > .btn.tiny{display:none}      /* 重载插件收进运维页 */
   #chatWrap{gap:6px}
-  .chathero{min-height:0;padding:8px 11px;align-items:center;border-radius:16px}
-  .chathero img.bg{position:static;transform:none;order:-1;height:44px;width:44px;
-    max-width:none;border-radius:13px;border-width:2px;margin-right:10px;object-position:50% 18%}
-  .chathero .scrim{display:none}
-  .chathero .ch{gap:0 8px;min-width:0;flex:1;display:grid;
-    grid-template-columns:auto minmax(0,1fr);align-items:center}
-  .chathero .nm{grid-area:1/1;font-size:22px;line-height:1.15}
-  .chathero .tg{grid-area:2/1/3/3;display:block;font-size:max(11px, calc(10.5px * var(--fx)));max-width:100%;line-height:1.35;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;-webkit-line-clamp:none}
-  .chathero .badges{grid-area:1/2;justify-content:flex-end;margin:0;gap:4px;flex-wrap:nowrap;overflow:hidden}
-  .chathero .badges .tag{font-size:max(11px, calc(9.5px * var(--fx)));padding:1px 6px;white-space:nowrap}
   .chatbar{gap:6px;margin-bottom:0;flex-wrap:nowrap}
   .chatbar select{flex:1;min-width:0;height:26px;padding:0 9px;font-size:11.5px;text-overflow:ellipsis}
   .chatbar .btn.tiny{height:26px;padding:0 9px;font-size:max(11px, calc(10.5px * var(--fx)));white-space:nowrap}
@@ -1234,11 +1185,6 @@ html[data-theme="dark"] .msg .bub code,html[data-theme="dark"] .msg .bub pre{bac
 html[data-theme="dark"] .msg.me .bub{background:linear-gradient(135deg,var(--ui-accent),color-mix(in srgb,var(--ui-accent) 55%,var(--ui-accent2)))}
 html[data-theme="dark"] #chatInput{background:rgba(255,255,255,.055)}
 html[data-theme="dark"] #chatInput textarea{background:transparent;box-shadow:none;border-color:var(--line)}
-html[data-theme="dark"] .chathero{
-  background:linear-gradient(110deg,color-mix(in srgb,var(--ui-accent) 22%,#241c17),color-mix(in srgb,var(--ui-accent2) 16%,#241c17));
-  box-shadow:0 10px 30px rgba(0,0,0,.4)}
-html[data-theme="dark"] .chathero .scrim{background:linear-gradient(90deg,rgba(26,19,15,.94),rgba(26,19,15,.55) 55%,transparent 78%)}
-html[data-theme="dark"] .chathero .badges .tag{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.12)}
 html[data-theme="dark"] .chips button{background:rgba(255,255,255,.06);box-shadow:none}
 html[data-theme="dark"] .plugcard{background:linear-gradient(160deg,rgba(255,255,255,.06),var(--paper))}
 html[data-theme="dark"] .wcard{background:linear-gradient(150deg,rgba(255,255,255,.06),var(--paper))}
@@ -1486,9 +1432,11 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
     <header id="strip">
       <button id="navBtn" class="navbtn" onclick="navToggle()" title="菜单" aria-label="菜单"
             aria-controls="navAside" aria-expanded="false">☰</button>
-      <span class="pill" id="pGw"><span class="dot"></span>面板 …</span>
-      <span class="pill" id="pQq" onclick="go('ops')" title="去运维 · 扫码登录" style="cursor:pointer"><span class="dot"></span>QQ …</span>
-      <span class="pill" id="pNap" onclick="go('ops')" title="去运维看 NapCat" style="cursor:pointer"><span class="dot"></span>NapCat …</span>
+      <!-- 三个状态合成一个：面板 / QQ / NapCat 说的其实是同一条链路，
+           分开显示等于把「没连上」这件事说三遍，手机上占掉顶栏 60% 的宽度。
+           正常时整块隐藏（见 CSS #pConn.ok），异常时只出来一个，点一下去运维。 -->
+      <span class="pill" id="pConn" onclick="go('ops')" title="连接状态（点开去运维）"
+            style="cursor:pointer"><span class="dot"></span><b>…</b></span>
       <span class="spacer"></span>
       <button class="btn tiny" onclick="reloadFeatures()">⟳ 重载插件</button>
     </header>
@@ -2267,19 +2215,29 @@ let V = "chat";
 async function strip(){
   try{
     const o = await api("/api/overview?lite=1");   // 21 KB → 0.2 KB，顶栏只要三个点
-    const a = o.adapter || {};
-    const n = o.napcat || {};
-    const set = (id, cls, html) => {              // 内容没变就不碰 DOM（8 秒一轮不再引人分心）
+    const gw = o.gateway || {}, a = o.adapter || {}, n = o.napcat || {};
+    const set = (id, cls, html, tip) => {         // 内容没变就不碰 DOM（8 秒一轮不再引人分心）
       const el = $(id);
+      if (!el) return;
       if (el.className !== cls) el.className = cls;
       if (el.innerHTML !== html) el.innerHTML = html;
+      const t = tip || "";
+      if (el.title !== t) el.title = t;
     };
-    set("pGw", "pill " + (o.gateway.active ? "ok":"bad"),
-        `<span class="dot"></span>面板 <b>${o.gateway.active?"运行中":"停了"}</b>`);
-    set("pQq", "pill " + (a.connected ? "ok":"bad"),
-        `<span class="dot"></span><span style="font-family:var(--font-body)">QQ</span> <b>${a.connected?"在线":"离线"}</b>`);
-    set("pNap", "pill " + (n.ok && n.is_login ? "ok":"wait"),
-        `<span class="dot"></span>NapCat <b>${n.ok && n.is_login ? "已登录":"未就绪"}</b>`);
+    /* 一条链路，只报最靠前的那处故障 —— 分开报会把「没连上」说三遍。
+       正常（三个都 OK）时整块隐藏，顶栏只剩 ☰。 */
+    let cls = "ok", label = "在线", tip = "面板、QQ、NapCat 都正常";
+    if (!gw.active) {
+      cls = "bad"; label = "面板停了"; tip = "面板进程异常 —— 点开看运维";
+    } else if (!a.connected) {
+      cls = "bad"; label = "QQ 未连接";
+      tip = n.ok ? "NapCat 在跑，但没登录 QQ —— 点一下扫码" : "NapCat 没起来 —— 点开看平台";
+    } else if (!(n.ok && n.is_login)) {
+      cls = "wait"; label = "QQ 未就绪"; tip = "连接在，但 NapCat 状态不明 —— 点开看平台";
+    }
+    set("pConn", "pill " + cls,
+        `<span class="dot"></span><b>${label}</b>`,
+        cls === "ok" ? tip : tip + "（点开去运维）");
   }catch(e){}
 }
 async function reloadFeatures(){ const r = await post("/api/action", {action:"reload_features"}); alert(r.msg || r.error || "ok"); }
@@ -2359,20 +2317,6 @@ async function viewChat(){
   const sessions = [chat.session || "studio-main"];
   $("view").innerHTML = `
   <div id="chatWrap" data-char="${esc(ACTIVE.id)}">
-    <div class="chathero">
-      <img class="bg" src="${charSrc(ACTIVE.id, "hero")}"
-           fetchpriority="high" alt="" onerror="artFallback(this)">
-      <div class="scrim"></div>
-      <div class="ch">
-        <span class="nm">${esc(ACTIVE.name)}</span>
-        <span class="tg">${esc(ACTIVE.tagline || ACTIVE.hero_note || "")}</span>
-        <span class="badges">
-          <span class="tag">${esc(ACTIVE.emoji)} ${esc(ACTIVE.en || ACTIVE.id)}</span>
-          <span class="tag">📚 ${(ACTIVE.kb && ACTIVE.kb.chunks) ? ACTIVE.kb.chunks + " 块知识" : "知识库"}</span>
-          <span class="tag">🧩 ${(ACTIVE.plugins || []).length} 个专属插件</span>
-        </span>
-      </div>
-    </div>
     <div class="chatbar">
       <select id="sessSel" title="会话">${sessions.map(s=>`<option value="${esc(s)}" ${s===chat.session?"selected":""}>${esc(sessLabel(s))}</option>`).join("")}</select>
       <button class="btn tiny" onclick="newConv()">＋ 新对话</button>

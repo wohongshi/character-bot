@@ -65,7 +65,8 @@ check(f"6 张小图合计 ≤ 260KB（现在 {small_kb:.0f}KB）", small_kb <= 2
 # 改成 JS 按 视口×DPR 选档，见 charSrc()。
 check("有 charSrc() 按视口×DPR 选档", "function charSrc(" in HTML and "CHAR_STEPS" in HTML)
 check("不再用 srcset（会被算成 100vw）", "srcset=" not in HTML)
-check("聊天大图走 hero 档", 'charSrc(ACTIVE.id, "hero")' in HTML)
+# 对话页的角色大卡已删除（用户要求把高度让给消息），顺带首屏不再拉 900px 原图。
+check("对话页不再拉 hero 大图（首屏只走 thumb）", 'charSrc(ACTIVE.id, "hero")' not in HTML)
 check("角色卡走 card 档", 'charSrc(c.id, "card")' in HTML)
 check("头像/侧栏/看板走 thumb 档", 'charSrc(ACTIVE.id, "thumb")' in HTML)
 check("可容忍 10% 轻微放大", "need * 0.9" in HTML)

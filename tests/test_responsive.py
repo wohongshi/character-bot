@@ -58,8 +58,8 @@ short = re.search(r"@media\(max-height:520px\)\{(.*?)\n\}", HTML, re.S)
 check("有 max-height:520px 分支", bool(short))
 if short:
     blk = short.group(1)
-    check("横屏压缩角色卡副标题/徽章",
-          ".chathero .tg" in blk and ".badges" in blk)
+    # 角色大卡删掉之后，横屏不用再压缩它 —— 高度直接归消息区。
+    check("横屏没有角色大卡（高度全给消息区）", "chathero" not in HTML)
     check("横屏缩小正文内边距", ".content{padding:10px 14px 14px}" in blk)
 
 # 侧栏「收成图标条」只对桌面矮窗口成立：手机横屏走的是浮层侧栏，
@@ -141,9 +141,14 @@ narrow = re.search(r"@media\(max-width:420px\)\{(.*?)\n\}", HTML, re.S)
 check("有 ≤420px 分支", bool(narrow))
 if narrow:
     blk = narrow.group(1)
-    check("窄屏角色卡改单列（徽章不再被省略号截断）",
-          "grid-template-columns:minmax(0,1fr)" in blk)
-    check("选择器带 html 前缀（否则被后面的 760 规则盖掉）", "html .chathero" in blk)
+    check("窄屏没有角色大卡（不在小屏上重复占位）", "chathero" not in HTML)
+
+# 顶栏：三个状态胶囊（面板/QQ/NapCat）说的是同一条链路，
+# 分开显示等于把「没连上」说三遍，手机上占掉顶栏 60% 的宽度。
+print("\n· 顶栏状态")
+check("状态合成一个胶囊", len(re.findall(r'class="pill" id="p', HTML)) == 1)
+check("正常时整块隐藏（不占地方）", "#pConn.ok{display:none}" in HTML)
+check("异常时可点去运维", 'id="pConn"' in HTML and 'onclick="go(\'ops\')"' in HTML)
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(1 if FAIL else 0)
