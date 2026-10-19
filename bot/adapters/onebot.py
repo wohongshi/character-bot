@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 from bot.onebot import OneBotError, OneBotHTTP
 
-import hashlib
 import hmac
 import json
 import logging
@@ -85,8 +84,13 @@ class OneBotAdapter(BaseAdapter):
                 if safe_equal(sig, self._signature_hex(body, algo)):
                     return True
 
-        if query:
-            got = (query.get("access_token") or [""])[0] if isinstance(query, dict) else ""
+        if isinstance(query, dict):
+            # 形状要兼容两种：`parse_qs(u.query)` 给的是 `{k: str}`（本项目 server 的
+            # 用法），但标准库 `urllib.parse.parse_qs` 给的是 `{k: [str]}`。
+            # 以前写 `(v or [""])[0]` 直接把字符串取了首字母 → `?access_token=` 永远不成立。
+            got = query.get("access_token")
+            if isinstance(got, (list, tuple)):
+                got = got[0] if got else ""
             if got and safe_equal(str(got), self.token):
                 return True
 
@@ -276,10 +280,17 @@ async function loadStatus(){
     "<br>登录：<b>" + (n.is_login ? "已登录" : "未登录") + "</b>" +
     (n.uin ? " · " + esc(n.uin) + (n.nick ? " " + esc(n.nick) : "") : "") +
     (n.phase ? " · 阶段 <code>" + esc(n.phase) + "</code>" : "") +
+    // 入站数量：和「上次消息」一起看，能立刻分清「没在推」还是「推了但被拒」
+    ((d && d.stats && d.stats["ingress_ok:onebot11"] != null)
+      ? " · 已收 " + d.stats["ingress_ok:onebot11"] + " 条" : "") +
     (d && d.last_event_age_s != null ? "<br>上次消息：" + d.last_event_age_s + " 秒前" : "") +
-    // 被拒的入站：面板显示「已登录」但 QQ 里不回消息，最常见的就是这个
-    ((d && d.stats && d.stats.auth_reject > 0)
-      ? '<br><b class="bad">有 ' + d.stats.auth_reject + ' 条事件被拒（鉴权失败）</b>'
+    // 被拒的入站：面板显示「已登录」但 QQ 里不回消息，最常见的就是这个。
+    // 看**连续**被拒（`auth_streak`，收到一条合法事件就清零），不是累计值 ——
+    // 累计值只涨不清，一次错请求就能让红字永远挂着，那比不报还坏（用户会以为还没修好）。
+    // 只念本平台的键：总数里还有飞书/微信/QQ官方的签名失败，拿总数报
+    // 「NapCat 的 token 不一致」会把人带错方向。阈值 3：单次探测不值得报警。
+    ((d && d.stats && d.stats["auth_streak:onebot11"] >= 3)
+      ? '<br><b class="bad">有 ' + d.stats["auth_streak:onebot11"] + ' 条事件连续被拒（鉴权失败）</b>'
         + ' · <span class="kv">NapCat 和面板的 token 不一致：重启一次 NapCat 让它重读配置</span>'
       : '');
   const w = document.getElementById("webui");

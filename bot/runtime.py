@@ -221,6 +221,9 @@ class BotRuntime(RuntimeFeatures):
                       "images": 0, "vision": 0, "vision_fail": 0, "vision_skip": 0,
                       "agent_runs": 0, "agent_tool_calls": 0, "agent_errors": 0,
                       "agent_fallbacks": 0, "requests": 0, "recalls": 0,
+                      # 入站三兄弟：收下的 / 鉴权被拒的 / 其它被拒的。
+                      # 面板上「已登录但 QQ 不回消息」第一眼就要看这三个数。
+                      "ingress_ok": 0, "auth_reject": 0, "ingress_reject": 0,
                       "last_event_ts": 0.0, "last_event_text": ""}
         self._chat_locks: dict = {}
         self._hist_lock = asyncio.Lock()

@@ -372,6 +372,44 @@ def _run(cmd: list, timeout: int = 30, env: dict | None = None) -> tuple[int, st
 
 MAX_BODY = 64 * 1024 * 1024          # 与角色包上限一致；JSON 接口远小于这个数
 JSONL_TAIL_BYTES = 4 * 1024 * 1024      # 只读最后 4MB：日志是 append-only，面板只要最近的行
+_STATS_LOCK = threading.Lock()          # rt.stats 的跨线程自增（入站计数来自 HTTP 线程池）
+
+
+def _note_ingress(rt, platform: str, code: int = 0) -> None:
+    """记一次入站结果（线程安全）。`code=0` 表示收下了，否则是拒绝时的 HTTP 码。
+
+    为什么要锁：`Handler` 跑在 `ThreadingHTTPServer` 上，`st[k] = st.get(k) + 1` 不是
+    原子操作，并发到达的事件会丢计数 —— 而这个计数正是用来暴露「面板说已登录、
+    事件其实一直被拒」的诊断手段，丢计数就等于少报问题。
+
+    为什么既有累计数又有「连续被拒」：
+
+    - `auth_reject` / `auth_reject:<平台>` 是累计值，只做统计；
+    - `auth_streak:<平台>` 是**连续**被拒数，收到第一条合法事件就清零。
+      面板上要红字报警的是它 —— 累计值只涨不清，一次错请求就能让警告永远挂着，
+      用户看到的就变成「一直报错但其实早就好了」，这种假警报比不报还坏。
+      另外总数**不能**被单个适配器页面当成自己的数字：飞书/微信/QQ官方
+      的签名失败也会记在同一个总数里，OneBot 页面照着念「NapCat 的 token 不一致」就是误导。
+    """
+    st = getattr(rt, "stats", None)
+    if not isinstance(st, dict):
+        return
+    with _STATS_LOCK:
+        if code == 0:
+            st["ingress_ok"] = int(st.get("ingress_ok") or 0) + 1
+            pkey = f"ingress_ok:{platform}"
+            st[pkey] = int(st.get(pkey) or 0) + 1
+            if platform:
+                st[f"auth_streak:{platform}"] = 0      # 收到了 → 连续被拒清零
+            return
+        key = "auth_reject" if code in (401, 403) else "ingress_reject"
+        st[key] = int(st.get(key) or 0) + 1
+        if platform:
+            pkey = f"{key}:{platform}"
+            st[pkey] = int(st.get(pkey) or 0) + 1
+            if key == "auth_reject":
+                skey = f"auth_streak:{platform}"
+                st[skey] = int(st.get(skey) or 0) + 1
 
 
 def _read_jsonl(path: Path) -> list:
@@ -4381,44 +4419,63 @@ class Handler(BaseHTTPRequestHandler):
         以前这里只认 Content-Length，于是 body 永远读成空、而且 chunk 数据留在
         socket 里 —— 下一条请求会从半个 chunk 头开始解析，日志里刷出一堆
         `Bad request syntax ('21e')`，事件也永远进不来。
-        超限时照样把剩余分块读完，否则连接会错位。
+
+        每条边界的来历（都是能被未鉴权客户端打到的路径，body 读在 `parse_inbound`
+        之前，此时还没验签）：
+
+        - **负数块长**：`int(b"-1", 16)` 是合法的 `-1`，既不是结尾也不是错误，会落到
+          `read(-1)` = 一直读到 EOF —— `max_bytes` 整个被绕过，内存随便灌。必须显式拒。
+        - **超限**：不再往下读，置 `close_connection` 放弃这条连接。以前「排干后继续」
+          等于把「请求过大」变成「客户端想发多久就发多久」，`Handler.timeout` 是空闲超时，
+          一直发数据的连接永远不会触发。
+        - **size 行被截断**：带长 chunk-extension 的合法请求会被 `readline(64)` 截断，
+          剩下的扩展字节会被当成下一块的 size 行 —— 流错位但连接还活着。必须显式判换行，
+          不能靠 `int()` 失败兜底。
+        - **读超时**：`Handler.timeout = 65` 抛的是 `TimeoutError`（`OSError` 的子类），
+          不接住就会从 `do_POST` 抛出去，客户端拿到空响应而不是错误码。
         """
         out = bytearray()
         total = 0
-        while True:
-            line = self.rfile.readline(64)
-            if not line:
-                break
-            try:
-                size = int((line.split(b";")[0].strip() or b"0"), 16)
-            except ValueError:
-                self._body_malformed = True
-                self.close_connection = True
-                break
-            if size == 0:                       # 正常结尾：后面可能有 trailer
-                for _ in range(8):
-                    t = self.rfile.readline(256)
-                    if not t or t in (b"\r\n", b"\n"):
-                        break
-                break
-            total += size
-            if total > max_bytes:
-                self._body_too_big = True
-                left = size
-                while left > 0:
-                    chunk = self.rfile.read(min(65536, left))
-                    if not chunk:
-                        break
-                    left -= len(chunk)
-                self.rfile.read(2)
-                continue
-            try:
+        try:
+            while True:
+                line = self.rfile.readline(4096)
+                if not line:
+                    break
+                if not line.endswith(b"\n"):        # 超长/被截断的 size 行：不能靠猜
+                    self._body_malformed = True
+                    self.close_connection = True
+                    break
+                try:
+                    size = int((line.split(b";")[0].strip() or b"0"), 16)
+                except ValueError:
+                    self._body_malformed = True
+                    self.close_connection = True
+                    break
+                if size < 0:                        # `-1` 也能被 int(...,16) 吃掉 → read(-1)
+                    self._body_malformed = True
+                    self.close_connection = True
+                    break
+                if size == 0:                       # 正常结尾：后面可能有 trailer
+                    for _ in range(8):
+                        t = self.rfile.readline(256)
+                        if not t or t in (b"\r\n", b"\n"):
+                            break
+                    break
+                total += size
+                if total > max_bytes:
+                    self._body_too_big = True
+                    self.close_connection = True    # 不排干：剩余分块别读，直接断开
+                    break
                 data = self.rfile.read(size)
-            except OSError:
-                self.close_connection = True
-                break
-            out.extend(data)
-            self.rfile.read(2)                  # 每块后面的 CRLF
+                if len(data) < size:                # 对端半路断了
+                    self._body_malformed = True
+                    self.close_connection = True
+                    break
+                out.extend(data)
+                self.rfile.read(2)                  # 每块后面的 CRLF
+        except OSError:                             # 含 socket 读超时
+            self._body_malformed = True
+            self.close_connection = True
         return bytes(out)
 
     def _raw_body(self, max_bytes: int = MAX_BODY) -> bytes:
@@ -5021,12 +5078,14 @@ class Handler(BaseHTTPRequestHandler):
                 logger.exception("角色导入失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
             return
-        # NapCat HTTP POST 事件入口（用自己的 token 鉴权，不走面板头）
-        # 先验 token 再读 body：未鉴权的客户端不该有机会让服务端分配大块内存。
-        # ---------- 平台入站：所有系统插件按 INGRESS 路径分发 ----------
+        # 平台入站：所有系统插件按 INGRESS 路径分发
         # 以前这里写死 `/onebot/event` + NapCat token 校验。现在每个适配器
         # 自己声明入站路径并自己验签（飞书 challenge、微信 echostr、QQ 的
         # Ed25519），server 只负责把「路径 → 适配器」对上。
+        #
+        # 注意 body 必须在验签**之前**读完：OneBot 的 `x-signature` 是对原始 body
+        # 做的 HMAC，不先拿到 body 就没法验。所以这里靠 8MB 上限 + 「超限断开」
+        # 来兜底内存，而不是靠「先验后读」。
         rt = getattr(BOT, "runtime", None) if BOT else None
         adapters = dict(getattr(rt, "adapters", {}) or {})
         target = next((ad for ad in adapters.values()
@@ -5034,6 +5093,10 @@ class Handler(BaseHTTPRequestHandler):
         if target is not None:
             body = (self._raw_body(max_bytes=8 * 1024 * 1024)
                     if self.command in ("POST", "PUT") else b"")
+            # 读超时 / 块长非法 / 对端早断：明确拒绝，别把半截 body 当合法事件往下传
+            if getattr(self, "_body_malformed", False):
+                self._json({"ok": False, "error": "请求体不完整"}, 400)
+                return
             if getattr(self, "_body_too_big", False):
                 self._json({"ok": False, "error": "事件体过大"}, 413)
                 return
@@ -5047,6 +5110,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if res.event:
                 BOT.submit(res.event, source=target.platform)
+                _note_ingress(rt, target.platform)
             if res.reply:
                 ctype, payload = res.reply
                 self._send_bytes(payload, ctype, code=res.status or 200)
@@ -5054,13 +5118,8 @@ class Handler(BaseHTTPRequestHandler):
             if res.status >= 400:
                 # 计数：**接口返回 403 但面板显示「已登录」** 是这次「QQ 发什么都不回」
                 # 最难查的地方 —— 事件其实一直在被拒。先把数字记下来，插件页会亮出来。
-                try:
-                    st = getattr(rt, "stats", None)
-                    if isinstance(st, dict):
-                        key = "auth_reject" if res.status in (401, 403) else "ingress_reject"
-                        st[key] = int(st.get(key) or 0) + 1
-                except Exception:                              # noqa: BLE001
-                    pass
+                # 按平台分开记：飞书/微信的签名失败不该让 OneBot 页面报「NapCat token 不一致」。
+                _note_ingress(rt, target.platform, res.status)
                 self._json({"ok": False, "error": res.error or "bad request"}, res.status)
                 return
             self._json({"ok": True})
@@ -5081,6 +5140,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         body = self._body()
+        if getattr(self, "_body_malformed", False):
+            self._json({"ok": False, "error": "请求体不完整"}, 400)
+            return
         if getattr(self, "_body_too_big", False):
             self._json({"ok": False, "error": "请求体超过 64MB"}, 413)
             return
