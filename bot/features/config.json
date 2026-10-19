@@ -158,7 +158,8 @@
     "subnet",
     "timestamptools",
     "cronexpr",
-    "stickers_cmd"
+    "stickers_cmd",
+    "mood"
   ],
   "settings": {
     "keyword": {

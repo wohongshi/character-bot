@@ -167,6 +167,25 @@ KB_URL = "http://127.0.0.1:8797"
 
 CHAT_TIMEOUT = 240
 
+#: 对话里的轻量工具（把某一条消息拿去加工）。提示词写死在这里：
+#: 这几个动作要的是**稳定输出**，不是角色扮演 —— 所以不带人格、温度低。
+CHAT_TOOL_MAX = 4000
+CHAT_TOOLS = {
+    "translate": (
+        "你是翻译。把用户给的内容翻译成另一种语言：中文→英文，其它语言→简体中文。"
+        "保留原文的语气和换行，专有名词不要硬译。只输出译文，不要解释、不要加引号。"),
+    "summary": (
+        "把用户给的内容压缩成几点，用中文，最多 5 条，每条一行。"
+        "只留事实与结论，去掉寒暄和重复。不要加标题、不要写「总结：」。"),
+    "explain": (
+        "把用户给的内容拆开讲清楚：它在说什么、关键概念是什么意思、有没有隐含前提。"
+        "用中文，短句，分点。如果里面有错，直接指出错在哪。不要复述原文。"
+        "直接给拆解，不要先描述你打算怎么做。"),
+    "polish": (
+        "把用户给的内容改写得更清楚、更自然，保持原意和语气，不要扩写。"
+        "只输出改写后的文字。"),
+}
+
 CHAT_WORKERS = 3          # 同时在跑的对话数（同一个会话永远只有 1 个）
 
 # 上下文预算：历史超过这么多字就把更早的部分压成一段「前情提要」。
@@ -996,6 +1015,14 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
     memories = _memories_text(cid, text, scope=("web:" + session) if session else "")
     if memories:
         sys_text += "\n" + memories
+    # 心情也跟技能目录无关：只在她状态明显偏离时加一句，正常时啥都不加
+    try:
+        from bot import mood as mood_mod
+        mh = mood_mod.hint(_state_dir(), cid)
+        if mh:
+            sys_text += "\n" + mh
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("读心情失败：%s", e)
     # 表情包也跟技能目录无关：插件框架没起来也得能发表情
     try:
         from bot import stickers as st
@@ -1490,6 +1517,49 @@ def _plugin_silent(web_reply, job: dict) -> bool:
     用户在面板里看到的是「发出去没反应」。
     """
     return not str(web_reply or "").strip() and not (job.get("images") or [])
+
+
+#: 推理模型有时把「我要做什么」当成正文开头。这些前缀不删掉，用户看到的第一行
+#: 就是「用户给的内容是一句话，要我拆开讲清楚」——像是把工作日志发出来了。
+_TOOL_META_RE = re.compile(
+    "^(?:用户(?:给的|提供的)?内容[^\\n]{0,40}?[，,：:]"
+    "|用户要求[^\\n]{0,40}?[，,：:]"
+    "|我们需要[^\\n]{0,40}?[，,：:]"
+    "|我(?:需要|要)先[^\\n]{0,30}?[，,：:]"
+    "|好的[，,][^\\n]{0,10}?[：:])")
+
+
+def _clean_tool_text(text: str) -> str:
+    """洗掉工具输出里的开场白和包裹引号；洗不出东西就原样返回（别把内容搞没）。"""
+    t = str(text or "").strip()
+    if not t:
+        return t
+    lines = t.splitlines()
+    # 最多剥两条：真有人的内容第一行就长这样时也不至于全吃掉
+    for _ in range(2):
+        if not lines:
+            break
+        m = _TOOL_META_RE.match(lines[0].strip())
+        if not m:
+            break
+        rest = lines[0][m.end():].strip()
+        lines = ([rest] if rest else []) + lines[1:]
+    out = "\n".join(lines).strip()
+    if len(out) >= 2 and out[0] in "「「\"'“" and out[-1] in "」」\"'”":
+        out = out[1:-1].strip()
+    return out or t
+
+
+def _note_mood(cid: str, user_text: str, reply: str) -> None:
+    """记一轮心情。**成功回复的两条路径都要调**（agent 那条会提前 return）。
+
+    失败的话只写日志：心情掉了不该影响回复，也不该让整轮报错。
+    """
+    try:
+        from bot import mood as mood_mod
+        mood_mod.apply_turn(_state_dir(), cid, str(user_text or ""), str(reply or ""))
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("记心情失败（不影响回复）：%s", e)
 
 
 def _apply_stickers(text: str, job: dict, cid: str) -> str:
@@ -2243,6 +2313,7 @@ def _run_job_body(job: dict, cid: str) -> None:
                     _append_images(job, cid)
                 if reply_agent:
                     text = _apply_stickers(reply_agent, job, cid)
+                    _note_mood(cid, job.get("text"), text)
                     tool_calls = len(res.get("tool_calls") or [])
                     _append_jsonl(MSG_JSONL, {"ts": time.time(),
                                               "chat_id": "web:" + job["session"],
@@ -2289,6 +2360,9 @@ def _run_job_body(job: dict, cid: str) -> None:
                                   "role": "assistant", "text": text[:800]})
     except Exception as e:                                 # noqa: BLE001
         ok, err = False, f"{type(e).__name__}: {e}"[:300]
+    if ok:
+        # 心情按「这一轮真的说了什么」记 —— 失败的那轮不算（她没真正回应）
+        _note_mood(cid, job.get("text"), text)
     try:
         _append_jsonl(CHAT_JSONL, {
             "ts": time.time(), "session": job["session"], "character": cid,
@@ -2346,15 +2420,28 @@ def _kb_context(text: str, cid: str = "") -> str:
             d = json.loads(r.read().decode("utf-8", "replace") or "{}")
     except Exception:                                               # noqa: BLE001
         return ""
-    chunks = d.get("hits") or d.get("chunks") or d.get("results") or []
+    chunks = [c for c in (d.get("hits") or d.get("chunks") or d.get("results") or [])
+              if isinstance(c, dict)]
     out = []
     for c in chunks[:4]:
-        if isinstance(c, dict):
-            t = str(c.get("text") or c.get("content") or "").strip()
-            src = str(c.get("source") or c.get("title") or "").strip()
-            if t:
-                out.append(f"（{src}）{t[:500]}" if src else t[:500])
-    return "\n".join(out)[:1200]
+        t = str(c.get("text") or c.get("content") or "").strip()
+        src = str(c.get("source") or c.get("title") or "").strip()
+        if t:
+            out.append(f"（{src}）{t[:500]}" if src else t[:500])
+    ctx_text = "\n".join(out)[:1200]
+    if chunks:
+        # 面板这边以前**不记**命中，于是「知识库 → 最近命中」只有 QQ 的记录，
+        # 在面板里问一句「她最在意什么」什么都不会出现。两边用同一条日志。
+        try:
+            row = {"ts": time.time(), "character": cid, "via": "panel",
+                   "query": str(text)[:200], "chars": len(ctx_text),
+                   "hits": [{"id": c.get("id"), "source": c.get("source", ""),
+                             "title": c.get("title", ""),
+                             "dense": float(c.get("dense") or 0)} for c in chunks[:5]]}
+            _append_jsonl(KB_HITS, row)
+        except Exception as e:                                      # noqa: BLE001
+            logger.debug("KB 命中日志写入失败：%s", e)
+    return ctx_text
 
 
 def _persona_text(cid: str = "") -> str:
@@ -4203,6 +4290,7 @@ _SENSITIVE_GET = frozenset({
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
+    "/api/mood",
 })
 
 
@@ -4629,6 +4717,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "character": cid,
                             "error": f"{type(e).__name__}: {e}"})
             return
+        if u.path == "/api/kb/manual":
+            cid = (q.get("character") or [""])[0].strip().lower() or _active_cid()
+            try:
+                with urllib.request.urlopen(
+                        KB_URL + "/manual?character=" + urllib.request.quote(cid), timeout=8) as r:
+                    self._json(json.load(r))
+            except Exception as e:                                  # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            return
         if u.path == "/api/kb/recent":
             n = _int_param(q, "n", 20, lo=1, hi=100)
             cid = (q.get("character") or [""])[0].strip().lower() or _active_cid()
@@ -4684,6 +4781,11 @@ class Handler(BaseHTTPRequestHandler):
                         "count": len(items), "max": st.MAX_PER_CHAR,
                         "max_bytes": st.MAX_BYTES,
                         "hint": "文件名就是它的意思（开心.png）；回复里写 [表情:开心] 就会发它"})
+            return
+        if u.path == "/api/mood":
+            from bot import mood as mood_mod
+            cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
+            self._json(mood_mod.summary(_state_dir(), cid))
             return
         if u.path == "/api/plugins/audit":
             self._json(_plugin_audit())
@@ -5334,6 +5436,75 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)}, 400)
             return
 
+        if u.path in ("/api/kb/add", "/api/kb/delete"):
+            cid = re.sub(r"[^a-z0-9_\-]", "",
+                         str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+            payload = ({"text": str(body.get("text") or ""),
+                        "title": str(body.get("title") or ""),
+                        "character": cid}
+                       if u.path == "/api/kb/add"
+                       else {"id": int(body.get("id") or -1), "character": cid})
+            try:
+                req = urllib.request.Request(
+                    KB_URL + ("/add" if u.path == "/api/kb/add" else "/delete"),
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as r:   # noqa: S310
+                    out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+            except urllib.error.HTTPError as e:
+                try:
+                    msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+                except ValueError:
+                    msg = None
+                self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
+                return
+            except Exception as e:                                  # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 502)
+                return
+            self._json({**out, "character": cid})
+            return
+        if u.path == "/api/chat/tool":
+            # 对**某一条**消息做轻量处理：翻译 / 总结 / 拆解 / 润色。
+            # 结果不回写 chat.jsonl —— 它是「工具输出」，不是她的一句话；
+            # 写进去会污染历史，也会被当成上下文再喂给模型。
+            act = str(body.get("action") or "").strip().lower()
+            if act not in CHAT_TOOLS:
+                self._json({"ok": False, "error": f"不认识的动作：{act or '（空）'}"}, 400)
+                return
+            src = str(body.get("text") or "").strip()
+            if not src:
+                self._json({"ok": False, "error": "这条没有文字可以处理"}, 400)
+                return
+            if len(src) > CHAT_TOOL_MAX:
+                self._json({"ok": False,
+                            "error": f"太长了（{len(src)} 字，上限 {CHAT_TOOL_MAX}）"}, 400)
+                return
+            cid = re.sub(r"[^a-z0-9_\-]", "",
+                         str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+            mm = (BOT.models.for_character(cid)
+                  if hasattr(BOT.models, "for_character") else {}) if BOT else {}
+            t0 = time.time()
+            try:
+                out = BOT.models.chat(
+                    [{"role": "system", "content": CHAT_TOOLS[act]},
+                     {"role": "user", "content": src[:CHAT_TOOL_MAX]}],
+                    provider=str(mm.get("provider") or ""), model=str(mm.get("model") or ""),
+                    temperature=0.2, max_tokens=900, timeout=90)
+            except Exception as e:                                 # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}, 502)
+                return
+            self._json({"ok": True, "action": act, "text": _clean_tool_text(str(out or "")),
+                        "ms": round((time.time() - t0) * 1000),
+                        "provider": str(mm.get("provider") or ""),
+                        "model": str(mm.get("model") or "")})
+            return
+        if u.path == "/api/mood/reset":
+            from bot import mood as mood_mod
+            cid = re.sub(r"[^a-z0-9_\-]", "",
+                         str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+            mood_mod.reset(_state_dir(), cid)          # 先清，再读（reset 自己也返回新状态）
+            self._json(mood_mod.summary(_state_dir(), cid))
+            return
         if u.path in ("/api/stickers/upload", "/api/stickers/delete", "/api/stickers/send"):
             from bot import stickers as st
             cid = re.sub(r"[^a-z0-9_\-]", "",

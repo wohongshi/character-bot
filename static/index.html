@@ -387,6 +387,19 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .plrow i{font-style:normal;opacity:.75}
 .plrow .req{color:var(--red);font-weight:700}
 .tag.bad{color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,var(--line))}
+.mbar{flex:1;min-width:60px;height:8px;border-radius:999px;background:var(--surface-3);
+  overflow:hidden;display:block}
+.mbar i{display:block;height:100%;border-radius:999px;transition:width .25s}
+.mbar i.mb-a{background:var(--ui-accent)}
+.mbar i.mb-b{background:var(--green)}
+.mbar i.mb-c{background:#8a6fd8}
+/* 「处理这条」：折叠在消息下面，展开后是 4 个动作 + 结果 */
+.mtools{margin-top:6px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;
+  background:var(--surface-2);max-width:min(560px,100%)}
+.mtools .mres{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.mtools .mresTop{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px}
+.mtools .mresBody{font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;
+  max-height:320px;overflow:auto}
 /* 表情包网格：一行能塞几个塞几个，图统一 96px 高，名字一行省略 */
 .stkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:10px;margin-top:6px}
 .stk{border:2px solid var(--line);border-radius:14px;background:var(--surface-2);
@@ -2749,6 +2762,8 @@ async function viewChat(){
         <option value="medium" ${chatOpts.reasoning==="medium"?"selected":""}>🧠 中</option>
         <option value="high" ${chatOpts.reasoning==="high"?"selected":""}>🧠 深思</option>
       </select>
+      <button class="btn tiny" id="moodChip" onclick="showMood()"
+              title="她现在的状态（精神 / 心情 / 亲近），会影响她怎么说话">🙂</button>
       <button class="btn tiny" id="ctxChip" hidden onclick="showCtx()"
               title="更早的对话被压成了一段提要，点开看">🧠 前情</button>
       <span class="kv" id="chatStat"></span>
@@ -3129,6 +3144,58 @@ async function keepMsg(el){
   flash(r.item && r.item.hits ? "这条已经记过了" : "记住了（下一条消息就会带上）");
 }
 
+/* ---------- 对某一条消息做处理（翻译 / 总结 / 拆解 / 润色） ----------
+   结果只显示在这儿，**不写进聊天记录**：它是工具输出，不是她说的话；
+   写进去会污染历史，下一轮还会被当上下文喂回模型。 */
+const MSG_TOOLS = [
+  ["translate", "翻译", "中文 ↔ 英文"],
+  ["summary", "总结", "压成几条"],
+  ["explain", "拆解", "这段在说什么"],
+  ["polish", "润色", "说得更清楚"],
+];
+function msgTools(btn){
+  const msg = btn.closest(".msg");
+  if (!msg) return;
+  const old = msg.querySelector(".mtools");
+  if (old){ old.remove(); return; }
+  const bub = msg.querySelector(".bub");
+  const text = bub ? (bub.innerText || "").trim() : "";
+  if (!text){ flash("这条没有文字可以处理"); return; }
+  const box = document.createElement("div");
+  box.className = "mtools";
+  box.innerHTML = `<div class="row" style="gap:6px;flex-wrap:wrap">
+      ${MSG_TOOLS.map(([k, t, d]) => `<button class="btn tiny" data-act="${k}"
+          title="${esc(d)}" onclick="runMsgTool(this,'${k}')">${esc(t)}</button>`).join("")}
+      <span class="kv" data-out style="flex:1;min-width:0"></span>
+      <button class="btn tiny" onclick="this.closest('.mtools').remove()">✕</button>
+    </div>
+    <div class="mres" hidden></div>`;
+  const acts = msg.querySelector(".acts");
+  msg.insertBefore(box, acts ? acts.nextSibling : null);
+  window.__msgToolsText = text;
+}
+async function runMsgTool(btn, action){
+  const box = btn.closest(".mtools");
+  const out = box.querySelector("[data-out]");
+  const res = box.querySelector(".mres");
+  const body = window.__msgToolsText || "";
+  if (out) out.textContent = "处理中…";
+  const d = await post("/api/chat/tool", {action, text: body, character: ACTIVE.id});
+  if (out) out.textContent = "";
+  if (!d || !d.ok){
+    res.hidden = false;
+    res.innerHTML = `<div class="kv" style="color:var(--red)">✗ ${esc((d && d.error) || "失败")}</div>`;
+    return;
+  }
+  res.hidden = false;
+  res.innerHTML = `<div class="mresTop">
+      <span class="kv">${esc((MSG_TOOLS.find(x => x[0] === action) || [])[1] || action)}
+        · ${Number(d.ms) || 0}ms</span>
+      <button class="btn tiny" onclick='copyPlain(${esc(JSON.stringify(d.text))},this)'>复制</button>
+    </div>
+    <div class="mresBody">${esc(d.text || "（没有输出）").replace(/\n/g, "<br>")}</div>`;
+}
+
 async function copyMsg(el){
   const b = el.closest(".msg").querySelector(".bub");
   const t = b ? (b.innerText || "").trim() : "";
@@ -3317,7 +3384,8 @@ function actsHTML(role){
     ? `<button data-regen="1" onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
   const del = `<button onclick="delMsg(this)" title="删掉这一条">删除</button>`;
   const edit = role === "user" ? `<button onclick="editMsg(this)" title="改一下这句，然后从这里重新回答">编辑</button>` : "";
-  return `<div class="acts">${copy}${edit}${quote}${speak}${keep}${regen}${del}</div>`;
+  const tools = `<button onclick="msgTools(this)" title="对这条做点处理：翻译 / 总结 / 拆解 / 润色">🛠 处理</button>`;
+  return `<div class="acts">${copy}${edit}${quote}${tools}${speak}${keep}${regen}${del}</div>`;
 }
 /* 只有**最后一条**回复能重新生成：接口永远重跑「最后那一问」，
    挂在一堆旧回复上，点第三条其实替换的是最新那条 —— 会让人以为删错了。 */
@@ -3363,6 +3431,74 @@ function jumpBottom(){
   box.scrollTo({top: box.scrollHeight, behavior: "smooth"});
   updateToBottom();
 }
+/* ---------- 心情 ----------
+   三个维度：精神 / 心情 / 亲近。数据在 bot/mood.py，这里只负责显示。
+   轮询走 30 秒缓存：它变得很慢（一轮才动几个点），没必要每 0.5 秒问一次。 */
+let lastMood = {at: 0, data: null};
+async function paintMood(force){
+  const chip = document.getElementById("moodChip");
+  if (!chip) return;
+  if (!force && lastMood.data && Date.now() - lastMood.at < 30000) return;
+  const d = await api("/api/mood?character=" + encodeURIComponent(ACTIVE.id));
+  if (!d || !d.ok) return;
+  lastMood = {at: Date.now(), data: d};
+  chip.textContent = d.emoji;
+  chip.title = `心情 ${d.mood_text} ${Math.round(d.mood)} · 精神 ${d.energy_text} ${Math.round(d.energy)}`
+             + ` · 亲近 ${d.closeness_text} ${Math.round(d.closeness)}（点开看详情）`;
+}
+function moodBar(v, kind){
+  // 颜色走 class（.mb-a/.mb-b/.mb-c）：内联写 var(--ui-accent) 会被文案体检当成
+  // 「给用户看的 CSS 变量名」拦下来，也确实不该把主题变量名散在 JS 字符串里。
+  const n = Math.max(0, Math.min(20, Math.round(v / 5)));
+  return `<span class="mbar"><i class="mb-${esc(kind)}" style="width:${n * 5}%"></i></span>`;
+}
+function showMood(){
+  const box = document.getElementById("moodBox");
+  if (box){ box.remove(); return; }
+  const d = lastMood.data;
+  if (!d){ flash("还在读…"); return; }
+  const el = document.createElement("div");
+  el.id = "moodBox"; el.className = "card";
+  el.style.cssText = "margin:8px 0 0;padding:12px;font-size:13px";
+  el.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <b>${d.emoji} ${esc(ACTIVE.name)} 现在的状态</b>
+      <span class="row" style="gap:6px">
+        <button class="btn tiny" onclick="refreshMood()">刷新</button>
+        <button class="btn tiny" onclick="resetMood()">重置</button>
+        <button class="btn tiny" onclick="document.getElementById('moodBox').remove()">✕</button>
+      </span>
+    </div>
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:7px">
+      ${[
+        ["心情", d.mood, d.emoji, d.mood_text, "a"],
+        ["精神", d.energy, d.energy_emoji, d.energy_text, "b"],
+        ["亲近", d.closeness, d.closeness_emoji, d.closeness_text, "c"],
+      ].map(([name, v, emo, txt, col]) => `<div class="row" style="gap:8px;flex-wrap:nowrap">
+        <span style="flex:none;width:34px">${esc(name)}</span>
+        ${moodBar(v, col)}
+        <b style="flex:none;width:52px;text-align:right">${Math.round(v)}</b>
+        <span class="kv" style="flex:none;width:64px">${emo} ${esc(txt)}</span>
+      </div>`).join("")}
+    </div>
+    <div class="kv" style="margin-top:8px;line-height:1.6">
+      一起聊过 ${Number(d.turns) || 0} 轮。精神会随时间和熬夜掉、心情看聊得怎么样、
+      亲近只会慢慢涨。状态明显偏离时，她说话的口气会跟着变（不会直接说出来）。
+    </div>`;
+  const msgs = document.getElementById("msgs");
+  if (msgs) msgs.parentNode.insertBefore(el, msgs);
+}
+async function refreshMood(){
+  await paintMood(true);
+  const box = document.getElementById("moodBox");
+  if (box) box.remove();
+  showMood();
+}
+async function resetMood(){
+  const d = await post("/api/mood/reset", {character: ACTIVE.id});
+  if (d && d.ok){ lastMood = {at: Date.now(), data: d}; flash("已恢复初始状态"); }
+}
+
 let lastCtx = {};
 function paintCtx(c){
   lastCtx = c || {};
@@ -3414,6 +3550,7 @@ async function pollChat(){
   lastRunning = j.running;
   $("chatStat").textContent = j.queue > 0 ? `队列里还有 ${j.queue} 条` : "";
   paintCtx(j.context);
+  paintMood();
   const t = $("typingB");
   if (j.running && !t){
     box.insertAdjacentHTML("beforeend", `<div class="msg klee typing" id="typingB">${charAva()}
@@ -3674,7 +3811,20 @@ async function viewPersona(){
     <div id="kbOut" style="margin-top:10px"></div>
   </div>
   <div class="card">
-    <h3>🕒 最近命中 <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
+    <h3>✍️ 加一条知识 <span class="kv" style="font-family:var(--font-body)">写进去立刻能检索到，不用重建索引</span></h3>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <input id="kbAddTitle" placeholder="标题（可空，比如「小习惯」）" style="flex:1;min-width:150px">
+      <button class="btn primary tiny" onclick="kbAdd()">保存这条</button>
+      <span class="kv" id="kbAddMsg"></span>
+    </div>
+    <textarea id="kbAddText" rows="4" placeholder="写一件关于她的事、一条设定、一个约定……检索到这里就会带进上下文"
+      style="width:100%;margin-top:8px;font-family:var(--font-body);font-size:13px"></textarea>
+    <div class="kv" style="margin-top:6px">4–4000 字。想让她「记住」的东西写这里；想把某句话存成长期记忆，用消息下面的 🧠 记住。</div>
+    <div id="kbManual" style="margin-top:10px"></div>
+  </div>
+  <div class="card">
+    <h3>🕒 最近命中 <span class="kv" style="font-family:var(--font-body)">谁问的、命中了哪几段</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
     <div id="kbRecent" style="margin-top:6px"></div>
   </div>
   </div>
@@ -3842,11 +3992,46 @@ function renderKbRecent(rows){
     const hits = (r.hits || []).map(h =>
       `<span class="tag">${esc(h.source || "?")}${h.title ? " · " + esc(h.title) : ""} <b>${(h.dense ?? 0).toFixed(3)}</b></span>`).join(" ");
     return `<div class="kbhit"><div class="kbh-h"><span class="kbh-t">「${esc(r.query || "")}」</span>
-      <span class="kbh-s">${esc(when)} · 注入 ${r.chars || 0} 字</span></div>
+      <span class="kbh-s">${esc(when)} · ${r.via === "panel" ? "面板" : "QQ"} · 注入 ${r.chars || 0} 字</span></div>
       <div class="kbh-h" style="margin:0">${hits}</div></div>`;
   }).join("");
 }
+async function loadKbManual(){
+  const box = $("kbManual"); if (!box) return;
+  const d = await api("/api/kb/manual?character=" + encodeURIComponent(ACTIVE.id));
+  const items = (d && d.items) || [];
+  if (!items.length){ box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="kv" style="margin-bottom:4px">我加的（${items.length} 条，点标题可展开）</div>`
+    + items.map(it => `<div class="kbhit">
+        <div class="kbh-h"><span class="kbh-t" style="cursor:pointer"
+            onclick="this.parentNode.nextElementSibling.hidden=!this.parentNode.nextElementSibling.hidden">
+            ${esc(it.title || "（没标题）")}</span>
+          <span class="kbh-s">#${it.id}
+            <button class="btn tiny" onclick="kbDel(${it.id})">删</button></span></div>
+        <div class="kbt" hidden>${esc(it.text)}</div>
+      </div>`).join("");
+}
+async function kbAdd(){
+  const text = ($("kbAddText").value || "").trim();
+  const msg = $("kbAddMsg");
+  if (text.length < 4){ if (msg) msg.textContent = "再多写几个字（至少 4 个）"; return; }
+  if (msg) msg.textContent = "保存中…";
+  const d = await post("/api/kb/add", {character: ACTIVE.id, title: $("kbAddTitle").value, text});
+  if (!d || !d.ok){ if (msg) msg.textContent = "✗ " + ((d && d.error) || "失败"); return; }
+  $("kbAddText").value = ""; $("kbAddTitle").value = "";
+  if (msg) msg.textContent = `✓ 已加入（现在 ${d.chunks} 块）`;
+  const n = document.querySelector("#paneKb .statgrid b");
+  if (n) n.textContent = String(d.chunks);      // 卡片上的「知识块」跟着变，别停在旧值
+  loadKbManual();
+}
+async function kbDel(id){
+  if (!confirm("删掉这条？检索就再也找不到它了。")) return;
+  const d = await post("/api/kb/delete", {character: ACTIVE.id, id});
+  if (d && d.ok){ flash(`删掉了（剩 ${d.chunks} 块）`); loadKbManual(); }
+  else flash((d && d.error) || "删不掉");
+}
 async function loadKbRecent(){
+  loadKbManual();
   const d = await api("/api/kb/recent?n=20&character=" + encodeURIComponent(ACTIVE.id));
   renderKbRecent((d && d.hits) || []);
 }

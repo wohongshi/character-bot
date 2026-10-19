@@ -1025,6 +1025,13 @@ class BotRuntime(RuntimeFeatures):
                     sys_rules += "\n" + mem
         except Exception as e:                                     # noqa: BLE001
             logger.info("读记忆失败：%s", e)
+        try:
+            from . import mood as mood_mod
+            mh = mood_mod.hint(self.state_dir, self.active_character)
+            if mh:
+                sys_rules += "\n" + mh
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("读心情失败：%s", e)
         # 表情包清单要**在拼 system 之前**加进 sys_rules —— 加到后面那句
         # `msgs = [...]` 之后就永远进不了提示（改完看起来没坏，只是没生效）。
         try:
@@ -1116,6 +1123,11 @@ class BotRuntime(RuntimeFeatures):
         for fp in (mark_files or [])[:3]:
             await self.send_image_file(chat_id, str(fp))
         self._log_msg(chat_id, "assistant", reply)
+        try:
+            from . import mood as mood_mod
+            mood_mod.apply_turn(self.state_dir, self.active_character, text, reply)
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("记心情失败（不影响回复）：%s", e)
         async with self._hist_lock:
             hist = self.hist.setdefault(self._hist_key(chat_id), [])
             now = time.time()
