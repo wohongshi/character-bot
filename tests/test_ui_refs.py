@@ -27,6 +27,15 @@ def check(name, ok, detail=""):
 
 html = HTML.read_text(encoding="utf-8")
 
+# 插件自带页面的 HTML 住在 Python 字符串里（bot/adapters/*.py、bot/features/*.py）。
+# 它们也算「面板」，一律并进来一起查引用 —— 否则接口一搬进插件页，
+# 这里就会误报「面板调不到」。
+PLUGIN_SRC = ""
+for d in ("bot/adapters", "bot/features"):
+    for f in sorted((HTML.parent.parent / d).glob("*.py")):
+        PLUGIN_SRC += f.read_text(encoding="utf-8", errors="replace")
+PANEL_AND_PLUGINS = html + PLUGIN_SRC
+
 # 1) 已定义的函数 / 变量
 defined = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)\s*\(", html))
 defined |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=", html))
@@ -50,16 +59,18 @@ check("onclick/onchange 里没有未定义的函数", not missing, str(missing))
 
 # 3) 关键交互函数必须存在（这几个是按钮的唯一入口，缺一个就是死按钮）
 REQUIRED = ["go", "flash", "pickChar", "switchChar", "viewChars", "viewPersona",
-            "viewPlugins", "viewChat", "viewBoard", "viewOpsBot", "viewCustom",
+            "viewPlugins", "viewChat", "viewBoard", "viewOps", "viewModels", "viewCustom",
             "sendMsg", "newConv", "delConv", "cmdkOpen", "cmdkClose",
             "openPluginDrawer", "installPluginPack", "importZip", "setTheme",
-            "qrRefresh", "qrArm", "qrRestart"]
+            "openPluginPage", "pluginFrameDoc", "navToggle", "navOpen", "navClose"]
 miss_req = [n for n in REQUIRED if n not in defined]
 check("关键交互函数齐全", not miss_req, str(miss_req))
 
 # 4) 已删掉的东西不许再被引用（防止改回来一半）
 GONE = ["restorePersona", "viewDocs", "openFile", "savePluginFile",
-        "opsQr", "opsQrOpen",   # 旧版二维码接口名已废弃（现在叫 qrRefresh/qrArm，只在机器人页）
+        "opsQr", "opsQrOpen",   # 二维码搬进 onebot 插件页，旧的全局函数名不许回来
+        "viewOpsBot",           # 运维/机器人双子页已合并成单页
+        "moreSheet", "closeSheet", "dock",   # 底栏 + 更多面板 → 可折叠侧栏
         "agentBtn", "agEnabled"]  # agent 常开：开关已拆掉，别再长回来
 referenced = [n for n in GONE if re.search(rf"(?<![\w$.]){re.escape(n)}\s*\(", html)]
 check("已移除的功能不再被引用", not referenced, str(referenced))
@@ -82,7 +93,7 @@ for grp in re.findall(r"u\.path\s+in\s+\(([^)]+)\)", srv):
 KEEP = {"/api/napcat/qr", "/qr.png", "/qr", "/onebot/event", "/index.html", "/",
         "/api/docs", "/api/themes", "/api/characters/theme", "/api/logs/meta"}
 dead = sorted(r for r in routes
-              if r.startswith("/api") and r not in KEEP and r not in html)
+              if r.startswith("/api") and r not in KEEP and r not in PANEL_AND_PLUGINS)
 check("没有面板调不到的 /api 写接口", not dead, str(dead))
 
 # 7) 插件页必须能开关（曾经只读，「保存」只能去改仓库文件）

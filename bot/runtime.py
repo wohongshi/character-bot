@@ -247,6 +247,9 @@ class BotRuntime(RuntimeFeatures):
         if not isinstance(enabled, (list, tuple)):
             # 兜底：老配置只有 adapter 键
             enabled = [str(config.get("adapter") or "onebot11")]
+        # 网页（web）和别的平台一样是普通开关，只是默认开、排在最后
+        # —— 排在最后，免得它抢走 QQ 的「主动播报」主适配器位置
+        enabled = [str(x) for x in enabled]
         wanted = []
         for pid in enabled:
             pid = str(pid or "").strip().lower()

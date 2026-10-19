@@ -11,7 +11,8 @@
 from .base import (AdapterError, BaseAdapter, Inbound, REGISTRY, available, build,
                    maybe_await, register, system_plugins)
 from . import onebot, webhook, feishu, wechat, qqofficial   # noqa: F401  导入即注册
+from . import web                                          # noqa: F401  面板自带（常开）
 
 __all__ = ["AdapterError", "BaseAdapter", "Inbound", "REGISTRY", "available",
            "build", "maybe_await", "register", "system_plugins",
-           "onebot", "webhook", "feishu", "wechat", "qqofficial"]
+           "onebot", "webhook", "feishu", "wechat", "qqofficial", "web"]

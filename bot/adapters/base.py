@@ -129,6 +129,12 @@ class BaseAdapter:
     #: 面板设置表单：键名必须是 bot_config.json 里的真实键（扁平存放）
     CONFIG_SCHEMA: Dict[str, dict] = {}
 
+    #: 这个插件自带的「小页面」。返回 HTML 片段（面板塞进 iframe 里渲染）。
+    #: 空字符串 = 没有页面。用它把平台自己的东西（扫码、诊断、控制台）
+    #: 从「运维」页收回到插件自己身上 —— 运维不该知道任何平台的细节。
+    def page(self) -> str:
+        return ""
+
     def __init__(self, config: Optional[dict] = None, *,
                  owner_id: str = "", self_id: str = "") -> None:
         self.config = dict(config or {})
@@ -251,7 +257,8 @@ def system_plugins() -> list:
                      "ingress": getattr(cls, "INGRESS", None),
                      "default_off": bool(getattr(cls, "DEFAULT_OFF", True)),
                      "schema": dict(getattr(cls, "CONFIG_SCHEMA", {}) or {}),
-                     "capabilities": dict(getattr(cls, "CAPABILITIES", {}) or {})})
+                     "capabilities": dict(getattr(cls, "CAPABILITIES", {}) or {}),
+                     "has_page": cls.page is not BaseAdapter.page})
         out.append(info)
     return out
 

@@ -1443,13 +1443,14 @@ def _system_enabled() -> list:
         return []
     val = BOT.config.get("system_plugins")
     if not isinstance(val, (list, tuple)):
-        return [str(BOT.config.get("adapter") or "onebot11")]
+        val = [str(BOT.config.get("adapter") or "onebot11")]
     return [str(x) for x in val]
 
 
 #: 主适配器优先级：多平台同时开启时，「主动播报」用哪一个。
-#: QQ 为主（这个项目起家于 QQ），其余按接入成本排。
-_SYSTEM_ORDER = ["onebot11", "qqofficial", "feishu", "wechat", "webhook"]
+#: QQ 为主（这个项目起家于 QQ），其余按接入成本排；网页排最后 ——
+#: 它是面板自带的兜底通道，不该抢走 QQ 的播报。
+_SYSTEM_ORDER = ["onebot11", "qqofficial", "feishu", "wechat", "webhook", "web"]
 
 
 def _system_meta_rows() -> list:
@@ -1522,6 +1523,41 @@ def _plugin_schema(name: str) -> dict:
     return {"ok": True, "name": Path(name).stem, "title": meta.get("title", name),
             "usage": meta.get("usage", ""), "author": meta.get("author", ""),
             "schema": schema, "values": values, "has_schema": bool(schema)}
+
+
+def _plugin_page(name: str) -> dict:
+    """插件自带的小页面（HTML 片段，面板塞进同源 iframe 里渲染）。
+
+    两种来源：系统插件（适配器）的 `page()`，和普通插件 `api.add_page(...)` 挂上去的。
+    平台自己的东西（QQ 扫码、飞书诊断、网页控制台）都该在这里，运维页只做汇总。
+    """
+    stem = Path(name or "").stem
+    if not stem:
+        return {"ok": False, "error": "缺少 name"}
+    runtime = getattr(BOT, "runtime", None) if BOT else None
+    ad = (getattr(runtime, "adapters", {}) or {}).get(stem)
+    if ad is not None:
+        try:
+            html = str(ad.page() or "")
+        except Exception as e:                                     # noqa: BLE001
+            return {"ok": False, "name": stem, "title": stem,
+                    "error": f"页面渲染失败：{type(e).__name__}: {e}"}
+        if not html:
+            return {"ok": False, "name": stem, "error": "这个系统插件没有自带页面"}
+        return {"ok": True, "name": stem, "title": getattr(ad, "title", stem),
+                "kind": "system", "html": html}
+    mgr = getattr(runtime, "mgr", None)
+    row = (getattr(mgr, "pages", {}) or {}).get(stem)
+    if not row:
+        return {"ok": False, "name": stem, "error": "这个插件没有自带页面"}
+    html = row.get("html")
+    try:
+        html = html() if callable(html) else str(html or "")
+    except Exception as e:                                         # noqa: BLE001
+        return {"ok": False, "name": stem, "title": row.get("title", stem),
+                "error": f"页面渲染失败：{type(e).__name__}: {e}"}
+    return {"ok": True, "name": stem, "title": row.get("title") or stem,
+            "kind": "feature", "html": html}
 
 
 def apply_plugins_config(cur: dict, body: dict, known: set) -> tuple[dict, str]:
@@ -1986,7 +2022,7 @@ _TOOL_LABELS = {
 
 
 def _agent_get() -> dict:
-    from bot.agent import ALL_TOOL_NAMES, TOOLS, resolve_tools
+    from bot import toolbox
     cfg = BOT.config
     return {
         "ok": True,
@@ -1995,11 +2031,13 @@ def _agent_get() -> dict:
         "owner_only": bool(cfg.get("agent_owner_only", True)),
         "max_steps": int(cfg.get("agent_max_steps") or 3),
         "timeout": float(cfg.get("agent_timeout") or 120),
-        "tools": resolve_tools(cfg.get("agent_tools")),
+        "tools": toolbox.resolve(cfg.get("agent_tools")),
+        # 可用工具 = **当前真的注册过**的（插件关掉就不在列表里）
         "available_tools": [
-            {"name": n, "label": _TOOL_LABELS.get(n, n),
-             "description": TOOLS[n]["spec"]["function"]["description"]}
-            for n in ALL_TOOL_NAMES],
+            {"name": t["name"], "label": _TOOL_LABELS.get(t["name"], t["name"]),
+             "description": t["description"], "plugin": t["plugin"],
+             "system": bool(t["system"])}
+            for t in toolbox.catalog()],
         "model": BOT.models.agent() if hasattr(BOT.models, "agent") else {},
         "skills": bool(cfg.get("agent_skills", True)),
     }
@@ -2065,7 +2103,7 @@ _SENSITIVE_GET = frozenset({
     "/api/chat/sessions", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
-    "/api/kb/recent", "/api/search",
+    "/api/kb/recent", "/api/search", "/api/plugin/page",
 })
 
 
@@ -2337,6 +2375,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path == "/api/plugins":
             self._json(_plugins_get())
+            return
+        if u.path == "/api/plugin/page":
+            name = (q.get("name") or [""])[0].strip()
+            self._json(_plugin_page(name))
             return
         if u.path == "/api/requests":
             n = _int_param(q, "n", 30, lo=1, hi=200)
@@ -2934,7 +2976,9 @@ class Handler(BaseHTTPRequestHandler):
                         upd[k] = typ(body[k])
                 if "tools" in body:
                     from bot.agent import resolve_tools
-                    upd["tools"] = resolve_tools(body.get("tools"))
+                    # tools: null = 去掉限制（跟着插件走）；给了列表 = 只允许这些
+                    upd["tools"] = (None if body.get("tools") is None
+                                    else resolve_tools(body.get("tools")))
                 if "skills" in body:
                     upd["skills"] = bool(body.get("skills"))
                 cfg_patch = {}

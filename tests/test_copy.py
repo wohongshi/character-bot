@@ -16,6 +16,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HTML = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+# 插件页 iframe 的基线样式是 JS 模板字符串里的一段 CSS（FRAME_BASE），
+# 里面当然全是 var(--x)。它不面向用户，扫文案前先摘掉。
+COPY_SRC = re.sub(r"const FRAME_BASE = `.*?`;", "", HTML, flags=re.S)
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
 
 PASS = FAIL = 0
@@ -60,6 +63,9 @@ def user_copy(html: str) -> list[tuple[int, str]]:
             continue
         if t.startswith("const ") or t.startswith("let ") or t.startswith("function "):
             continue
+        # 纯字符串数组的续行（比如 FRAME_VARS 里的 "--paper","--ink"）：是代码不是文案
+        if re.fullmatch(r'"[^"]*"(\s*,\s*"[^"]*")*\s*,?\s*;?', t):
+            continue
         rows.append((i, line))
     return rows
 
@@ -74,7 +80,7 @@ BANNED = [
 ]
 bad: list[str] = []
 for pat, why in BANNED:
-    for ln, line in user_copy(HTML):
+    for ln, line in user_copy(COPY_SRC):
         if re.search(pat, line):
             # style/class/title 是样式与悬停原文，不算给用户看的文案
             seg = line
@@ -85,14 +91,10 @@ for pat, why in BANNED:
 check("用户文案里没有内部实现词", not bad, "\n      ".join(bad[:5]))
 
 # ---------- 2) 工具名都要有中文标签 ----------
-agent = (ROOT / "bot" / "agent.py").read_text(encoding="utf-8")
-tools = re.search(r"ALL_TOOL_NAMES\s*=\s*list\(([^)]+)\)", agent)
-names = []
-if tools:
-    m = re.search(r"ALL_TOOL_NAMES\s*=\s*list\(DEFAULT_TOOLS\)", agent)
-    block = re.search(r"DEFAULT_TOOLS\s*=\s*\[([^\]]+)\]", agent)
-    if block:
-        names = re.findall(r'"([a-z_]+)"', block.group(1))
+# 工具清单的权威定义搬到 bot/toolbox.py（工具即插件），这里跟着改
+toolbox = (ROOT / "bot" / "toolbox.py").read_text(encoding="utf-8")
+block = re.search(r"DEFAULT_TOOLS[^=]*=\s*\[([^\]]+)\]", toolbox, re.S)
+names = re.findall(r'"([a-z_]+)"', block.group(1)) if block else []
 labels = dict(re.findall(r'"([a-z_]+)":\s*"([^"]+)"', SERVER.split("_TOOL_LABELS = {")[1].split("}")[0])) \
     if "_TOOL_LABELS = {" in SERVER else {}
 missing = [n for n in names if n not in labels]
@@ -135,7 +137,9 @@ check("能力键有中文表", "CAP_CN" in HTML and "读群成员" in HTML)
 _BT = chr(96)
 RAW_CAP = "marks.map(k => " + _BT + '<span class="tag">${esc(k)}</span>' + _BT + ")"
 check("能力不从 cap 键直接渲染", RAW_CAP not in HTML)
-check("日志条数用「条」", "更早 " in HTML)
+# 告警流水（「更早 N 条」）现在住在 onebot 插件页里，两个面都要查
+ONE_BOT_PAGE = (ROOT / "bot" / "adapters" / "onebot.py").read_text(encoding="utf-8")
+check("日志条数用「条」", ("更早 " in HTML) or ("更早 " in ONE_BOT_PAGE))
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(1 if FAIL else 0)

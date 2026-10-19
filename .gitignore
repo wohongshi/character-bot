@@ -38,3 +38,6 @@ bot/features/ext/tools/classes/
 # 外部插件握手缓存（运行时生成，删掉会自动重建）
 state/extmeta/
 bot/features/extmeta/
+
+# 插件首次出现的记录（运行时生成，删了会自动重建）
+bot/features/known.json

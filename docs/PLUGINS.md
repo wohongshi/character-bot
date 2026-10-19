@@ -149,6 +149,31 @@ CHARACTERS = ("klee", "hutao", "citlali")   # 空/不写 = 通用插件
 - 不在列表 → 不加载、不注册命令；
 - 新增角色想用某插件：把 id 加进该插件的 `CHARACTERS`，或把插件改成通用。
 
+面板把插件分成三类（过滤栏也是这三个）：
+
+| 分类 | 判定 | 例子 |
+|---|---|---|
+| **限定** | 写了 `CHARACTERS` | 抽卡、塔罗（每个角色各 20 个） |
+| **通用** | 没写 `CHARACTERS`，也不是系统 | 帮助、复读、记事、技能盒子 |
+| **系统** | `SYSTEM = True`，或就是平台适配器 | 6 个平台 + 联网工具 |
+
+## 6.5 工具与页面
+
+插件除了命令/钩子，还能挂两样**不是钩子**的东西：
+
+```python
+def register(api):
+    api.add_tool("now", description="现在几点", handler=tool_now,
+                 parameters={"type": "object", "properties": {}})   # agent 工具
+    api.add_page("<div>…</div>", title="我的小面板")                 # 自带页面
+```
+
+- `add_tool`：登记进 `bot/toolbox.py`；**关掉插件，模型的可调用列表里就没有这个工具**。
+  `SYSTEM = True` 的插件登记的工具归「系统」分类。
+- `add_page`：面板抽屉里会出现「🧩 打开插件页」，内容渲染在同源 iframe 里；
+  页面脚本可以用注入的 `ks.api/ks.post/ks.toast/ks.goto/ks.reload`。
+  平台自己的扫码、诊断、控制台都放这里，别堆到运维页。
+
 ## 7. 状态与并发
 
 - 插件状态写到 `state/` 下；**必须**用 `KLEE_STATE_DIR` 环境变量可覆盖的写法，测试/干跑才不会污染生产：

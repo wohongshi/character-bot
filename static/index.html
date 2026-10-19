@@ -384,7 +384,6 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
    iPad 竖屏 768px 走的是桌面布局，但手指和手机一样粗。 */
 @media(pointer:coarse){
   #view button:not(.x),#view .btn,.drawer button:not(.x),
-  #view .seg button,#view .fbtn,.dock button,.cmdkitem{min-height:32px}
   #view .btn.tiny,#view button.tiny{min-height:30px}
   nav button{min-height:40px}
   #view .chatbar .btn.tiny{min-height:32px;height:auto}
@@ -397,7 +396,6 @@ html[data-touch="1"] #view .btn,
 html[data-touch="1"] .drawer button:not(.x),
 html[data-touch="1"] #view .seg button,
 html[data-touch="1"] #view .fbtn,
-html[data-touch="1"] .dock button,
 html[data-touch="1"] .cmdkitem{min-height:32px}
 html[data-touch="1"] #view .btn.tiny,
 html[data-touch="1"] #view button.tiny{min-height:30px}
@@ -488,7 +486,7 @@ html[data-touch="1"] .cmdkbtn{min-height:36px}
    3) 只留 120ms 内的反馈动画（按下/弹窗），长过渡一律砍掉。 */
 html.perf-low body[data-effects="true"]::after{animation:none}
 html.perf-low aside,html.perf-low header#strip,html.perf-low .card,
-html.perf-low .drawerbox,html.perf-low .cmdk,html.perf-low #dock,
+html.perf-low .drawerbox,html.perf-low .cmdk,
 html.perf-low .chatbar,html.perf-low .hero,html.perf-low .pill{backdrop-filter:none!important}
 html.perf-low *{animation-duration:0s!important;animation-iteration-count:1!important}
 html.perf-low .msg,html.perf-low .card,html.perf-low .plugcard{transition:none}
@@ -965,6 +963,10 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 .drawerhead{display:flex;align-items:flex-start;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line)}
 .drawerhead .x{margin-left:auto;border:0;background:transparent;font-size:18px;color:var(--ink-soft);cursor:pointer}
 .drawerbody{padding:14px 18px;overflow:auto;font-size:12.5px;line-height:1.7}
+/* 插件自带页面：同源 iframe，撑满抽屉 */
+.plugframe{width:100%;height:min(62vh,560px);border:1px solid var(--line);border-radius:14px;
+  background:var(--surface);display:block}
+.drawerbody.paged{padding:10px;display:flex;flex-direction:column}
 .drawerbody h4{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:15px;color:var(--red-deep);margin:14px 0 6px}
 .drawerbody .cmdrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 10px;
   align-items:baseline;padding:6px 0;border-bottom:1px dashed var(--line)}
@@ -979,18 +981,6 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 .drawerfoot{padding:10px 18px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
 
 /* 更多面板 */
-.sheet{position:fixed;inset:0;z-index:60;background:rgba(20,12,10,.45);backdrop-filter:blur(6px);
-  display:none;align-items:flex-end;justify-content:center}
-.sheet.on{display:flex}
-.sheetbox{width:min(560px,100%);background:var(--paper);border-radius:24px 24px 0 0;padding:14px 16px calc(20px + env(safe-area-inset-bottom));
-  box-shadow:0 -20px 50px rgba(0,0,0,.3)}
-.sheethead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;
-  font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:20px}
-.sheethead .x{border:0;background:transparent;font-size:18px;color:var(--ink-soft);cursor:pointer}
-.sheetgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.sheetgrid button{border:1px solid var(--glass-line);background:var(--surface-2);border-radius:16px;
-  padding:14px 6px;display:flex;flex-direction:column;align-items:center;gap:5px;font-size:11.5px;color:var(--ink);cursor:pointer}
-.sheetgrid button b{font-size:21px;line-height:1}
 
 /* 表单 / 自定义 */
 .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
@@ -1026,8 +1016,6 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 .wcard .ws{font-size:11px;color:var(--ink-soft)}
 .wcard .wl{display:block;margin-top:7px;font-size:11px;color:var(--ui-accent);text-decoration:none;font-weight:700}
 
-/* 移动端底部 dock */
-.dock{display:none}
 @media(max-width:760px){
   aside{width:100%;border-right:0;box-shadow:none}
   .brand .bt{font-size:16px}
@@ -1043,17 +1031,6 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   .chathero .nm{font-size:27px}
   .chathero .tg{max-width:62vw;font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .msg{max-width:96%}
-  .dock{
-    display:flex;position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:40;
-    background:rgba(255,255,255,.86);backdrop-filter:blur(18px);
-    border:1px solid var(--glass-line);border-radius:22px;
-    box-shadow:0 18px 40px rgba(100,60,40,.22);
-    padding:6px;justify-content:space-around;
-  }
-  .dock button{border:0;background:transparent;display:flex;flex-direction:column;align-items:center;gap:2px;
-    font-size:max(11px, calc(10.5px * var(--fx)));color:var(--ink-soft);padding:6px 10px;border-radius:14px}
-  .dock button b{font-size:17px;line-height:1}
-  .dock button.on{background:color-mix(in srgb,var(--ui-accent) 14%,white);color:var(--ui-accent)}
 }
 @media(prefers-reduced-motion:reduce){body[data-effects="true"]::after{animation:none}}
 
@@ -1120,7 +1097,6 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   .chips::-webkit-scrollbar{display:none}
   .chips button{flex:none;padding:6px 11px;font-size:11.5px}
   .content{padding:10px 12px calc(96px + env(safe-area-inset-bottom))}
-  .dock{padding:4px}
 }
 /* ============ 深色主题 ============ */
 html[data-theme="dark"]{color-scheme:dark}
@@ -1195,13 +1171,10 @@ html[data-theme="dark"] .plugbar input{background:rgba(255,255,255,.06)}
 html[data-theme="dark"] .plugcard .ico{background:linear-gradient(135deg,color-mix(in srgb,var(--ui-accent) 24%,#2a211c),color-mix(in srgb,var(--ui-accent2) 20%,#2a211c))}
 html[data-theme="dark"] .plugcard:hover{border-color:color-mix(in srgb,var(--ui-accent) 45%,transparent)}
 html[data-theme="dark"] .plugbar .fbtn{background:rgba(255,255,255,.05)}
-html[data-theme="dark"] .dock{background:rgba(36,28,23,.94);box-shadow:0 18px 40px rgba(0,0,0,.55)}
-html[data-theme="dark"] .dock button.on{background:color-mix(in srgb,var(--ui-accent) 24%,transparent)}
 html[data-theme="dark"] #toBottom{background:rgba(43,34,29,.96);box-shadow:0 8px 20px rgba(0,0,0,.5)}
 html[data-theme="dark"] .charitem{background:var(--paper)}
 html[data-theme="dark"] .charitem.active{background:linear-gradient(180deg,var(--paper),var(--red-soft))}
-html[data-theme="dark"] .cmdkbox,html[data-theme="dark"] .drawerbox,html[data-theme="dark"] .sheetbox{background:var(--paper)}
-html[data-theme="dark"] .msg .bub a{color:color-mix(in srgb,var(--ui-accent) 70%, white)}
+html[data-theme="dark"] .cmdkbox,html[data-theme="dark"] .drawerbox,html[data-theme="dark"] html[data-theme="dark"] .msg .bub a{color:color-mix(in srgb,var(--ui-accent) 70%, white)}
 html[data-theme="dark"] .ava{background:#3a2b23;border-color:rgba(255,255,255,.16)}
 html[data-theme="dark"] .msg.me .ava{background:linear-gradient(135deg,#f09a7a,#d96a55)}
 html[data-theme="dark"] .msg .ava{box-shadow:0 6px 16px rgba(0,0,0,.45)}
@@ -1216,6 +1189,49 @@ html[data-theme="dark"] #msgs{padding-right:5px}
 html[data-theme="dark"] .chips button{color:#ecdccb}
 html[data-theme="dark"] .kv,html[data-theme="dark"] .tip{color:#bda48f}
 html[data-theme="dark"] h2.page{color:#f7ecdf}
+
+/* ============ 可折叠侧栏（替代底部 dock） ============
+   手机：侧栏变成浮层，左上角 ☰ 开；点遮罩/选项关。
+   桌面：☰ 把侧栏收成图标条，状态记在 localStorage。 */
+.navbtn{display:none;align-items:center;justify-content:center;width:34px;height:34px;flex:none;
+  border-radius:11px;border:1px solid var(--glass-line);background:var(--surface-2);color:var(--ink);
+  cursor:pointer;font-size:17px;line-height:1;padding:0}
+.navbtn:hover{background:var(--surface-3)}
+#navScrim{display:none}
+@media(min-width:761px){
+  .navbtn{display:inline-flex}
+  body.rail aside{width:74px;padding:14px 8px}
+  body.rail .brand > div,
+  body.rail nav button .t,
+  body.rail nav button kbd,
+  body.rail .navlabel,
+  body.rail .sidefoot,
+  body.rail .cmdkbtn span{display:none}
+  body.rail nav button{justify-content:center;padding:10px 0}
+  body.rail .brand{justify-content:center}
+  body.rail .cmdkbtn{justify-content:center;padding:9px 0}
+}
+@media(max-width:760px){
+  #app{flex-direction:row}
+  aside{position:fixed;left:0;top:0;bottom:0;width:min(79vw,276px);z-index:70;
+    flex-direction:column;align-items:stretch;padding:14px 10px 8px;
+    background:linear-gradient(180deg,var(--paper),color-mix(in srgb,var(--red-soft) 55%,white));
+    border-right:1px solid var(--glass-line);box-shadow:18px 0 50px rgba(80,40,30,.28);
+    transform:translateX(-104%);transition:transform .22s cubic-bezier(.4,0,.2,1);overflow:auto}
+  body.nav-open aside{transform:none}
+  aside .brand{border-bottom:2px dashed #f3ddc2;margin-bottom:8px;padding:2px 6px 10px}
+  aside .bs{display:block}
+  aside .brand .bt{font-size:18px}
+  nav{display:flex;flex-direction:column;flex:none;overflow:visible;gap:2px}
+  nav button{justify-content:flex-start;width:100%;padding:10px 12px}
+  .sidefoot{display:block}
+  #navScrim{display:block;position:fixed;inset:0;z-index:65;background:rgba(40,20,15,.45);
+    opacity:0;pointer-events:none;transition:opacity .2s}
+  body.nav-open #navScrim{opacity:1;pointer-events:auto}
+  .navbtn{display:inline-flex}
+  .content{padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+  #toBottom{bottom:20px}
+}
 </style>
 
 </head>
@@ -1244,7 +1260,7 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
       </div>
       <div class="navgroup">
         <div class="navlabel">系统</div>
-        <button data-v="ops" title="运维与机器人">⚙️ <span class="t">运维 · 机器人</span></button>
+        <button data-v="ops" title="运维：平台、配置、日志、模型">⚙️ <span class="t">运维</span></button>
         <button data-v="custom" title="自定义">✨ <span class="t">自定义</span></button>
       </div>
       <button class="cmdkbtn" onclick="cmdkOpen()" title="搜索与跳转（Ctrl+K）">
@@ -1258,6 +1274,7 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
   </aside>
   <main>
     <header id="strip">
+      <button id="navBtn" class="navbtn" onclick="navToggle()" title="菜单" aria-label="菜单">☰</button>
       <span class="pill" id="pGw"><span class="dot"></span>面板 …</span>
       <span class="pill" id="pQq" onclick="go('ops')" title="去运维 · 扫码登录" style="cursor:pointer"><span class="dot"></span>QQ …</span>
       <span class="pill" id="pNap" onclick="go('ops')" title="去运维看 NapCat" style="cursor:pointer"><span class="dot"></span>NapCat …</span>
@@ -1267,6 +1284,7 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
     <div class="content" id="view"></div>
   </main>
 </div>
+<div id="navScrim" onclick="navClose()"></div>
 <div id="bar"></div>
 <div class="cmdk" id="cmdk" onclick="if(event.target===this)cmdkClose()">
   <div class="cmdkbox">
@@ -1288,25 +1306,6 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
   </div>
 </div>
 <input type="file" id="pluginZip" accept=".zip" style="display:none" onchange="installPluginPack(this)">
-<div class="dock" id="dock">
-  <button data-v="chat" onclick="go('chat')"><b>💬</b>对话</button>
-  <button data-v="chars" onclick="go('chars')"><b>🎭</b>角色</button>
-  <button data-v="persona" onclick="go('persona')"><b>🌸</b>人格</button>
-  <button data-v="plugins" onclick="go('plugins')"><b>🧩</b>插件</button>
-  <button onclick="moreSheet()"><b>⋯</b>更多</button>
-</div>
-<div class="sheet" id="sheet" onclick="if(event.target===this)closeSheet()">
-  <div class="sheetbox">
-    <div class="sheethead"><b>更多</b><button class="x" onclick="closeSheet()">✕</button></div>
-    <div class="sheetgrid">
-      <button onclick="go('board');closeSheet()"><b>📊</b>看板</button>
-      <button onclick="go('custom');closeSheet()"><b>✨</b>自定义</button>
-      <button onclick="go('reminders');closeSheet()"><b>⏰</b>提醒</button>
-      <button onclick="go('ops');closeSheet()"><b>⚙️</b>运维</button>
-    </div>
-  </div>
-</div>
-
 <script>
 /* ================= 基础 ================= */
 const $ = id => document.getElementById(id);
@@ -1475,8 +1474,18 @@ if (window.matchMedia){
     });
   }catch(e){}
 }
-function moreSheet(){ document.getElementById("sheet").classList.add("on"); }
-function closeSheet(){ document.getElementById("sheet").classList.remove("on"); }
+/* 侧栏（替代底部 dock）：手机上是浮层，桌面可收成图标条 —— 状态记在 localStorage */
+function navOpen(){ document.body.classList.add("nav-open"); }
+function navClose(){ document.body.classList.remove("nav-open"); }
+function navToggle(){
+  if (window.matchMedia("(max-width:760px)").matches){
+    document.body.classList.toggle("nav-open");
+    return;
+  }
+  const on = document.body.classList.toggle("rail");
+  try { localStorage.setItem("ks_rail", on ? "1" : "0"); } catch(e){}
+}
+try { if (localStorage.getItem("ks_rail") === "1") document.body.classList.add("rail"); } catch(e){}
 /* ================= 命令面板（Ctrl+K） ================= */
 const PAGES = [
   ["chat", "💬", "对话", "和当前角色聊天"],
@@ -1485,7 +1494,7 @@ const PAGES = [
   ["persona", "🌸", "人格 · 知识库", "SOUL 与检索"],
   ["plugins", "🧩", "插件", "系统适配器 + 角色限定 + 通用"],
   ["reminders", "⏰", "提醒", "提醒与纪念日"],
-  ["ops", "⚙️", "运维 · 机器人", "连接、配置、模型"],
+  ["ops", "⚙️", "运维", "平台、配置、日志、模型"],
   ["custom", "✨", "自定义", "配色、气泡、模块"],
 ];
 let cmdItems = [], cmdIdx = 0, cmdPluginCache = null, cmdPluginTs = 0;
@@ -1577,7 +1586,13 @@ function openPluginDrawer(name, meta){
   $("pdBody").innerHTML = `
     <div>${esc(m.description || "（没有说明）")}</div>
     ${m.system ? capLine : ""}
+    ${m.has_page ? `<div class="row" style="margin:8px 0 2px">
+      <button class="btn primary tiny" onclick="openPluginPage('${esc(name)}')">🧩 打开插件页</button>
+      <span class="kv">这个插件自带一个小界面（扫码 / 诊断 / 控制台），不用去运维页找</span></div>` : ""}
     ${m.usage ? `<h4>用法</h4><div>${esc(m.usage)}</div>` : ""}
+    ${(m.tools && m.tools.length) ? `<h4>工具（${m.tools.length}）</h4>
+      <div class="row" style="gap:6px;flex-wrap:wrap">${m.tools.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>
+      <div class="kv">这些是 agent 能自己调用的能力。停用这个插件，模型的可调用列表里就没有它们了。</div>` : ""}
     ${m.system ? "" : `<h4>命令（${cmds.length}）</h4>
     ${cmds.length ? cmds.map(c => `<div class="cmdrow"><code>.${esc(c.name)}</code>
         <span class="h">${esc(cmdHelpText(c))}</span>
@@ -1602,6 +1617,100 @@ function openPluginDrawer(name, meta){
   el.classList.add("on");
   if (Object.keys(m.schema || {}).length) loadPluginSchema(name);
 }
+
+/* ================= 插件自带页面（小型 webui） =================
+   同源 iframe：插件可以 fetch 面板的 /api/*，但它的 DOM/CSS 跟面板完全隔离，
+   一个插件写崩了也不会把主界面搞坏。主题变量在打开时从 :root 抄一份进去。 */
+const FRAME_VARS = ["--paper","--paper-2","--surface","--surface-2","--surface-3","--glass-line",
+  "--ink","--ink-soft","--dim","--line","--ui-accent","--red","--red-soft","--red-deep",
+  "--green","--radius","--font-cute","--font-body"];
+const FRAME_BASE = `
+  *{box-sizing:border-box}
+  body{margin:0;padding:12px;background:var(--paper);color:var(--ink);
+    font-family:var(--font-body);font-size:13px;line-height:1.7}
+  h3{font-family:var(--font-cute);font-size:16px;margin:0 0 8px}
+  h4{font-family:var(--font-cute);font-size:14px;margin:12px 0 6px;color:var(--red-deep)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:12px;margin-bottom:10px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .kv{color:var(--ink-soft);font-size:12px}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--line);
+    background:var(--surface-2);font-size:11.5px}
+  .btn{font:inherit;padding:6px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--surface-2);color:var(--ink);cursor:pointer}
+  .btn.primary{background:var(--ui-accent);color:#fff;border-color:transparent;font-weight:700}
+  .btn:disabled{opacity:.5;cursor:default}
+  input,select,textarea{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);
+    background:var(--surface-2);color:var(--ink);max-width:100%}
+  code{font-family:ui-monospace,monospace;font-size:12px;background:var(--surface-2);
+    padding:1px 5px;border-radius:6px}
+  pre{background:var(--surface-2);padding:8px;border-radius:8px;overflow:auto;font-size:12px}
+  .ok{color:var(--green)} .bad{color:var(--red)}
+  a{color:var(--ui-accent)}
+`;
+
+function pluginFrameDoc(html){
+  const cs = getComputedStyle(document.documentElement);
+  const vars = FRAME_VARS.map(v => `${v}:${cs.getPropertyValue(v).trim()}`).join(";");
+  return `<!doctype html><html data-theme="${esc(document.documentElement.dataset.theme || "")}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>:root{${vars}}${FRAME_BASE}</style></head>
+<body><script>
+  async function ksApi(path, opt){
+    const o = Object.assign({headers:{"X-Klee-Studio":"1"}}, opt || {});
+    if (o.body && typeof o.body !== "string"){ o.headers["Content-Type"]="application/json"; o.body=JSON.stringify(o.body); }
+    const r = await fetch(path, o);
+    try { return await r.json(); } catch(e){ return {ok:false, error:"HTTP "+r.status}; }
+  }
+  window.ks = {
+    api: (p) => ksApi(p),
+    post: (p, b) => ksApi(p, {method:"POST", body:b}),
+    toast: (t) => parent.postMessage({ks:"toast", text:String(t||"")}, "*"),
+    reload: () => parent.postMessage({ks:"reload"}, "*"),
+    goto: (v) => parent.postMessage({ks:"goto", view:String(v||"chat")}, "*"),
+    esc: (s) => String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])),
+  };
+<\/script>${html || ""}</body></html>`;
+}
+
+async function openPluginPage(name){
+  const body = $("pdBody"); if (!body) return;
+  // 从运维页的「插件页」按钮进来时抽屉还没开：先把壳装上
+  const dr = $("pdrawer");
+  if (dr && !dr.classList.contains("on")){
+    const m = (plMeta && plMeta[name]) || {};
+    $("pdTitle").textContent = m.title || name;
+    $("pdSub").textContent = "插件自带页面";
+    dr.classList.add("on");
+  }
+  body.classList.add("paged");
+  body.innerHTML = `<div class="kv">正在打开…</div>`;
+  const d = await api("/api/plugin/page?name=" + encodeURIComponent(name));
+  if (!d || !d.ok){
+    body.classList.remove("paged");
+    body.innerHTML = `<div class="kv">✗ ${esc((d && d.error) || "打不开这个页面")}</div>
+      <div class="row" style="margin-top:8px"><button class="btn tiny" onclick="openPluginDrawer('${esc(name)}')">← 返回</button></div>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="row" style="margin-bottom:8px;flex:none">
+      <button class="btn tiny" onclick="openPluginDrawer('${esc(name)}')">← 返回设置</button>
+      <span class="kv">${esc(d.title || name)} · 插件自带页面</span>
+    </div>
+    <iframe id="plugFrame" class="plugframe" title="${esc(d.title || name)}"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups" srcdoc=""></iframe>`;
+  const f = $("plugFrame");
+  if (f) f.srcdoc = pluginFrameDoc(d.html);
+}
+
+// 插件页 → 面板的两种消息
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || typeof d !== "object") return;
+  if (d.ks === "toast") flash(String(d.text || ""));
+  else if (d.ks === "reload") reloadFeatures();
+  else if (d.ks === "goto" && d.view){ closePluginDrawer(); go(String(d.view)); }
+});
 
 /* ---- 插件开关 / 设置 ---- */
 async function plugToggle(name, on){
@@ -1673,7 +1782,8 @@ function cmdHelpText(c){
   if (i >= 0) return h.slice(i + 2).trim();
   return h.replace(/^\.[^\s]+\s*/, "").trim();
 }
-function closePluginDrawer(){ const el = $("pdrawer"); if (el) el.classList.remove("on"); }
+function closePluginDrawer(){
+  const b = $("pdBody"); if (b) b.classList.remove("paged"); const el = $("pdrawer"); if (el) el.classList.remove("on"); }
 
 /* ================= 插件包安装 ================= */
 function pickPluginZip(){ const el = $("pluginZip"); if (el){ el.value = ""; el.click(); } }
@@ -1726,6 +1836,7 @@ function artFallback(img){
 }
 function go(v){
   V = v;
+  navClose();
   document.querySelectorAll("nav button[data-v]").forEach(x => x.classList.toggle("on", x.dataset.v === v));
   const bar = $("bar");
   if (bar){ bar.classList.add("on"); bar.classList.remove("done"); }
@@ -1767,10 +1878,9 @@ function render(){
   $("view").className = "content";
   const vw = $("view");
   vw.classList.remove("fadein"); void vw.offsetWidth; vw.classList.add("fadein");   // 切页淡入
-  document.querySelectorAll("#dock button").forEach(x => x.classList.toggle("on", x.dataset.v === V));
   const views = {chat: viewChat, chars: viewChars, custom: viewCustom,
                  persona: viewPersona, kb: viewPersona, plugins: viewPlugins,
-                 reminders: viewReminders, board: viewBoard, ops: viewOpsBot};
+                 reminders: viewReminders, board: viewBoard, ops: viewOps};
   const bar = $("bar");
   if (bar){ bar.classList.remove("done"); bar.classList.add("on"); }
   Promise.resolve((views[V] || viewFeed)()).catch(e => console.error(e)).finally(() => {
@@ -2249,6 +2359,7 @@ async function viewPlugins(readonly){
     <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
     <button class="fbtn on" data-pf="all" onclick="plugFilter('all')">全部</button>
     <button class="fbtn" data-pf="limited" onclick="plugFilter('limited')">限定</button>
+    <button class="fbtn" data-pf="general" onclick="plugFilter('general')">通用</button>
     <button class="fbtn" data-pf="system" onclick="plugFilter('system')">系统</button>
     <button class="fbtn" data-pf="on" onclick="plugFilter('on')">已启用</button>
     <button class="fbtn" data-pf="off" onclick="plugFilter('off')">已禁用</button>
@@ -2263,7 +2374,8 @@ async function viewPlugins(readonly){
 
 async function mountAgentCard(){
   const slot = $("agentCardSlot"); if (!slot) return;
-  const [md, ag] = await Promise.all([api("/api/models"), api("/api/agent")]);
+  const [md, ag, sk] = await Promise.all([api("/api/models"), api("/api/agent"), api("/api/skills")]);
+  const skillN = ((sk && sk.skills) || []).length;
   const provs = (md && md.providers) || [];
   window.__provs = provs;
   pvFetched = "";
@@ -2277,7 +2389,7 @@ async function mountAgentCard(){
     <h3>🛠️ 工具能力 <span class="kv" style="font-family:var(--font-body)">常开 · 她自己查资料、记事</span></h3>
     <div class="row">
       <label class="check"><input type="checkbox" id="agOwner" ${agentCfg.owner_only?"checked":""}> 只有主人能用</label>
-      <label class="check"><input type="checkbox" id="agSkills" ${agentCfg.skills!==false?"checked":""}> 允许调用技能（插件）</label>
+      <label class="check"><input type="checkbox" id="agSkills" ${agentCfg.skills!==false?"checked":""}> 允许调用技能（当前 ${skillN} 个）</label>
       <span class="kv">最大步数</span><input id="agSteps" type="number" min="0" max="6" value="${agentCfg.max_steps}" style="width:70px">
       <span class="kv">超时（秒）</span><input id="agTimeout" type="number" min="10" max="600" value="${agentCfg.timeout}" style="width:90px">
     </div>
@@ -2291,10 +2403,15 @@ async function mountAgentCard(){
         ${optList(agProv.models, agModel.model).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
     </div>
-    <div class="kv" style="margin-top:10px">可用工具</div>
-    <div class="row" id="agTools" style="margin-top:4px">
-      ${(agentCfg.available_tools||[]).map(t=>`<label class="check" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.name)}" ${(agentCfg.tools||[]).includes(t.name)?"checked":""}> ${esc(t.label || t.name)}</label>`).join("")}
+    <div class="kv" style="margin-top:10px">可用工具 ${(agentCfg.available_tools||[]).length} 个
+      <span style="font-weight:400">· 开关在插件页（工具就是插件）</span></div>
+    <div class="row" id="agToolsRow" style="margin-top:4px;gap:6px;flex-wrap:wrap">
+      ${(agentCfg.available_tools||[]).map(t=>`<span class="tag" title="${esc(t.description)}">${esc(t.label || t.name)} <span style="opacity:.55">${esc(t.plugin||"")}</span></span>`).join("")}
+      <a href="javascript:go('plugins')" class="btn tiny" style="flex:none">去插件页管理</a>
     </div>
+    ${agentCfg.tools && agentCfg.tools.length < (agentCfg.available_tools||[]).length
+      ? `<div class="kv" style="margin-top:6px">⚠ 配置里还限制着只用 ${agentCfg.tools.length} 个工具（agent_tools），面板已不再提供这个开关。
+         <a href="javascript:botAgentToolsAll()">恢复全部</a></div>` : ""}
     <div class="row" style="margin-top:10px">
       <button class="btn primary" onclick="botSaveAgent()">保存 Agent 设置</button>
     </div>
@@ -2377,11 +2494,13 @@ function renderPlugGrid(){
             commands: m.commands || 0, hits: m.hits || 0,
             usage: m.usage || "", version: m.version || "1.0",
             external: !!m.external, language: m.language || "",
-            ingress: m.ingress || "", health: m.health || null};
+            ingress: m.ingress || "", health: m.health || null,
+            tools: m.tools || []};
   }).filter(p => {
     // 角色限定插件与角色绑定：不是当前角色的，直接不显示
     if (!p.system && p.chars.length && !p.chars.includes(ACTIVE.id)) return false;
     if (plugMode === "limited" && (!p.chars.length || p.system)) return false;
+    if (plugMode === "general" && (p.system || p.chars.length)) return false;
     if (plugMode === "system" && !p.system) return false;
     if (plugMode === "on" && !p.enabled) return false;
     if (plugMode === "off" && p.enabled) return false;
@@ -2406,10 +2525,11 @@ function renderPlugGrid(){
               ? `${PLUG_ICON[ACTIVE.id] || "🎭"} ${esc(ACTIVE.name)}${p.chars.length > 1 ? " · 共享" : ""}`
               : `${PLUG_ICON[p.chars[0]] || "🎭"} ${esc(p.chars[0])}`));
     const sub = p.system
-      ? `适配器 · ${esc(p.ingress || "只出站")}`
+      ? (p.tools.length ? `工具 · ${p.tools.length} 个` : `适配器 · ${esc(p.ingress || "只出站")}`)
+      : (p.tools.length ? `工具 · ${p.tools.length} 个 · ${esc(p.name)}.py`
       : (p.external
           ? `${esc(p.language || "binary")} · ${esc(p.name)} · v${esc(p.version)}`
-          : `${esc(p.name)}.py · v${esc(p.version)}`);
+          : `${esc(p.name)}.py · v${esc(p.version)}`));
     const ready = p.health && p.health.ok;
     const why = p.error || (p.health && p.health.error) || "";
     const foot = p.system
@@ -2417,7 +2537,8 @@ function renderPlugGrid(){
             : (p.enabled ? (ready ? "● 已连接" : "◐ 未连接") : "○ 已停用")}</span>`
         + (why && p.enabled ? `<span title="${esc(why)}">详情</span>` : "")
       : `<span>${p.error ? "⚠ 加载失败" : (p.enabled ? "● 已启用" : "○ 已停用")}</span>
-         <span>命令 ${p.commands}</span><span>命中 ${p.hits}</span>`;
+         ${p.tools.length ? `<span>工具 ${p.tools.length}</span>`
+                          : `<span>命令 ${p.commands}</span>`}<span>命中 ${p.hits}</span>`;
     return `<div class="plugcard ${p.name === plSel ? "on" : ""} ${p.system ? "syscard" : ""}"
         onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
       <span class="st ${p.error ? "err" : (p.enabled ? "on" : "")}"></span>
@@ -2431,92 +2552,23 @@ function renderPlugGrid(){
     </div>`;
   }).join("");
 }
-/* ================= 运维 · 机器人（合并页） ================= */
-let opsBotTab = "ops";
-async function viewOpsBot(tab){
-  if (tab && tab !== opsBotTab) stopOpsTimers();   // 换子页先把旧日志/告警定时器停掉
-  if (tab) opsBotTab = tab;
-  const t = opsBotTab;
-  $("view").innerHTML = `
-  <h2 class="page">⚙️ 运维 · 机器人</h2>
-  <div class="seg" style="margin:2px 0 12px">
-    <button class="${t === "ops" ? "on" : ""}" onclick="viewOpsBot('ops')">⚙️ 运维</button>
-    <button class="${t === "bot" ? "on" : ""}" onclick="viewOpsBot('bot')">🤖 机器人</button>
-  </div>
-  <div id="opsBotPane"><div class="kv">加载中…</div></div>`;
-  if (t === "bot") await viewBot("opsBotPane");
-  else await viewOps("opsBotPane");
-}
-
+/* ================= 运维（单页；平台细节都在各插件页里） ================= */
 /* ================= 机器人（面板自持） ================= */
-async function viewBot(target){
+/* ================= 运维 · 模型（只留模型；QR/审批/告警已搬进插件页） ================= */
+async function viewModels(target){
   const T = target || "view";
-  const [st, md, ag, sk] = await Promise.all([
-    api("/api/bot"), api("/api/models"), api("/api/agent"), api("/api/skills")]);
-  const skills = (sk && sk.ok && sk.skills) || [];
+  const md = await api("/api/models");
   const act = (md && md.active) || {};
   const provs = (md && md.providers) || [];
   window.__provs = provs;
   const cur = provs.find(p => p.id === act.provider) || provs[0] || {models: []};
   const vis = (md && md.vision) || {};
   window.__vis = vis;                     // botSaveVision 用它判断「是不是在清空」
-  const agentCfg = (ag && ag.ok) ? ag : {enabled:false, owner_only:true, max_steps:3,
-    timeout:120, tools:[], available_tools:[], model:{}};
-  const agModel = agentCfg.model || {};
-  const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || cur;
   const visProv = provs.find(p => p.id === (vis.provider || act.provider)) || cur;
   const visModels = visProv.models || [];
-  const feat = (st && st.features) || {};
-  const stats = (st && st.stats) || {};
   $(T).innerHTML = `
-  ${T === "view" ? '<h2 class="page">🤖 机器人</h2>' : ''}
-  <p class="tip">登录入口在 NapCat WebUI :6099。</p>
   <div class="card">
-    <div class="row">
-      ${charAva("sm")}
-      <div style="flex:1">
-        <div style="font-family:var(--font-cute);font-size:17px">${esc(ACTIVE.name)} <span class="kv">${esc(ACTIVE.en)}</span></div>
-        <div class="kv">${esc(ACTIVE.tagline || "")} · 知识库 ${(charData && (charData.items.find(c=>c.id===ACTIVE.id)||{}).kb || {}).chunks || "—"} 块</div>
-      </div>
-      <button class="btn tiny" onclick="go('chars')">切换角色</button>
-    </div>
-  </div>
-  <div class="card">
-    <div class="statgrid">
-      <div class="stat"><b>${st.ok ? (st.online ? "在线" : "待机") : "异常"}</b><span>运行状态</span></div>
-      <div class="stat"><b>${feat.plugins ?? "—"}</b><span>插件</span></div>
-      <div class="stat"><b>${feat.commands ?? "—"}</b><span>命令</span></div>
-      <div class="stat"><b>${stats.events ?? "—"}</b><span>收到消息</span></div>
-      <div class="stat"><b>${stats.chats ?? "—"}</b><span>聊天回合</span></div>
-    </div>
-    <div class="row" style="margin-top:10px;font-size:12px">
-      <span class="tag">模型 ${esc((act.provider||"—")+" / "+(act.model||"—"))}</span>
-      <span class="tag">${st.last_event_age_s == null ? "还没收到消息" : "上次消息 "+st.last_event_age_s+"s 前"}</span>
-      ${st.error ? `<span class="tag">${esc(st.error)}</span>` : ""}
-      ${feat.errors && feat.errors.length ? `<span class="tag">插件报错 ${esc(feat.errors.join(","))}</span>` : ""}
-    </div>
-  </div>
-  ${(st.metrics) ? `
-  <div class="card">
-    <h3>📈 运行时指标 <span class="kv" style="font-family:var(--font-body)">最近 60 秒 / 5 分钟</span></h3>
-    <div class="statgrid">
-      <div class="stat"><b>${st.metrics.events_60s ?? 0}</b><span>近 60 秒消息</span></div>
-      <div class="stat"><b>${st.metrics.events_5m ?? 0}</b><span>近 5 分钟</span></div>
-      <div class="stat"><b>${st.metrics.commands ?? 0}</b><span>命令</span></div>
-      <div class="stat"><b>${st.metrics.errors ?? 0}</b><span>错误</span></div>
-      <div class="stat"><b>${st.metrics.rate_limited ?? 0}</b><span>限流</span></div>
-      <div class="stat"><b>${st.metrics.tts_out ?? 0}</b><span>语音发出</span></div>
-      <div class="stat"><b>${st.metrics.vision ?? 0}</b><span>识图</span></div>
-      <div class="stat"><b>${st.metrics.agent_runs ?? 0}</b><span>Agent 轮次</span></div>
-      <div class="stat"><b>${st.metrics.agent_tool_calls ?? 0}</b><span>工具调用</span></div>
-      <div class="stat"><b>${st.inflight ?? 0}</b><span>队列中</span></div>
-    </div>
-    <div class="row" style="margin-top:10px;font-size:12px">
-      ${(st.metrics.plugins || []).slice(0, 8).map(p => `<span class="tag">${esc(p.name)} ×${p.hits}${p.errors ? " ⚠" + p.errors : ""}</span>`).join("")}
-    </div>
-  </div>` : ""}
-  <div class="card">
-    <h3>🧠 模型选择 <span class="kv" style="font-family:var(--font-body)">改完点保存，下一句消息就用新模型</span></h3>
+    <h3>🧠 聊天模型 <span class="kv" style="font-family:var(--font-body)">改完点保存，下一句消息就用新模型</span></h3>
     <div class="row">
       <select id="mpProv" onchange="botFillModels()" style="min-width:190px">
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===act.provider?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
@@ -2545,62 +2597,7 @@ async function viewBot(target){
     <div id="mvOut" class="kv" style="margin-top:8px">${vis.configured
       ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
       : "没配（发图时只会请你描述）"}</div>
-  </div>
-  <div class="card" id="qrCard">
-    <h3>📷 QQ 扫码登录 <span class="kv" style="font-family:var(--font-body)">被踢下线时在这里扫 —— 不用再等人发截图</span></h3>
-    <div class="row" style="align-items:flex-start;gap:14px">
-      <div id="qrBox" class="kv" style="flex:1;min-width:220px">正在读取二维码…</div>
-      <div class="row" style="flex-direction:column;gap:6px;align-items:stretch">
-        <button class="btn tiny" onclick="qrRefresh(true)">⟳ 刷新二维码</button>
-        <button class="btn tiny" onclick="qrRestart()">↻ 重启 NapCat 取新码</button>
-        <a class="btn tiny" id="qrWebui" target="_blank" rel="noopener">↗ NapCat WebUI</a>
-      </div>
-    </div>
-  </div>
-`;
-  qrArm(st.online === true);
-}
-/* ---- 二维码：只在机器人页；没登录时 20 秒轮询一次 ---- */
-let qrTimer = null;
-
-async function qrRefresh(manual){
-  const box = $("qrBox"); if (!box) return;
-  let d = null;
-  try { d = await api("/api/napcat/qr"); } catch(e){ d = null; }
-  if (!d || !d.ok){
-    box.innerHTML = `<b>现在没有可扫的码。</b><br>${esc((d && d.error) || "NapCat 可能不在登录流程里")}<br>
-      点「重启 NapCat 取新码」，或用右侧的 NapCat WebUI 扫码。`;
-    return;
-  }
-  const mins = Math.round((d.age_s || 0) / 60);
-  const head = d.stale
-    ? `<b style="color:var(--red)">这张码 ${mins} 分钟没更新，多半已失效。</b><br>点「重启 NapCat 取新码」重新生成。<br>`
-    : `<b style="color:var(--green)">${d.age_s || 0} 秒前生成的。</b><br>`;
-  const img = d.b64
-    ? `<img src="${d.b64}" alt="QQ 登录二维码" width="220" height="220"
-         style="image-rendering:pixelated;background:#fff;padding:6px;border-radius:10px;margin:8px 0">`
-    : "";
-  box.innerHTML = head + img
-    + (d.url ? `<div style="word-break:break-all;font-size:11px">${esc(d.url)}</div>` : "")
-    + `<div class="kv" style="margin-top:6px">用手机 QQ 扫上面这张。</div>`;
-}
-
-async function qrRestart(){
-  if (!confirm("重启 NapCat 会断开当前 QQ 连接并重新生成二维码，确定？")) return;
-  const box = $("qrBox");
-  if (box) box.innerHTML = "正在重启 NapCat…（约 10 秒）";
-  try { await post("/api/action", {action: "restart_napcat"}); } catch(e){}
-  setTimeout(() => qrRefresh(true), 9000);
-}
-
-function qrArm(online){
-  if (qrTimer){ clearInterval(qrTimer); qrTimer = null; }
-  const link = $("qrWebui");
-  if (link) link.href = "http://" + (location.hostname || "127.0.0.1") + ":6099/webui";
-  if ($("qrBox")){
-    qrRefresh(false);
-    if (!online) qrTimer = setInterval(() => qrRefresh(false), 20000);
-  }
+  </div>`;
 }
 
 /* 下拉候选 = provider 的模型清单 + 已保存的那个值。
@@ -2649,14 +2646,21 @@ function botFillAgentModels(){
   $("agModel").innerHTML = '<option value="">跟聊天同一个模型</option>' +
     ms.map(m=>`<option>${esc(m)}</option>`).join("");
 }
+async function botAgentToolsAll(){
+  const d = await post("/api/agent", {tools: null});
+  $("agOut").textContent = d.ok ? "✓ 已恢复全部工具" : ("✗ " + (d.error || "失败"));
+  if (d.ok) mountAgentCard();
+}
+
 async function botSaveAgent(){
-  const tools = [...document.querySelectorAll("#agTools input:checked")].map(x=>x.value);
+  // 没有勾选框时**不能**传 tools：空数组在服务端是「一个工具都不给」，会把 agent 弄瞎
+  const box = document.getElementById("agTools");
   const d = await post("/api/agent", {
     owner_only: $("agOwner").checked,
     max_steps: Number($("agSteps").value || 3),
     timeout: Number($("agTimeout").value || 120),
     skills: $("agSkills").checked,
-    tools,
+    ...(box ? {tools: [...box.querySelectorAll("input:checked")].map(x=>x.value)} : {}),
     model: {provider: $("agProv").value, model: $("agModel").value},
   });
   $("agOut").textContent = d.ok
@@ -3238,10 +3242,8 @@ function cfgFilter(q){
 }
 
 let logTimer = null;
-let alertTimer = null;
-let reqTimer = null;
+let modelTimer = null;
 let opsCfgPrev = {};
-let alertsHash = null;
 let logHash = null;
 let logInited = false;
 function logTick(){ const cb = $("logAuto"); if (V === "ops" && cb && cb.checked) opsLogs(); }
@@ -3431,7 +3433,7 @@ function boardWidgets(ov, pl, ch, dash){
 
 function stopOpsTimers(){
   if (logTimer){ clearInterval(logTimer); logTimer = null; }
-  if (alertTimer){ clearInterval(alertTimer); alertTimer = null; }
+
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
 }
 
@@ -3472,62 +3474,55 @@ function adapterHTML(ad, compact){
     ${off.length ? `<br><span class="kv">不支持：${esc(off.map(k => CAP_CN[k] || k).join("、"))}</span>` : ""}${warn}`;
 }
 
+/* 平台的「未就绪」原始报错一般是 OneBotError: ... 一长串，运维页只说人话 */
+function readyText(note){
+  const s = String(note || "").trim();
+  if (!s) return "";
+  if (/OneBotError|URLError|Connection refused|timed out|HTTP 50\d/i.test(s))
+    return "协议端没连上（没登录或没启动）";
+  if (/token|401|403/i.test(s)) return "凭据没配好";
+  return s.length > 44 ? s.slice(0, 44) + "…" : s;
+}
+
 async function viewOps(target){
   const T = target || "view";
   $(T).innerHTML = `${T === "view" ? '<h2 class="page">⚙️ 运维</h2>' : ''}<div class="kv">正在读取…</div>`;
-  const [ov, cfg] = await Promise.all([api("/api/overview"), api("/api/config")]);
+  const [ov, cfg, pl] = await Promise.all([api("/api/overview"), api("/api/config"), api("/api/plugins")]);
   const a = ov.adapter || {}, g = ov.gateway || {}, n = ov.napcat || {};
-  const ad = (ov.bot && ov.bot.adapter) || null;
-  const ads = (ov.bot && ov.bot.adapters) || [];
   const st = a.stats || {};
   const feats = a.features || [];
   const onN = feats.filter(f => f.enabled).length;
   const badF = feats.filter(f => f.error);
+  const sys = (pl.system || []).map(pid => Object.assign({pid: pid}, (pl.meta || {})[pid] || {}));
   $(T).innerHTML = `
+  <h2 class="page" style="display:none">⚙️ 运维</h2>
   <div class="opsgrid">
     <div class="card"><h3>🛰️ 面板</h3>
       <div class="opsline">角色：<b>${esc(ACTIVE.emoji + " " + ACTIVE.name)}</b>
         <a href="javascript:go('chars')" style="font-size:12px">切换</a><br>
         状态：<b>${g.active ? "运行中" : "已停止"}</b><br>
         模型：${esc((ov.bot && ov.bot.model && ov.bot.model.model) || "—")}<br>
-        插件：<b>${onN}/${feats.length} 启用</b></div>
+        插件：<b>${onN}/${feats.length} 启用</b> · 命令 ${(ov.bot && ov.bot.features && ov.bot.features.commands) || 0} 个</div>
       <div class="row" style="margin-top:10px">
         <button class="btn tiny" onclick="opsAct('restart_gateway')">重载插件</button>
       </div>
     </div>
-    <div class="card"><h3>💬 消息收发</h3>
-      <div class="opsline">平台：<b>${ads.length ? esc(ads.map(x => x.title || x.platform).join(" · ")) : "未接入（只有网页聊天）"}</b><br>
-        连接：<b>${a.connected ? "在线" : "离线"}</b>${a.age == null ? " · 还没收到过消息" : ` · 上次消息 ${ageText(a.age)}`} · 已运行 ${durText(a.uptime)}<br>
-        收到 ${st.events ?? 0} · 发出 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 命令 ${st.commands ?? 0} · 错误 ${st.errors ?? 0}</div>
-      ${badF.length ? `<div class="opsline"><b style="color:var(--red)">插件报错：${badF.map(f=>esc(f.name)).join("、")}</b></div>` : ""}
-      <div class="opsline">插件：<b>${onN}/${feats.length} 启用</b> · 命中 ${feats.reduce((s,f)=>s+(f.hits||0),0)} 次</div>
-    </div>
-    <div class="card"><h3>🔌 系统插件 <span class="kv" style="font-family:var(--font-body)">收发消息的适配器</span></h3>
-      <div class="opsline">${adaptersHTML(ads, ad)}</div>
-    </div>
-    <div class="card"><h3>🐱 NapCat <span class="kv" style="font-family:var(--font-body)">QQ 协议端</span></h3>
-      <div class="opsline">登录：<b>${n.ok ? (n.is_login ? "已登录" : "未登录") : "取不到"}</b>${n.uin ? ` · ${esc(n.uin)}${n.nick ? " " + esc(n.nick) : ""}` : ""}<br>
-        阶段：<span title="${esc(n.phase || "")}">${esc(n.ok ? phaseText(n.phase) : "取不到状态")}</span></div>
+    <div class="card"><h3>💬 平台 <span class="kv" style="font-family:var(--font-body)">细节在各插件页里</span></h3>
+      ${sys.map(p => `<div class="opsline" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">
+        <span class="tag" style="flex:none">${p.locked_on ? "常开" : (p.enabled ? "● 开" : "○ 关")}</span>
+        <b style="flex:none">${esc(p.title || p.pid)}</b>
+        <span class="kv" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="${esc(p.ready_note || p.description || "")}">${esc(p.enabled || p.default_off === false ? readyText(p.ready_note) || p.description || "" : p.description || "")}</span>
+        ${p.has_page ? `<button class="btn tiny" style="flex:none" onclick="openPluginPage('${esc(p.pid)}')">插件页</button>` : ""}
+      </div>`).join("")}
       <div class="row" style="margin-top:10px">
-        <button class="btn tiny" onclick="opsAct('restart_napcat')">重启 NapCat</button>
+        <span class="kv">收到 ${st.events ?? 0} · 发出 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 错误 ${st.errors ?? 0}</span>
       </div>
+      ${badF.length ? `<div class="opsline"><b style="color:var(--red)">插件报错：${badF.map(f=>esc(f.name)).join("、")}</b></div>` : ""}
     </div>
   </div>
-  <div class="card" id="alertCard" style="margin-bottom:14px"><h3>🔔 掉线告警 <span class="kv" style="font-family:var(--font-body)">最近 20 条</span></h3>
-    <div id="alertBox" class="kv">正在读取…</div>
-    <div class="row" style="margin-top:8px">
-      <button class="btn tiny" onclick="opsAlerts()">⟳ 刷新</button>
-      <span class="kv" id="alertMsg"></span>
-    </div>
-  </div>
-  <div class="card" id="reqCard" style="margin-bottom:14px"><h3>🙋 好友 / 入群请求 <span class="kv" style="font-family:var(--font-body)">只记录，不自动通过</span></h3>
-    <div id="reqBox" class="kv">正在读取…</div>
-    <div class="row" style="margin-top:8px">
-      <button class="btn tiny" onclick="opsRequests()">⟳ 刷新</button>
-      <span class="kv" id="reqMsg"></span>
-    </div>
-  </div>
-  <div class="card" style="margin-bottom:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
+  <div id="modelSlot"><div class="kv">正在读取模型…</div></div>
+  <div class="card" style="margin-top:14px"><h3>🛠️ 常用配置 <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
     ${cfg.ok ? `<div class="row" style="margin-bottom:10px;flex-wrap:nowrap">
         <input type="text" id="cfgSearch" placeholder="搜索配置项…" style="flex:1;min-width:120px;height:34px" oninput="cfgFilter(this.value)">
         <button class="btn primary" style="flex:none" onclick="opsSaveCfg()">保存配置</button>
@@ -3554,84 +3549,8 @@ async function viewOps(target){
   };
   opsCfgPrev = cfg.values || {};
   logHash = null; logInited = false;                    // 页面重新装好，第一次必须真渲染
-  alertsHash = null;
   opsLogs();
-  opsAlerts();
-  opsRequests();
-  alertTimer = setInterval(opsAlerts, 30000);
-  reqTimer = setInterval(opsRequests, 30000);
-}
-
-/* 好友/入群请求：只展示，通过/拒绝必须人点 */
-async function opsRequests(){
-  const box = $("reqBox"); if (!box) return;
-  const d = await api("/api/requests?n=20");
-  if (!d || !d.ok){ box.innerHTML = '<div class="kv">✗ 读取失败</div>'; return; }
-  const items = d.items || [];
-  const pending = items.filter(x => x.kind && !x.action);
-  if (!pending.length){ box.innerHTML = '<div class="kv">最近没有待处理的请求</div>'; return; }
-  box.innerHTML = pending.map(r => {
-    const who = esc(r.nickname || r.user_id || "?");
-    const what = r.kind === "friend" ? "加好友" : `进群 ${esc(r.group_id || "")}`;
-    const when = r.ts ? new Date(r.ts * 1000).toLocaleString("zh-CN", {hour12: false}) : "";
-    return `<div class="opsline" style="margin:6px 0">
-      <b>${who}</b>（${esc(r.user_id || "")}）想${what}
-      ${r.comment ? `· 备注：${esc(r.comment)}` : ""}
-      <span class="kv">${esc(when)}</span>
-      <button class="btn tiny" onclick="opsReqAct('${esc(r.flag)}','${esc(r.kind)}',true)">通过</button>
-      <button class="btn tiny" onclick="opsReqAct('${esc(r.flag)}','${esc(r.kind)}',false)">拒绝</button>
-    </div>`;
-  }).join("");
-}
-async function opsReqAct(flag, kind, approve){
-  if (!confirm((approve ? "通过" : "拒绝") + "这个请求？")) return;
-  const d = await post("/api/requests/action", {flag, kind, approve});
-  $("reqMsg").textContent = d.ok ? (approve ? "✓ 已通过" : "✓ 已拒绝") : "✗ " + (d.error || "失败");
-  opsRequests();
-}
-
-/* 掉线告警流水：QQ 离线 >2 分钟落一条 offline，恢复落一条 recovered —— 晨报直接读同一个 alerts.jsonl */
-async function opsAlerts(){
-  const box = $("alertBox"); if (!box) return;
-  const d = await api("/api/alerts?n=20");
-  if (!d || !d.ok){ box.innerHTML = `<div class="kv">✗ 读取失败</div>`; return; }
-  const h = d.health || {};
-  // 上游报错经常整段栈（1000+ 字），面板只留一句人话，全文折叠
-  const raw = String(h.detail || h.reason || "");
-  const brief = !raw ? "" : (raw.length > 60
-    ? (raw.split(/[：:]/)[0] || raw).slice(0, 40) + "…"
-    : raw);
-  const head = h.connected
-    ? `<b style="color:var(--green)">当前在线</b>`
-    : `<b style="color:var(--red)">当前离线</b>${brief ? " · " + esc(brief) : ""}` +
-      (raw.length > 60 ? ` <details class="rawErr"><summary>详情</summary><code>${esc(raw)}</code></details>` : "");
-  const list = (d.alerts || []).slice().reverse();
-  const rows = list.slice(0, 6).map(e => {
-    const bad = e.kind === "offline";
-    const dur = (e.down_s === null || e.down_s === undefined) ? "—" : `${e.down_s}s`;
-    const full = String(e.text || "");
-    // 上游把整段 urlopen 栈塞进 text，这里只留前半句，全文放 title
-    const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "")
-                    .replace(/[：:\s]+$/, "").trim();
-    const msg = cut.length > 34 ? cut.slice(0, 34) + "…" : cut;
-    return `· <b>${esc(e.time || "")}</b> <span class="pill ${bad ? "bad" : "ok"}" style="font-size:max(11px, calc(10px * var(--fx)));padding:1px 7px">${bad ? "掉线" : "恢复"}</span>
-      <span title="${esc(full)}">${esc(msg)}</span> <span class="kv">离线 ${dur}</span>`;
-  }).join("<br>");
-  const rest = list.slice(6).map(e => {
-    const full = String(e.text || "");
-    const cut = full.replace(/\s*OneBotError:.*$/, "").replace(/URLError:.*$/, "").trim();
-    return `· <b>${esc(e.time || "")}</b> ${esc(cut.length > 34 ? cut.slice(0, 34) + "…" : cut)}`;
-  }).join("<br>");
-  const ahtml = `<div class="opsline">${head}</div>` + (rows
-    ? `<div class="opsline" style="max-height:220px;overflow:auto;line-height:1.9">${rows}`
-      + (rest ? `<details class="rawErr"><summary>更早 ${list.length - 6} 条</summary><div>${rest}</div></details>` : "")
-      + `</div>`
-    : `<div class="kv">还没有告警</div>`);
-  if (ahtml !== alertsHash){                   // 内容没变就不重绘（30 秒一轮不再闪）
-    alertsHash = ahtml;
-    box.innerHTML = ahtml;
-  }
-  if ($("alertMsg")) $("alertMsg").textContent = "更新于 " + hhmmss(Date.now() / 1000);
+  viewModels("modelSlot");
 }
 
 function cfgRow(field, vals){
@@ -3727,7 +3646,7 @@ function resumeTimers(){
   if (Date.now() - hiddenAt < 30000) return;   // 短暂切走不重绘
   if (V === "board") viewBoard();
   else if (V === "feed") viewFeed();
-  else if (V === "ops") viewOpsBot();
+  else if (V === "ops") viewOps();
 }
 document.addEventListener("visibilitychange", () => {
   if (document.hidden){ hiddenAt = Date.now(); pauseTimers(); }
@@ -3738,7 +3657,7 @@ document.addEventListener("keydown", (e) => {
   const typing = tag === "input" || tag === "textarea" || (e.target && e.target.isContentEditable);
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"){ e.preventDefault(); cmdkOpen(); return; }
   if (e.key === "Escape"){
-    cmdkClose(); closePluginDrawer(); closeSheet();
+    cmdkClose(); closePluginDrawer(); navClose();
     return;
   }
   if (typing) return;

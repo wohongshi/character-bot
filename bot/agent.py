@@ -42,8 +42,9 @@ MAX_TOOL_CALLS_PER_STEP = 4
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122 Safari/537.36")
 
-DEFAULT_TOOLS = ["web_search", "web_fetch", "kb_search", "now", "calc",
-                 "list_skills", "read_skill", "use_skill", "remember", "recall"]
+from . import toolbox                                    # noqa: E402  工具表（工具即插件）
+from .toolbox import DEFAULT_TOOLS, TOOLS                # noqa: E402  re-export：对外老名字还在
+
 ALL_TOOL_NAMES = list(DEFAULT_TOOLS)
 
 
@@ -504,189 +505,21 @@ def tool_use_skill(args: dict, ctx: ToolContext) -> str:
 
 
 # ---------------------------------------------------------------- 工具注册表
-TOOLS = {
-    "web_search": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "用 Bing 搜索公开网页，返回标题、链接和摘要。需要最新消息、资料、攻略时用。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "搜索关键词"},
-                        "count": {"type": "integer", "description": "结果条数 1-8，默认 5"},
-                    },
-                    "required": ["query"],
-                },
-            },
-        },
-        "handler": tool_web_search,
-    },
-    "web_fetch": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "web_fetch",
-                "description": "打开一个公开网页并提取正文文字。已知链接要看内容时用。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "http/https 链接"},
-                        "max_chars": {"type": "integer", "description": "最多返回多少字，默认 3000"},
-                    },
-                    "required": ["url"],
-                },
-            },
-        },
-        "handler": tool_web_fetch,
-    },
-    "kb_search": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "kb_search",
-                "description": "检索这个角色的知识库（设定、台词、语料）。回答设定类问题时先查它。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "要查的内容"},
-                        "k": {"type": "integer", "description": "条数 1-6，默认 4"},
-                    },
-                    "required": ["query"],
-                },
-            },
-        },
-        "handler": tool_kb_search,
-    },
-    "now": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "now",
-                "description": "获取当前日期和时间（可指定时区）。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"tz": {"type": "string", "description": "IANA 时区，如 Asia/Shanghai；默认本地"}},
-                },
-            },
-        },
-        "handler": tool_now,
-    },
-    "calc": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "calc",
-                "description": "计算算术表达式（+ - * / // % ** 和括号）。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"expr": {"type": "string", "description": "如 (3+5)*2.5"}},
-                    "required": ["expr"],
-                },
-            },
-        },
-        "handler": tool_calc,
-    },
-    "remember": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "remember",
-                "description": "把一件值得记住的小事写进本会话的记事本（以后能 recall）。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"text": {"type": "string", "description": "要记住的内容"}},
-                    "required": ["text"],
-                },
-            },
-        },
-        "handler": tool_remember,
-    },
-    "list_skills": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "list_skills",
-                "description": "列出可用技能（其实就是插件：查设定、抽卡、塔罗、角色卡……），可按关键词过滤。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string", "description": "关键词；空 = 全部"}},
-                },
-            },
-        },
-        "handler": tool_list_skills,
-    },
-    "read_skill": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "read_skill",
-                "description": "查看某个技能的说明和命令用法（决定怎么调用它之前先读）。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"name": {"type": "string", "description": "技能名，如 genshin"}},
-                    "required": ["name"],
-                },
-            },
-        },
-        "handler": tool_read_skill,
-    },
-    "use_skill": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "use_skill",
-                "description": "执行某个技能的命令（例如查角色练度、抽卡、看每日素材）。text 是命令和参数，如 '练度 甘雨'。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "技能名，如 genshin"},
-                        "text": {"type": "string", "description": "命令 + 参数，如 '练度 甘雨'"}},
-                    "required": ["name"],
-                },
-            },
-        },
-        "handler": tool_use_skill,
-    },
-    "recall": {
-        "spec": {
-            "type": "function",
-            "function": {
-                "name": "recall",
-                "description": "从本会话记事本里翻找以前记下的事。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string", "description": "关键词；空 = 最近几条"}},
-                },
-            },
-        },
-        "handler": tool_recall,
-    },
-}
+# 工具即插件：`TOOLS` 由 `bot/toolbox.py` 维护，插件在 register(api) 里
+# 用 `api.add_tool(...)` 往里登记（见 bot/features/web_tools.py 等）。
+# 这里原来那张写死的表已经搬走 —— 保留 TOOLS 这个名字只是为了不打断老调用方。
 
 
 def resolve_tools(names) -> list:
-    """把配置里的工具名收敛成合法列表。
+    """把配置里的工具名收敛成合法列表（委托 toolbox：只认**已注册**的工具）。
 
-    - 没配置（None）→ 默认全集
-    - 配置了（哪怕是空串/空列表）→ 只保留合法的；全非法就是空，**不回退全集**
-      （拼错一个名字就把 web_fetch/use_skill 全打开，属于 fail-open）
+    插件被关掉 → 它的工具不在表里 → 这里自然收敛掉，模型也就看不到它。
     """
-    if names is None:
-        return list(DEFAULT_TOOLS)
-    if isinstance(names, str):
-        names = re.split(r"[,，\s]+", names)
-    out = []
-    for n in names:
-        n = str(n).strip()
-        if n in TOOLS and n not in out:
-            out.append(n)
-    return out
+    return toolbox.resolve(names)
 
 
 def specs(names) -> list:
-    return [TOOLS[n]["spec"] for n in resolve_tools(names)]
+    return toolbox.specs(names)
 
 
 # ---------------------------------------------------------------- 循环
@@ -768,11 +601,12 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             t0 = time.monotonic()
             old_timeout = ctx.timeout
             ctx.timeout = min(ctx.timeout, left)
-            if name not in TOOLS or name not in allowed:
+            spec = toolbox.get(name)
+            if spec is None or name not in allowed:
                 out = f"错误：没有工具 {name!r}（可用：{', '.join(allowed)}）"
             else:
                 try:
-                    out = TOOLS[name]["handler"](args, ctx)
+                    out = spec["handler"](args, ctx)
                 except Exception as e:                           # noqa: BLE001
                     out = f"工具 {name} 出错：{type(e).__name__}: {e}"
             ctx.timeout = old_timeout
@@ -785,3 +619,13 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
 
     return {"text": "", "steps": max_steps, "tool_calls": called, "trace": trace,
             "error": "步数用完了还没得出结论", "images": ctx.images_out}
+
+
+# ---------------------------------------------------------------- 工具表启动
+# 放在文件末尾：插件文件要 `from bot.agent import tool_now`，必须等本模块的
+# 函数都定义完再导。正常启动时 FeatureManager 会清表重装（以插件开关为准）；
+# 没起框架的场合（单测、命令行）靠这一次 bootstrap 兜底。
+try:
+    toolbox.bootstrap()
+except Exception as _e:                                          # pragma: no cover
+    log.warning("工具插件 bootstrap 失败：%s", _e)

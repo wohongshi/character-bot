@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
     # 启用哪些平台：列表，可多开，**默认一个都不开**（新装只有网页聊天）。
     # 老配置没有这个键时，_load_config 会迁移成 [adapter]，不会把 QQ 停掉。
     "system_plugins": [],
+    "web_seen": False,            # 迁移标记：网页平台是否已介绍给这份配置
     "adapter": "onebot11",       # 单平台模式下的默认项（迁移用；多开看 system_plugins）
     "webhook_url": "",           # adapter=webhook 时的出站地址
     "webhook_token": "",         # 有则带 Authorization: Bearer
@@ -240,6 +241,15 @@ class BotService:
                 legacy_platform = ("system_plugins" not in disk)
                 if legacy_platform:
                     disk["system_plugins"] = [str(disk.get("adapter") or "onebot11")]
+                    self._config_needs_persist = True
+                # 网页是后加的平台（面板自带）：没见过它的老配置补进去，
+                # 否则网页聊天的 ctx.platform 会退回 onebot11。补过就不再动，
+                # 用户后来自己关掉是用户的选择。
+                if "web_seen" not in disk:
+                    sp = disk.get("system_plugins")
+                    if isinstance(sp, list) and "web" not in [str(x) for x in sp]:
+                        sp.append("web")
+                    disk["web_seen"] = True
                     self._config_needs_persist = True
                 # 只接受已知键，陈旧键别带进来
                 cfg.update({k: v for k, v in disk.items()

@@ -44,11 +44,16 @@ def check(name, ok, detail=""):
 # ---------- 1) 注册表：五个系统插件，默认全关 ----------
 print("· 系统插件清单")
 sysinfo = {x["name"]: x for x in A.system_plugins()}
-check("内置 5 个系统插件",
-      set(sysinfo) >= {"onebot11", "webhook", "feishu", "wechat", "qqofficial"},
+check("内置 6 个系统插件（5 个接别人的平台 + 1 个面板自带）",
+      set(sysinfo) >= {"onebot11", "webhook", "feishu", "wechat", "qqofficial", "web"},
       str(sorted(sysinfo)))
-check("全部默认关闭", all(x["default_off"] for x in sysinfo.values()),
+# 网页是面板自带的那一个平台：它默认开（否则网页聊天没有平台身份），
+# 其余平台一律默认关 —— 没配任何凭据时不该有任何东西在往外连。
+check("接外部的平台全部默认关闭",
+      all(v["default_off"] for k, v in sysinfo.items() if k != "web"),
       str({k: v["default_off"] for k, v in sysinfo.items()}))
+check("网页默认开启（面板自带）", sysinfo["web"]["default_off"] is False)
+check("网页有自带小页面", sysinfo["web"].get("has_page") is True)
 check("每个都有说明", all(x["description"] for x in sysinfo.values()),
       str({k: v["description"] for k, v in sysinfo.items()}))
 check("QQ/飞书/微信都有入站路径",
@@ -77,8 +82,10 @@ tmp = Path(tempfile.mkdtemp())
 (tmp / "state" / "bot_config.json").write_text(json.dumps(
     {"adapter": "onebot11", "napcat_token": "t"}), encoding="utf-8")
 svc = BotService(home=tmp)
-check("老配置迁移：保留原来的 onebot11（升级后不会静默掉线）",
-      svc.config.get("system_plugins") == ["onebot11"], str(svc.config.get("system_plugins")))
+sp = list(svc.config.get("system_plugins") or [])
+check("老配置迁移：保留原来的 onebot11（升级后不会静默掉线）", "onebot11" in sp, str(sp))
+check("老配置迁移：网页也补进去（否则 ctx.platform 会退回 onebot11）", "web" in sp, str(sp))
+check("迁移只做一次（标记落盘，用户后来关掉不会再被打开）", svc.config.get("web_seen") is True)
 
 # ---------- 3) 运行时：一个都没开 → NullAdapter ----------
 print("\n· 无平台时的运行时")

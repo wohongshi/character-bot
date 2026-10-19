@@ -152,6 +152,52 @@ def register(api):
 | `api.on_nlu(pattern, cmd, priority=)` | 正则整句命中 → 等价于发了 `.cmd` | 无 |
 | `api.on_notice(h, priority=)` | 戳一戳 / 入群 / 退群 / 撤回 | 旁听，返回值只进日志 |
 | `api.on_request(h, priority=)` | 好友申请 / 入群申请 | **旁听**，不能自动通过 |
+| `api.add_tool(name, description=, parameters=, handler=, system=)` | 不是钩子：登记 agent 工具 | 无 |
+| `api.add_page(html, title=)` | 不是钩子：挂一个自带小页面 | 无 |
+
+### 工具即插件
+
+`api.add_tool()` 把工具登记进 `bot/toolbox.py` 的全局表；`agent.run()` 只认这张表。
+于是「关掉插件」和「模型看不见这个工具」是同一件事，不需要两套开关。
+
+```python
+NAME = "笔记"
+def register(api):
+    from bot.agent import tool_remember, tool_recall
+    api.add_tool("remember", description="记一件小事", handler=tool_remember,
+                 parameters={"type": "object",
+                             "properties": {"text": {"type": "string"}},
+                             "required": ["text"]})
+```
+
+规矩：
+
+- **名字是全局命名空间**（和命令一样），重名后来者覆盖前者；
+- **`register()` 抛异常 → 这个插件登记过的工具全部回滚**，不会留下半截；
+- 插件被关掉 / 热重载 → 它的工具按 `plugin` 名整批摘掉；
+- `system=True`（或模块级 `SYSTEM = True`）让它在面板归到「系统」分类 ——
+  出网这类「框架能力」用它，别把 `web_search` 挂在某个角色上；
+- 没有框架的场合（单测、命令行）用 `toolbox.bootstrap()` 从同一批插件文件补表。
+
+### 插件自带小页面
+
+平台自己的细节（QQ 扫码、飞书诊断、网页控制台）不该堆在运维页上。
+两种挂法，面板都从 `GET /api/plugin/page?name=<插件>` 取：
+
+```python
+# 普通插件
+def register(api):
+    api.add_page("<div>…</div>", title="我的小面板")
+
+# 系统插件（适配器）
+class MyAdapter(BaseAdapter):
+    def page(self) -> str:
+        return "<div>…</div>"
+```
+
+页面跑在**同源 iframe**（`srcdoc`）里：DOM/CSS 跟主界面隔离，但可以直接
+`fetch('/api/…')`；框架在页面里注入了 `ks.api / ks.post / ks.toast / ks.goto / ks.reload`，
+主题变量（`--paper` `--ink` `--ui-accent`…）也会从 `:root` 抄一份进去，所以配色跟着角色走。
 
 ### 上下文里有什么
 

@@ -47,6 +47,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .ext import ExtPlugin, load_spec
 
+from . import toolbox
 logger = logging.getLogger(__name__)
 
 
@@ -438,6 +439,7 @@ class FeatureAPI:
         self._plugin = plugin
         self._settings = settings if isinstance(settings, dict) else {}
         self._state: Dict[str, Any] = {}          # 插件自己的内存态（重载即清）
+        self._system = False                      # 模块级 SYSTEM 在这里落地
         self.BLOCK = BLOCK
 
     # —— 注册 ——
@@ -473,6 +475,27 @@ class FeatureAPI:
         """
         self._manager.register_request_hook(_Hook(handler=handler, plugin=self._plugin,
                                                   priority=int(priority)))
+
+    def add_tool(self, name: str, *, description: str = "", parameters: dict | None = None,
+                 handler: Callable | None = None, system: bool = False) -> None:
+        """把一个 **agent 工具** 挂到这个插件名下。
+
+        插件关掉 → 工具从模型的可调用列表里消失（不是「还在、点了报错」）。
+        `system=True` 会让它在面板归到「系统」分类（框架能力，比如联网）。
+        """
+        toolbox.register(self._plugin, name, handler, description=description,
+                         parameters=parameters, system=bool(system or self._system),
+                         owner=self._manager)
+
+    def add_page(self, html, *, title: str = "") -> None:
+        """挂一个**插件自带的小页面**（面板抽屉里用 iframe 打开）。
+
+        `html` 是字符串或 `callable() -> str`。页面跑在同源 iframe 里，
+        可以直接 fetch 面板的 `/api/*`（脚本里已经注入了 `ks.api/ks.post`）。
+        用它把「这个插件自己的事」放回插件身上，别堆到运维页。
+        """
+        self._manager.pages[self._plugin] = {"title": str(title or self._plugin),
+                                             "html": html}
 
     def on_nlu(self, pattern: str, cmd: str, *, priority: int = 100) -> None:
         """注册自然语言触发：整句命中后消息被替换成 `.{cmd}`（`{1}` 引用正则分组）。
@@ -553,6 +576,8 @@ class FeatureManager:
         self.commands: Dict[str, _Command] = {}     # 小写名/别名 → _Command
         #: 外部插件（其他语言写的）：name → ExtPlugin。重载时全部关掉重来。
         self.ext_plugins: Dict[str, Any] = {}
+        #: 插件自带的小页面：name → {"title": str, "html": str|callable}
+        self.pages: Dict[str, dict] = {}
         self.hooks_in: List[_Hook] = []
         self.hooks_out: List[_Hook] = []
         self.hooks_notice: List[_Hook] = []     # 非消息事件（旁听）
@@ -630,6 +655,9 @@ class FeatureManager:
         self.nlu_rules = []
         self._nlu_seq = 0
         self.plugins = {}
+        self.pages = {}
+        # 工具表跟着一起清：插件装不上 / 被关掉，它的工具就不该还挂在模型面前
+        toolbox.reset(self)
         self.load_error = ""
 
         cfg, corrupt = self._read_config()
@@ -645,6 +673,9 @@ class FeatureManager:
         self._ext_close_all()          # 重载前先收掉旧的外部进程，别留下孤儿
 
         files = sorted(p for p in self.dir.glob("*.py") if not p.name.startswith("_"))
+        tools_default_on = set(toolbox.TOOL_PLUGINS)
+        if not corrupt:
+            self._adopt_new_plugins(files, cfg, tools_default_on)
         sys_path_added = False
         try:
             if str(self.dir) not in sys.path:
@@ -675,6 +706,49 @@ class FeatureManager:
                     len({id(c) for c in self.commands.values()}),
                     len(self.nlu_rules),
                     len(self.hooks_in), len(self.hooks_out))
+
+    # ---------- 新插件默认开 ----------
+    def _adopt_new_plugins(self, files, cfg: dict, default_on: set) -> None:
+        """把**第一次出现**的插件按自带默认开关落进 config.json。
+
+        为什么要这份 known 记录：`enabled` 是白名单，「用户主动关掉」和
+        「这插件刚装上、还没进名单」在里面长得一模一样。有了 known 才能区分：
+        没见过的 → 按默认（工具插件默认开）；见过但不在名单 → 用户关的，不动。
+
+        工具插件尤其不能默认关：升级一次 agent 就瞎了，而且面板上看不出原因。
+        """
+        known_path = self.dir / "known.json"        # 和 config.json 放一起
+        try:
+            known = set(json.loads(known_path.read_text(encoding="utf-8")).get("names") or [])
+        except (OSError, ValueError, TypeError):
+            known = set()
+        names = [p.stem for p in files]
+        fresh = [n for n in names if n not in known]
+        if not fresh:
+            return
+        enabled = cfg.get("enabled")
+        if not isinstance(enabled, list):
+            enabled = []
+            cfg["enabled"] = enabled
+        added = []
+        for n in fresh:
+            if n in default_on and n not in enabled:
+                enabled.append(n)
+                added.append(n)
+        try:
+            known_path.parent.mkdir(parents=True, exist_ok=True)
+            known_path.write_text(json.dumps({"names": sorted(known | set(names))},
+                                             ensure_ascii=False, indent=0), encoding="utf-8")
+        except OSError as e:
+            logger.warning("OneBot: 写 known.json 失败 — %s", e)
+        if added:
+            try:
+                cfg_path = self.dir / "config.json"
+                cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
+                                    encoding="utf-8")
+            except OSError as e:
+                logger.warning("OneBot: 存新插件默认开关失败 — %s", e)
+            logger.info("OneBot: 新插件按默认开启 —— %s", ", ".join(added))
 
     # ---------- 外部插件（Node / Rust / C / C++ / Java / PHP …） ----------
     def _ext_close_all(self) -> None:
@@ -835,7 +909,7 @@ class FeatureManager:
         info = {"description": "", "title": name, "version": "", "enabled": False,
                 "error": "", "file": path.name,
                 "usage": "", "author": "", "homepage": "", "schema": {},
-                "characters": [], "locked": False}
+                "characters": [], "locked": False, "system": False, "tools": []}
         try:
             mod_name = f"onebot_feature_{name}_{int(time.time() * 1000)}"
             spec = _ilu.spec_from_file_location(mod_name, path)
@@ -879,6 +953,9 @@ class FeatureManager:
         except TypeError:
             info["characters"] = []
         info["locked"] = bool(info["characters"])
+        # 模块级 SYSTEM = True：这个插件提供的是框架能力（适配器、联网），
+        # 面板归到「系统」分类，且不能被角色限定覆盖
+        info["system"] = bool(getattr(module, "SYSTEM", False))
 
         if info["locked"]:
             info["enabled"] = str(self.active_character).strip().lower() in info["characters"]
@@ -898,7 +975,11 @@ class FeatureManager:
             info["enabled"] = False
             logger.warning("OneBot: 插件 %s 缺少 register(api)，已跳过", name)
             return
+        toolbox.unregister_plugin(name, self)   # 重载：先摘旧工具，register 里再登记新的
+        self.pages.pop(name, None)           # 旧页面也一起摘（插件改名/删页面时不残留）
         api = FeatureAPI(self, name, settings.get(name) or {})
+        # 模块级 SYSTEM = True → 这个插件登记的工具也算系统能力（联网、出网这类）
+        api._system = bool(getattr(module, "SYSTEM", False))
         # 注册到一半抛异常时，把半截命令/钩子/NLU 撤掉，别让「已停用」的插件还在接消息
         snapshot = (dict(self.commands), list(self.hooks_in), list(self.hooks_out),
                     list(self.hooks_notice), list(self.hooks_request),
@@ -909,6 +990,8 @@ class FeatureManager:
             (self.commands, self.hooks_in, self.hooks_out,
              self.hooks_notice, self.hooks_request,
              self.nlu_rules, self._nlu_seq) = snapshot
+            toolbox.unregister_plugin(name, self)
+            self.pages.pop(name, None)
             info["error"] = f"register(): {type(e).__name__}: {e}"
             info["enabled"] = False
             logger.warning("OneBot: 插件 %s 注册失败（已回滚半截注册）— %s", name, info["error"])
@@ -1185,6 +1268,8 @@ class FeatureManager:
                     "scope": c.scope, "permission": c.permission, "cooldown": c.cooldown,
                 })
             nlu_len = len(self.nlu_rules)
+            pages = set(self.pages)
+        tool_rows = toolbox.catalog()
         return {
             "dir": str(self.dir),
             "loaded": self.loaded,
@@ -1202,6 +1287,9 @@ class FeatureManager:
                  "command_list": sorted(cmd_list.get(n, []), key=lambda x: x["name"]),
                  "file": p.get("file", ""),
                  # 外部插件（其他语言）：面板上要显示语言徽章与入口
+                 "system": bool(p.get("system")),
+                 "has_page": n in pages,
+                 "tools": [t["name"] for t in tool_rows if t["plugin"] == n],
                  "external": bool(p.get("external")),
                  "language": p.get("language", "") or "",
                  "entry": p.get("entry", "") or "",

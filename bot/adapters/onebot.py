@@ -156,3 +156,138 @@ class OneBotAdapter(BaseAdapter):
             self.base, self.token = base, token
             self.raw = OneBotHTTP(base, token)
         return True
+
+    # ---------- 自带小页面（QQ 自己的事，不摊在运维页上） ----------
+    def page(self) -> str:
+        """QQ 的登录/审批/告警都在这一个页面里。
+
+        为什么搬进来：面板现在是「多平台」的了，运维页不该知道 QQ 的扫码接口、
+        NapCat 的阶段名、好友申请的 flag 长什么样 —— 这些全是这个平台自己的细节。
+        """
+        return _PAGE_HTML
+
+
+_PAGE_HTML = """
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <div><b>连接状态</b></div>
+    <button class="btn" style="padding:3px 9px;font-size:12px" onclick="refreshAll()">⟳ 刷新</button>
+  </div>
+  <div id="st" class="kv" style="margin-top:6px">读取中…</div>
+</div>
+
+<div class="card">
+  <h4>扫码登录</h4>
+  <div id="qr" class="kv">正在读取二维码…</div>
+  <div class="row" style="margin-top:8px">
+    <button class="btn" onclick="qrReload()">⟳ 刷新二维码</button>
+    <button class="btn" onclick="restartNapcat()">↻ 重启 NapCat 取新码</button>
+    <a class="btn" id="webui" target="_blank" rel="noopener">↗ NapCat WebUI</a>
+  </div>
+  <div class="kv" style="margin-top:6px">被踢下线时在这里扫，不用再等人发截图。</div>
+</div>
+
+<div class="card">
+  <h4>好友 / 入群请求 <span class="kv" style="font-weight:400">只记录，不自动通过</span></h4>
+  <div id="req" class="kv">读取中…</div>
+  <div class="row" style="margin-top:8px"><button class="btn" onclick="loadReq()">⟳ 刷新</button></div>
+</div>
+
+<div class="card">
+  <h4>掉线告警 <span class="kv" style="font-weight:400">最近 20 条</span></h4>
+  <div id="alerts" class="kv">读取中…</div>
+  <div class="row" style="margin-top:8px"><button class="btn" onclick="loadAlerts()">⟳ 刷新</button></div>
+</div>
+
+<script>
+let qrTimer = null;
+function esc(s){ return ks.esc(s); }
+async function loadStatus(){
+  const d = await ks.api("/api/bot");
+  const ad = ((d && d.adapters) || []).find(a => a.platform === "onebot11") || {};
+  const n = (d && d.napcat) || {};
+  const note = ad.ready_note
+    ? ' · <span class="kv">' + esc(ad.ready_note) + '</span>' : '';
+  document.getElementById("st").innerHTML =
+    "运行：<b>" + (d && d.online ? "在线" : "待机") + "</b>" +
+    " · 协议端：<b>" + (ad.ready ? "已连通" : "未连通") + "</b>" + note +
+    "<br>登录：<b>" + (n.is_login ? "已登录" : "未登录") + "</b>" +
+    (n.uin ? " · " + esc(n.uin) + (n.nick ? " " + esc(n.nick) : "") : "") +
+    (n.phase ? " · 阶段 <code>" + esc(n.phase) + "</code>" : "") +
+    (d && d.last_event_age_s != null ? "<br>上次消息：" + d.last_event_age_s + " 秒前" : "");
+  const w = document.getElementById("webui");
+  if (w) w.href = "http://" + (location.hostname || "127.0.0.1") + ":6099/webui";
+}
+async function qrReload(){
+  const box = document.getElementById("qr");
+  const d = await ks.api("/api/napcat/qr");
+  if (!d || !d.ok){
+    box.innerHTML = "<b>现在没有可扫的码。</b><br>" + esc((d && d.error) || "NapCat 可能不在登录流程里") +
+      "<br>点「重启 NapCat 取新码」，或用右侧的 NapCat WebUI 扫码。";
+    return;
+  }
+  const mins = Math.round((d.age_s || 0) / 60);
+  const head = d.stale
+    ? '<b class="bad">这张码 ' + mins + ' 分钟没更新，多半已失效。</b><br>点「重启 NapCat 取新码」重新生成。<br>'
+    : '<b class="ok">' + (d.age_s || 0) + ' 秒前生成的。</b><br>';
+  box.innerHTML = head
+    + (d.b64 ? '<img src="' + d.b64 + '" alt="QQ 登录二维码" width="200" height="200" ' +
+        'style="image-rendering:pixelated;background:#fff;padding:6px;border-radius:10px;margin:8px 0">' : "")
+    + (d.url ? '<div style="word-break:break-all;font-size:11px">' + esc(d.url) + "</div>" : "")
+    + '<div class="kv" style="margin-top:6px">用手机 QQ 扫上面这张。</div>';
+}
+async function restartNapcat(){
+  if (!confirm("重启 NapCat 会断开当前 QQ 连接并重新生成二维码，确定？")) return;
+  document.getElementById("qr").innerHTML = "正在重启 NapCat…（约 10 秒）";
+  await ks.post("/api/action", {action: "restart_napcat"});
+  setTimeout(() => { qrReload(); loadStatus(); }, 9000);
+}
+async function loadReq(){
+  const box = document.getElementById("req");
+  const d = await ks.api("/api/requests?n=20");
+  const items = ((d && d.items) || []).filter(x => x.kind && !x.action);
+  if (!items.length){ box.innerHTML = '<span class="kv">最近没有待处理的请求</span>'; return; }
+  // 用 data- 属性传参：拼 onclick 字符串要在 JS 里再转义一层引号，容易出错
+  box.innerHTML = items.map(r => {
+    const what = r.kind === "friend" ? "加好友" : ("进群 " + esc(r.group_id || ""));
+    const btn = (ok, label) => '<button class="btn" data-flag="' + esc(r.flag) + '" data-kind="'
+      + esc(r.kind) + '" data-ok="' + (ok ? "1" : "0") + '">' + label + "</button>";
+    return '<div style="padding:5px 0;border-bottom:1px solid var(--line)">'
+      + "<b>" + esc(r.nickname || r.user_id || "?") + "</b>（" + esc(r.user_id || "") + "）想" + what
+      + (r.comment ? " · 备注：" + esc(r.comment) : "")
+      + '<div class="row" style="margin-top:4px">' + btn(true, "通过") + btn(false, "拒绝") + "</div></div>";
+  }).join("");
+  box.querySelectorAll("button[data-flag]").forEach(b => {
+    b.onclick = () => reqAct(b.dataset.flag, b.dataset.kind, b.dataset.ok === "1");
+  });
+}
+async function reqAct(flag, kind, approve){
+  if (!confirm((approve ? "通过" : "拒绝") + "这个请求？")) return;
+  const d = await ks.post("/api/requests/action", {flag: flag, kind: kind, approve: approve});
+  ks.toast(d && d.ok ? (approve ? "✓ 已通过" : "✓ 已拒绝") : ("✗ " + ((d && d.error) || "失败")));
+  loadReq();
+}
+async function loadAlerts(){
+  const box = document.getElementById("alerts");
+  const d = await ks.api("/api/alerts?n=20");
+  const h = (d && d.health) || {};
+  const list = ((d && d.alerts) || []).slice().reverse();
+  if (!list.length){ box.innerHTML = (h.connected ? '<b class="ok">当前在线</b> · ' : "") + '<span class="kv">还没有告警</span>'; return; }
+  box.innerHTML = (h.connected ? '<b class="ok">当前在线</b>' : '<b class="bad">当前离线</b>') +
+    '<div style="max-height:200px;overflow:auto;line-height:1.9">' +
+    list.slice(0, 8).map(e => "· <b>" + esc(e.time || "") + "</b> " +
+      (e.kind === "offline" ? "掉线" : "恢复") + " " +
+      esc(String(e.text || "").slice(0, 40)) +
+      (e.down_s != null ? ' <span class="kv">离线 ' + e.down_s + "s</span>" : "")).join("<br>") +
+    (list.length > 8
+      ? '<details style="margin-top:6px"><summary class="kv">更早 ' + (list.length - 8) + " 条</summary>"
+        + list.slice(8).map(e => "· " + esc(e.time || "") + " " + esc(String(e.text || "").slice(0, 40))).join("<br>")
+        + "</details>"
+      : "") +
+    "</div>";
+}
+function refreshAll(){ loadStatus(); qrReload(); loadReq(); loadAlerts(); }
+refreshAll();
+if (window.parent) qrTimer = setInterval(() => { loadStatus(); loadAlerts(); }, 20000);
+</script>
+"""

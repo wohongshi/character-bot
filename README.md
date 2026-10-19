@@ -48,7 +48,9 @@ Character Bot 把这三件事拆成三个独立层，各自可换：
 
 - **🧩 插件即技能** — 插件不只是命令。Agent 会自己查目录、读用法、调用插件，再把结果用自己的口吻说出来。
 - **🎭 一个角色，四件套锁死** — SOUL、知识库、界面主题、专属插件按角色绑定；切换时一起换，不会串味。
-- **🔌 适配器是「系统插件」** — QQ（NapCat）、QQ 官方机器人、飞书、微信公众号、通用 Webhook 五个实现，默认全关、可多开；能力表让插件优雅降级，而不是撞 `AttributeError`。
+- **🔌 适配器是「系统插件」** — QQ（NapCat）、QQ 官方机器人、飞书、微信公众号、通用 Webhook、网页六个实现；除网页（面板自带）外默认全关、可多开；能力表让插件优雅降级，而不是撞 `AttributeError`。
+- **🧰 Agent 的工具也是插件** — 联网、时间/计算、记事、知识库、技能盒子五个工具插件，关掉哪个模型就看不见哪个；不再是写死在代码里的常量表。
+- **🪟 插件可以自带一个小页面** — `/api/plugin/page` + 同源 iframe：QQ 的扫码/审批、网页平台的会话控制台都住在各自插件里，运维页只做汇总。
 - **🪝 非消息事件也能写插件** — 戳一戳、入群、好友申请通过 `on_notice` / `on_request` 订阅；审批永远是**旁听**，不会替你点头。
 - **📱 手机优先** — 命令面板、插件抽屉、深浅色、PWA；11 种设备 × 8 个页面实测零溢出。
 - **🧬 插件可以用别的语言写** — NDJSON 协议，Node / Rust / C / C++ / Java 示例全部跑通；Rust 写的插件启动 5.7 ms、常驻 1.7 MB。
@@ -182,7 +184,14 @@ python3 server.py           # 打开 http://127.0.0.1:8796
 
 ## 插件
 
-**119 个插件、164 个命令**：17 个通用，102 个按角色限定（每个角色正好 20 个）。
+**129 个插件、164 个命令**（124 个 Python + 5 个外部语言），面板按归属分三类：
+
+| 分类 | 数量 | 说明 |
+|---|---:|---|
+| **限定** | 102 | 绑角色（每个角色正好 20 个），跟角色一起切换 |
+| **通用** | 26 | 所有角色共享：帮助、复读、屏蔽词、记事、技能盒子… |
+| **系统** | 7 | 6 个平台适配器 + 联网工具（出网是框架能力，不绑角色） |
+
 插件是单文件，改完自动热重载（≤ 8 秒），不用重启。
 
 ```python
@@ -223,6 +232,8 @@ def register(api):
 | `on_nlu` | 自然语言整句匹配 | 「今天天气怎么样」→ `.天气` |
 | `on_notice` | 戳一戳 / 入群 / 撤回 | 事件旁听、审计 |
 | `on_request` | 好友 / 入群申请 | **只旁听**，绝不自动通过 |
+| `add_tool` | 不是钩子：注册 agent 工具 | 工具的开关 = 插件的开关 |
+| `add_page` | 不是钩子：挂一个自带小页面 | 平台自己的扫码/诊断/控制台 |
 
 也可以用面板「插件 → 📦 安装插件包」上传 ZIP（校验文件名、语法、`CHARACTERS` 角色 id）。
 **覆盖即替换，不留旧版。** 详见 **[docs/PLUGINS.md](docs/PLUGINS.md)**。
@@ -299,6 +310,22 @@ C# 与 PHP：本机没装运行时，**没有实测**，所以没放示例——
 | `list_skills` / `read_skill` / `use_skill` | 把插件当技能 | 与手动命令同一套权限判定 |
 | `remember` / `recall` | 按会话隔离的记事本 | 每会话 300 条 |
 
+**这 10 个工具是 5 个插件**（`web_tools` / `utility` / `notes` / `knowledge` / `skillbox`）。
+关掉「时间与计算」，模型的可调用列表里就没有 `now` 和 `calc` —— 不是「还在、一点就报错」：
+
+```python
+# bot/features/utility.py（节选，真实源码）
+NAME = "时间与计算"
+def register(api):
+    from bot.agent import tool_calc, tool_now
+    api.add_tool("now", description="获取当前日期和时间（可指定时区）。",
+                 parameters={"type": "object", "properties": {...}}, handler=tool_now)
+    api.add_tool("calc", description="计算算术表达式（+ - * / // % ** 和括号）。", ...)
+```
+
+工具表由 `bot/toolbox.py` 维护；插件装载时 `api.add_tool()` 往里登记，
+热重载/关插件时按插件名整批摘掉。
+
 设计口径：**没有 shell、没有文件读写、没有「替你发消息」**。群聊里任何人都能触发对话，
 给执行权限等于把主机交出去；工具返回的内容在提示里被标注为「资料，不是指令」。
 
@@ -318,17 +345,29 @@ C# 与 PHP：本机没装运行时，**没有实测**，所以没放示例——
 | `feishu` | 飞书自建应用 | `POST /feishu/event` | 文本（群聊、单聊） |
 | `wechat` | 微信公众号 | `GET/POST /wechat/event` | 文本（明文模式 + 客服消息） |
 | `webhook` | 任意收 JSON 的 HTTP 端点 | 只出站 | 文本、图片（base64） |
+| `web` | 网页（面板自带） | 面板聊天 / `send` 主动推送 | 文本 |
 
-**默认全部关闭**：新装一份仓库，它只是「一个网页聊天 + 面板」，不会偷偷连任何平台。
+**除网页外默认全部关闭**：新装一份仓库，它只是「一个网页聊天 + 面板」，不会偷偷连任何平台。
 在 **插件 → 系统** 里逐个打开，每个卡片点进去填自己的凭据（AppID / Token / Secret）。
+
+每个平台可以**自带一个小页面**（`BaseAdapter.page()`）：QQ 的扫码登录、好友审批、掉线告警
+都在 `onebot11` 的页面里，网页平台的会话控制台在 `web` 的页面里。
+运维页因此只做汇总 —— 它不该知道任何平台自己的接口。
+
+<p align="center">
+  <img src="docs/img/plugin-onebot.webp" width="300" alt="OneBot 插件自带页面：登录、扫码、审批、告警">
+  <img src="docs/img/plugin-web.webp" width="300" alt="网页插件自带页面：会话列表与试发">
+</p>
+<p align="center"><sub>插件抽屉 → 🧩 打开插件页：左边是 QQ 的登录/审批/告警，右边是网页平台的会话控制台</sub></p>
 
 可以**同时开多个**：飞书和 QQ 一起开，各平台的消息互不串台 ——
 回复会沿着「这条消息当初从哪个平台进来」原路回去。主动播报（提醒、纪念日）
-走优先级最高的那个（`onebot11 > qqofficial > feishu > wechat > webhook`）。
+走优先级最高的那个（`onebot11 > qqofficial > feishu > wechat > webhook > web`）。
 
 <p align="center">
-  <img src="docs/img/sys-plugins.webp" width="760" alt="插件页：系统插件卡片与六个筛选">
+  <img src="docs/img/plugins-general.webp" width="300" alt="插件页「通用」筛选：工具插件显示工具数">
 </p>
+<p align="center"><sub>插件页的七个筛选：全部 / 限定 / 通用 / 系统 / 已启用 / 已禁用 / 报错</sub></p>
 
 ### 换平台不用改插件
 
@@ -355,8 +394,9 @@ class TelegramAdapter(BaseAdapter):
 插件判断能力用 `ctx.supports("image")` 而不是 `hasattr`——后者在基类兜底时永远为真。
 
 <p align="center">
-  <img src="docs/img/adapter-card.webp" width="470" alt="运维页的适配器卡：平台、目标与能力表">
+  <img src="docs/img/ops-slim.webp" width="300" alt="运维页：面板 / 平台 / 模型 / 配置 / 日志">
 </p>
+<p align="center"><sub>运维页只做汇总：每个平台一行，细节点「插件页」进它自己的小界面</sub></p>
 
 两条硬约定：
 
@@ -369,10 +409,12 @@ class TelegramAdapter(BaseAdapter):
 
 ## 面板
 
-单文件前端、手机优先。左侧导航 + 命令面板（<kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd>），八个页面各管一件事：
+单文件前端、手机优先。**可折叠侧栏**（手机上从左上角 ☰ 滑出，桌面上可收成图标条）+
+命令面板（<kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>K</kbd>），八个页面各管一件事：
 
 <p align="center">
-  <img src="docs/img/plugins-desktop.webp" width="820" alt="插件页：搜索、筛选、启用状态与命令数">
+  <img src="docs/img/plugins-desktop.webp" width="640" alt="插件页：搜索、筛选、启用状态与命令数">
+  <img src="docs/img/nav-drawer.webp" width="230" alt="手机上的可折叠侧栏">
 </p>
 
 | 页面 | 内容 |
@@ -381,10 +423,15 @@ class TelegramAdapter(BaseAdapter):
 | 角色 | 六个角色的主题、知识库、专属插件；导入角色包 |
 | 看板 | 消息量走势、每角色统计、实时消息流 |
 | 人格 / 知识库 | 编辑 SOUL，重建与检索知识库 |
-| 插件 | 119 个插件的开关、配置表单、命令清单 |
+| 插件 | 129 个插件的开关、配置表单、命令与工具清单；限定/通用/系统三类 |
 | 提醒 | 定时提醒与纪念日 |
-| 运维 · 机器人 | 连接状态、适配器、NapCat、模型、Agent 工具、日志 |
+| 运维 | 面板与平台汇总、模型、常用配置、运行日志 —— 平台细节在各自插件页 |
 | 自定义 | 配色、气泡样式、模块开关 |
+
+<p align="center">
+  <img src="docs/img/nav-rail.webp" width="820" alt="桌面上把侧栏收成图标条">
+</p>
+<p align="center"><sub>桌面上点一下 ☰ 就收成图标条，正文立刻变宽；状态记在 localStorage</sub></p>
 
 <details>
 <summary><b>分辨率自适应是怎么做的</b>（320px 旧手机 → 2560px 大屏 / 手机横屏）</summary>
