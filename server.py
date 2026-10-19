@@ -845,7 +845,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
               # 把 adapter 包成 _Capture，后台任务产的图要等 drain 才收得到，
               # `tool_use_skill` 读 res["images"] 时早就返回了。
               # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
-              "loop": None, "loop_thread": None, "drain": 45},
+              "loop": None, "loop_thread": None, "drain": TASK_DRAIN_SECONDS},
         max_steps=int(cfg.get("agent_max_steps") or 3),
         timeout=float(cfg.get("agent_timeout") or 120),
         max_tokens=int(cfg.get("max_tokens") or 800),
@@ -921,7 +921,9 @@ def _tts_clean(text: str) -> str:
     t = re.sub(r"```.*?```", " ", t, flags=re.S)          # 代码块
     t = re.sub(r"`([^`]*)`", r"\1", t)                    # 行内代码
     t = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", t)          # 图片
-    t = re.sub(r"\[表情[:：][^\]]*\]", " ", t)              # [表情:呲牙] 是给前端换 emoji 的
+    # 和前端 `/\[表情[:：]([^\[\]]{1,16})\]/g` 对齐：不限制长度的话，
+    # 一个坏掉的「[表情: …」会把后面好几句话一起吞到下一个 ] 为止。
+    t = re.sub(r"\[表情[:：][^\[\]]{1,16}\]", " ", t)      # [表情:呲牙] 是给前端换 emoji 的
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)        # 链接 → 文字
     t = re.sub(r"https?://\S+", " ", t)                   # 裸链接
     t = re.sub(r"[*_#>~|]+", " ", t)                      # 强调/标题/表格符号
@@ -1287,14 +1289,19 @@ BACKUP_DIRS = ("state/characters", "state/characters.d", "bot/features/state",
 _SECRET_KEY_RE = re.compile(r"(?:^|_)(?:token|secret|password|passwd|api_key|apikey)$", re.I)
 
 
-# URL 里的凭据：钉钉/ntfy/Bark 这类 webhook 把 token 放在 query 里
-_URL_SECRET_RE = re.compile(r"(?i)([?&](?:access_token|token|key|secret|apikey|auth)=)[^&]*")
+# URL 里的凭据：
+#   · 钉钉/ntfy：`?access_token=…`、`?topic=…`（topic 本身就是凭据）
+#   · 飞书/Slack/Discord：**token 在路径里**（/hook/<uuid>），query 里什么都没有
+#   · Bark：`/api.day.app/<device-key>/…`
+# 所以光按参数名洗不够，`webhook_url` 这种键直接整值抹掉最省事也最安全。
+_URL_SECRET_RE = re.compile(
+    r"(?i)([?&][A-Za-z0-9_.-]*(?:token|secret|passwd|password|api_?key|auth|key)=)[^&#]*")
+_WHOLE_SECRET_KEYS = frozenset({"webhook_url", "callback_url", "proxy", "base_url_hook"})
 
 
 def _scrub_url(v: str) -> str:
-    """`https://oapi.dingtalk.com/robot/send?access_token=abc` → `...=***`。"""
-    out = _URL_SECRET_RE.sub(r"\1***", v)
-    # userinfo：https://user:pass@host/path
+    """`…/send?access_token=abc` → `…=***`；userinfo 里的密码同样抹掉。"""
+    out = _URL_SECRET_RE.sub(r"\1***", str(v))
     out = re.sub(r"(//[^/@\s:]+):[^/@\s]*@", r"\1:***@", out)
     return out
 
@@ -1304,14 +1311,16 @@ def _scrub_secrets(obj):
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
-            if isinstance(k, str) and _SECRET_KEY_RE.search(k):
+            if isinstance(k, str) and (k.lower() in _WHOLE_SECRET_KEYS
+                                       or _SECRET_KEY_RE.search(k)):
                 out[k] = "***" if v not in (None, "") else v
             else:
                 out[k] = _scrub_secrets(v)
         return out
     if isinstance(obj, list):
         return [_scrub_secrets(x) for x in obj]
-    if isinstance(obj, str) and ("://" in obj or obj.startswith("//")):
+    # 无 scheme 的也要认（`127.0.0.1:9000/hook?token=…`）
+    if isinstance(obj, str) and ("?" in obj and "=" in obj):
         return _scrub_url(obj)
     return obj
 

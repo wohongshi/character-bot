@@ -123,6 +123,13 @@ def main() -> int:
     M.add(td, "merge", "同一条事", scope="")
     in_c = [e["text"] for e in M.pick(td, "merge", "", scope="group:C")]
     check("2.10 面板再记一次 → 升级成全局（别的群也看得到）", "同一条事" in in_c, str(in_c))
+    # 作用域很多时：按整条丢，不能截出半截 scope
+    for i in range(6):
+        M.add(td, "many", "一件大事", scope="web:会话-%d" % i)
+    sc = str(M.all_items(td, "many")[0].get("scope") or "")
+    check("2.12 作用域按整条丢，不留半截", all(len(x) > 0 and not x.endswith("会话-")
+                                              for x in sc.split(",")), sc)
+    check("2.13 第一条作用域完整保留", sc.startswith("web:会话-0"), sc)
     # 写失败不能把「没落盘的 ts」留在缓存里
     blocked2 = M.path_for(td, "ghost")
     blocked2.mkdir(parents=True, exist_ok=True)
@@ -137,6 +144,9 @@ def main() -> int:
     ctx = AG.ToolContext(state_dir=td2, character="c1", scope="group:1")
     msg = AG.tool_remember({"text": "记住这条"}, ctx)
     check("2b.1 写盘失败时不谎报「记住了」", "记住了" not in msg and "没写进磁盘" in msg, msg[:120])
+    ctx2 = AG.ToolContext(state_dir=td2, character="", scope="group:1")
+    msg2 = AG.tool_remember({"text": "没有角色的情况"}, ctx2)
+    check("2b.2 没有角色（记忆无处可写）也不谎报", "记住了" not in msg2, msg2[:120])
     import shutil
     shutil.rmtree(td2, ignore_errors=True)
 
@@ -155,6 +165,13 @@ def main() -> int:
               cfg.get("napcat_token") in ("***", "", None), repr(cfg.get("napcat_token"))[:40])
         check("3.3 max_tokens 这种「名字里带 token」的数值不能被误抹",
               isinstance(cfg.get("max_tokens"), int), repr(cfg.get("max_tokens")))
+        check("3.3c webhook_url 整值抹掉（飞书/钉钉/Bark 的 token 在路径里）",
+              cfg.get("webhook_url") in ("***", "", None), repr(cfg.get("webhook_url"))[:60])
+        check("3.3d client_secret 这类参数名也认",
+              "q" not in str(S._scrub_secrets({"u": "https://a.com/x?client_secret=q&b=2"})),
+              "")
+        check("3.3e 没有 scheme 的 URL 也洗",
+              "zzz" not in str(S._scrub_secrets({"u": "127.0.0.1:9000/hook?token=zzz"})), "")
         check("3.3b webhook_url 里的 access_token 也被抹掉",
               "abc123" not in str(cfg.get("webhook_url") or ""), repr(cfg.get("webhook_url"))[:60])
         check("3.4 长期记忆进了备份",
@@ -168,6 +185,9 @@ def main() -> int:
     check("4.0a [表情:xx] 不念出来", "[表情" not in S._tts_clean("今天的可莉也活力满满！[表情:呲牙]"),
           repr(S._tts_clean("今天的可莉也很棒[表情:呲牙]")))
     check("4.0b 正常文字还在", "活力满满" in S._tts_clean("今天的可莉也活力满满！[表情:呲牙]"), "")
+    broken = "坏掉的[表情: 后面还有话[链接]尾巴"
+    check("4.0c 坏掉的 [表情: 标记不会吞掉后面的句子",
+          S._tts_clean(broken) == broken, repr(S._tts_clean(broken)))
 
     print("\n[4b] 上传：认得出但不支持的格式要说人话")
     bmp = b"BM" + b"\x00" * 200

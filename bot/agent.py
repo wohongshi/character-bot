@@ -496,7 +496,11 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
         return "错误：没有可写的位置"
     # 同时写进「长期记忆」：面板里能看到、下一条消息就会注入到提示里。
     # agent_notes.json 保留（它是 agent 自己的流水账），但人看的那一份在这里。
-    mem_ok = True
+    # 没有角色就写不了「长期记忆」（它按角色分文件）——这本身也算没写进去，
+    # 不能因为「没进 if」就默认成功。
+    mem_ok = bool(ctx.character)
+    if not mem_ok:
+        log.warning("长期记忆没写：ToolContext 没有 character")
     try:
         from . import memory as mem_mod
         if ctx.character:

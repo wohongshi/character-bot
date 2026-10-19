@@ -473,7 +473,9 @@ class SkillHub:
             #     drain 60 秒」会在 90 秒处被判超时，drain 里刚凑齐的图/字全白等。
             th.join(max(0.5, float(timeout)))
             if th.is_alive() and drain > 0 and state.get("main_done"):
-                th.join(max(0.0, drain) + 5)
+                # drain 之后还有两段「取消 + 等 5 秒」（drain 自己那段、finally 那段），
+                # 所以最坏是 drain + 10，留 12 秒余量。
+                th.join(max(0.0, drain) + 12)
             if th.is_alive():
                 log.warning("技能 %s（.%s）线程执行超时（>%.0fs）", s["name"], cmd.name, timeout)
                 return {"ok": False, "error": f"技能 {s['name']} 执行超时（>{timeout:.0f}s）"}

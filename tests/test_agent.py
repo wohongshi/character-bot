@@ -50,8 +50,10 @@ def tc(name, args="{}", cid="c1"):
 
 
 def ctx(**kw):
+    # character 必须给：长期记忆按角色分文件，没有角色就等于写不进去
     return A.ToolContext(kb_url=kw.get("kb_url", ""), state_dir=kw.get("state_dir"),
-                         scope=kw.get("scope", "test"), timeout=kw.get("timeout", 5))
+                         scope=kw.get("scope", "test"), timeout=kw.get("timeout", 5),
+                         character=kw.get("character", "klee"))
 
 
 def main():
