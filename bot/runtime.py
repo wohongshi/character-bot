@@ -615,8 +615,6 @@ class BotRuntime(RuntimeFeatures):
         except Exception:                                          # noqa: BLE001
             logger.debug("%s 钩子链异常（已忽略）", kind)
 
-    _POLICY_CACHE: dict = {"ts": 0.0, "key": "", "data": None}
-
     def policy_for(self, chat_id: str, now: float | None = None) -> dict:
         """这个会话此刻生效的策略（含静默时段）。见 bot/chatpolicy.py。
 
@@ -634,12 +632,24 @@ class BotRuntime(RuntimeFeatures):
                 sig = f"{st.st_mtime_ns}:{st.st_size}"
             except OSError:
                 sig = "none"                       # 没有文件 = 全是默认
-            c = self._POLICY_CACHE
-            if c["data"] is None or c["key"] != sig or time.time() - float(c["ts"]) > 2.0:
-                c["data"] = chatpolicy.load(self.state_dir)
-                c["key"], c["ts"] = sig, time.time()
+            # 缓存挂在**实例**上：类属性会被所有 BotRuntime 共享（测试里同时存在两个，
+            # stop()/重建也共用），而 key 里必须带文件路径，否则两个 state 目录
+            # 只要 (mtime,size) 撞上就会拿到别人的策略，且完全静默。
+            c = getattr(self, "_policy_cache", None)
+            if c is None:
+                c = self._policy_cache = {"ts": 0.0, "key": "", "data": None,
+                                          "lock": threading.Lock()}
+            full_key = f"{p}:{sig}"
+            with c["lock"]:
+                stale = (c["data"] is None or c["key"] != full_key
+                         or time.time() - float(c["ts"]) > 2.0)
+                data = None if stale else c["data"]
+            if stale:
+                data = chatpolicy.load(self.state_dir)
+                with c["lock"]:
+                    c["data"], c["key"], c["ts"] = data, full_key, time.time()
             return chatpolicy.resolve(self.state_dir, chat_id, self.group_policy,
-                                      now=now, data=c["data"])
+                                      now=now, data=data)
         except Exception as e:                                     # noqa: BLE001
             logger.info("会话策略读取失败（按全局 %s）：%s", self.group_policy, e)
             return {"mode": self.group_policy, "global_mode": self.group_policy,
@@ -747,9 +757,10 @@ class BotRuntime(RuntimeFeatures):
         # 以前只看全局 group_policy；现在每个群/私聊可以单独设（state/chat_policy.json），
         # 没设的仍然跟全局，行为不变。
         pol = self.policy_for(chat_id)
-        # 以前只看群（`is_group and ...`）。面板允许给私聊单独设「完全不理」，
-        # 设了却不生效才是 bug —— 按会话判定，不看群/私聊。
-        if pol["mode"] == "disabled":
+        # 群里 disabled 一直就是「连命令也不接」。私聊要**显式设过**才认：
+        # 全局 `group_policy` 的名字和文档都是「群聊策略」，把它设成 disabled
+        # 是想关掉群聊、保留私聊 —— 不能连私聊一起哑掉。
+        if pol["mode"] == "disabled" and (is_group or pol["configured"] != "inherit"):
             return
 
         ctx = FeatureContext(
@@ -805,7 +816,9 @@ class BotRuntime(RuntimeFeatures):
                 return
 
         chime = False
-        quiet_now = pol["quiet"] and not pol["quiet_mention"]
+        # 彩蛋只会在「群里 mention 模式且没被 @」时掷；静默期内这类消息一定被丢，
+        # 所以只看 quiet —— 别管 quiet_mention（那只影响**被 @** 的那条）。
+        quiet_now = bool(pol["quiet"])
         if is_group and pol["mode"] == "mention" and not mentioned:
             # 静默时段里不掷骰子：`_maybe_chime` 命中后会记冷却，
             # 而这条消息马上会被静默判定丢掉 —— 等于白白烧掉一次彩蛋机会。

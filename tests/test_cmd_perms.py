@@ -204,6 +204,17 @@ def main():
     check("6.5 配了主人就没有那条提示",
           not [s for s in sim["steps"] if s["id"] == "owner"], str(sim["steps"][:3]))
 
+    section("6b. 仓库里的覆盖表必须是干净的")
+    # 实测面板时会顺手写入覆盖，提交时把测试残留带进仓库过一次（`颜色` 那条）：
+    # 语义上是空操作，但会让「被改过」计数永远不是 0，也污染默认行为。
+    shipped = ROOT / "bot" / "features" / "overrides.json"
+    if shipped.is_file():
+        data = json.loads(shipped.read_text(encoding="utf-8") or "{}")
+        check("6b.1 提交的 overrides.json 是空表",
+              not (data.get("commands") or data.get("plugins")), str(data))
+    else:
+        check("6b.1 提交的 overrides.json 是空表", True, "（没有这个文件也算干净）")
+
     section("7. 活服务")
     import urllib.error
     import urllib.request

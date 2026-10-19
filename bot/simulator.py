@@ -36,6 +36,21 @@ class _FakeAdapter:
         return (f"group:{group_id}" if is_group else f"private:{user_id}")
 
 
+def _prefix_chars(mgr) -> set:
+    """当前配置的命令前缀字符（面板可以改，默认 `./／`）。"""
+    chars = getattr(mgr, "prefix_chars", None)
+    try:
+        chars = set(str(c) for c in (chars or "") if str(c))
+    except TypeError:
+        chars = set()
+    return chars or {".", "/", "／"}
+
+
+def _prefix(mgr) -> str:
+    """探针用的前缀：取配置里的第一个（排序保证稳定）。"""
+    return sorted(_prefix_chars(mgr))[0]
+
+
 def _step(sid: str, label: str, state: str, detail: str) -> dict:
     """state: pass / block / skip / info"""
     return {"id": sid, "label": label, "state": state, "detail": detail}
@@ -130,12 +145,15 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
                                f"命中「{hit.get('name') or hit.get('id')}」→ 不回"))
             return done("ignore", "命中关键词规则，选择不回", {"rule": hit.get("id"), "policy": pol})
         if act == "command":
-            full = str(hit.get("command") or "").lstrip("./／").strip()
+            full = str(hit.get("command") or "").strip()
+            if full[:1] and full[0] in _prefix_chars(mgr):
+                full = full[1:].strip()
             # 运行时是把整串（含参数）塞回 handle_command 让它自己解析的。
             # 这里也走同一个 explain_command —— 作用域/权限/冷却同样生效，
             # 否则会报「会执行 .仅主人命令」，而真实场景被拦下。
             token = full.split()[0] if full else ""
-            probe = FeatureContext(adapter=_FakeAdapter(owner_id), text="." + full,
+            pre = _prefix(mgr)
+            probe = FeatureContext(adapter=_FakeAdapter(owner_id), text=pre + full,
                                    is_group=bool(is_group), group_id=str(group_id or ""),
                                    user_id=str(user_id or ""), user_name=str(user_name or ""),
                                    message_id="", mentioned=bool(mentioned), role=str(role or ""))
@@ -191,9 +209,21 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
     if nlu:
         # `nlu_match` 返回的常带参数（"生日 可莉" / "天气 北京"），运行时是整串
         # 塞回 handle_command 由它自己切 —— 拿整串查表会永远查不到。
+        # 而且运行时走的是同一个 handle_command：作用域/权限/冷却一样生效，
+        # 所以这里也过 explain_command，不能只看「命令是否存在」。
         full = str(nlu).strip()
         token = full.split()[0] if full else ""
-        exists = bool(token) and mgr.commands.get(token.lower()) is not None
+        probe = FeatureContext(adapter=_FakeAdapter(owner_id), text=_prefix(mgr) + full,
+                               is_group=bool(is_group), group_id=str(group_id or ""),
+                               user_id=str(user_id or ""), user_name=str(user_name or ""),
+                               message_id="", mentioned=bool(mentioned), role=str(role or ""))
+        v3 = mgr.explain_command(probe) if token else {"action": "none"}
+        exists = v3.get("action") in ("run", "skip")
+        if v3.get("action") == "skip":
+            steps.append(_step("nlu", "自然语言触发", "block",
+                               f"整句命中 → .{full}，但被拦下：{v3.get('reason')}"))
+            return done("ignore", f"自然语言命令被拦下：{v3.get('reason')}",
+                        {"command": token, "policy": pol})
         steps.append(_step("nlu", "自然语言触发", "pass" if exists else "block",
                            f"整句命中 → .{full}" + ("" if exists else "（对应命令不存在）")))
         if exists:

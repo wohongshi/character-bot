@@ -40,6 +40,8 @@ import os
 import shutil
 import sys
 import threading
+
+from . import cmdpolicy as _cmdpolicy      # 权限/作用域覆盖（模块级：热路径 + 失败兜底共用）
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -659,8 +661,7 @@ class FeatureManager:
         # 命令的作用域/权限覆盖（面板里调，见 bot/cmdpolicy.py）。
         # 读不到就是空表 = 完全按插件声明，行为不变。
         try:
-            from . import cmdpolicy as _cp
-            self.overrides = _cp.load(self.dir)
+            self.overrides = _cmdpolicy.load(self.dir)
         except Exception as e:                                     # noqa: BLE001
             logger.warning("OneBot: 读命令权限覆盖失败（按默认处理）：%s", e)
             self.overrides = {"commands": {}, "plugins": {}}
@@ -1148,8 +1149,7 @@ class FeatureManager:
         scope, perm = cmd.scope, cmd.permission
         source = "插件默认"
         try:
-            from . import cmdpolicy as _cp
-            eff = _cp.effective(cmd, getattr(self, "overrides", {}) or {})
+            eff = _cmdpolicy.effective(cmd, getattr(self, "overrides", {}) or {})
             scope, perm = eff["scope"], eff["permission"]
             if eff["override"]:
                 source = "面板覆盖"
@@ -1161,14 +1161,13 @@ class FeatureManager:
                "permission": perm, "rule_source": source}
         # 判定本体在 cmdpolicy 里（allowed/scope_ok），这里不再内联一份 ——
         # 以后加权限级别只改一个地方。
-        from . import cmdpolicy as _cp2
-        if not _cp2.scope_ok(scope, is_group=ctx.is_group):
+        if not _cmdpolicy.scope_ok(scope, is_group=ctx.is_group):
             if scope == "group":
                 return {**out, "action": "skip", "kind": "scope",
                         "reason": "这条命令只在群里可用"}
             return {**out, "action": "skip", "kind": "scope",
                     "reason": "这条命令只在私聊可用"}
-        if not _cp2.allowed(perm, is_owner=ctx.is_owner, is_admin=ctx.is_admin):
+        if not _cmdpolicy.allowed(perm, is_owner=ctx.is_owner, is_admin=ctx.is_admin):
             return {**out, "action": "skip", "kind": "permission",
                     "reason": ("只有主人能用" if perm == "owner" else "只有群主/群管理能用")}
         if cmd.cooldown > 0:

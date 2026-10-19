@@ -52,7 +52,10 @@ missing = sorted(k for k in used if k not in zh)
 check(f"1.7 {len(used)} 处 t() 调用的 key 都在词条里", not missing, str(missing[:8]))
 
 # 导航 / 筛选 / 页面标题必须齐
-need = [f"nav.{v}" for v in ("chat", "chars", "board", "persona", "plugins", "reminders", "ops", "custom")]
+# 从 PAGES 里取，别手写清单：新增一页忘了补翻译，面板上就会显示成「🎚 nav.control」
+_page_ids = re.findall(r'\["([a-z]+)", "[^"]+", "[^"]+", "[^"]*"\]', HTML)
+need = [f"nav.{v}" for v in dict.fromkeys(_page_ids)]
+check("页面清单非空", len(need) >= 8, str(need))
 need += [f"filter.{v}" for v in ("all", "limited", "general", "system", "on", "off", "err")]
 need += [f"page.{v}" for v in ("chat", "chars", "board", "persona", "plugins", "reminders", "ops", "custom")]
 lack = [k for k in need if k not in zh or k not in en]

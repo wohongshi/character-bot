@@ -1,9 +1,4 @@
 {
- "commands": {
-  "颜色": {
-   "scope": "both",
-   "permission": "all"
-  }
- },
+ "commands": {},
  "plugins": {}
 }

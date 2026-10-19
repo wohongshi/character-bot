@@ -112,6 +112,10 @@ def main():
     check("7.3 @ 门槛走会话策略", 'pol["mode"] == "mention"' in src)
     check("7.4 有静默判断", 'pol["quiet"]' in src and "quiet_mention" in src)
     check("7.5 读坏了退回全局", "会话策略读取失败" in src)
+    # 全局 group_policy=disabled 只该关群聊：私聊要「显式设过」才认
+    check("7.6 私聊只在显式配置时才认 disabled", 'pol["configured"] != "inherit"' in src)
+    # 静默时不该掷彩蛋骰子（会白烧冷却）
+    check("7.7 静默时不掷彩蛋", "quiet_now" in src and "_maybe_chime" in src)
 
     section("8. 活服务")
     import urllib.error

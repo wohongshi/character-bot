@@ -1628,6 +1628,7 @@ const I18N = {
     "brand.sub": "角色聊天室",
     "nav.chat": "对话", "nav.chars": "角色", "nav.board": "看板",
     "nav.persona": "人格 · 知识库", "nav.plugins": "插件", "nav.reminders": "提醒",
+    "nav.control": "管控",
     "nav.ops": "运维", "nav.custom": "自定义", "nav.search": "搜索",
     "page.chat": "💬 对话", "page.chars": "🎭 角色", "page.board": "📊 看板",
     "page.persona": "🌸 人格 · 知识库", "page.plugins": "🧩 插件",
@@ -1653,6 +1654,7 @@ const I18N = {
     "brand.sub": "Character chat",
     "nav.chat": "Chat", "nav.chars": "Characters", "nav.board": "Board",
     "nav.persona": "Persona · Knowledge", "nav.plugins": "Plugins", "nav.reminders": "Reminders",
+    "nav.control": "Control",
     "nav.ops": "Operations", "nav.custom": "Appearance", "nav.search": "Search",
     "page.chat": "💬 Chat", "page.chars": "🎭 Characters", "page.board": "📊 Board",
     "page.persona": "🌸 Persona · Knowledge", "page.plugins": "🧩 Plugins",
@@ -5952,15 +5954,15 @@ async function selfFix(id, btn){
 
 /* ================= 管控：命令权限 / 会话策略 / 模拟器 ================= */
 let ctlData = null, ctlFilter = "all", ctlQuery = "";
-function ctlNormChat(raw){
-  // 和 ctlAddChat 同一套规则：只填数字当群号；已经带前缀的原样用。
-  // 不归一化的话，模拟器会把 `998877` 当成会话 ID，策略永远查不到
-  // （策略表的键是 `group:998877`）。
+function ctlNormChat(raw, isGroup){
+  // 已经带前缀的原样用；裸数字按「场景」决定是群号还是 QQ 号 ——
+  // QQ 号也是 5~11 位，一律当群号会让「私聊 + 填 QQ」变成 group:<qq>，
+  // 同一次模拟里出现两套会话身份（策略按 group:<qq> 查、判定却按私聊）。
   const s = String(raw || "").trim();
   if (!s) return "";
   if (/^(group|private):/.test(s)) return s;
-  if (/^\d{5,}$/.test(s)) return "group:" + s;
-  return "private:" + s;
+  if (/^\d{4,}$/.test(s)) return (isGroup ? "group:" : "private:") + s;
+  return (isGroup ? "group:" : "private:") + s;
 }
 function chatLabel(id){
   const s = String(id || "");
@@ -6060,23 +6062,25 @@ function ctlRenderCmds(){
       <code>.${esc(r.name)}</code>
       <span class="pl">${esc(r.title || r.plugin || "")}</span>
       <span class="h">${esc((r.help || "").replace(/^\.[^\s]+\s*/, "").slice(0, 40))}</span>
-      <select data-k="scope" onchange="ctlSetCmd(${jsq(r.name)})">
+      <select data-k="scope" onchange="ctlSetCmd(${jsq(r.name)}, 'scope')">
         ${opt(scopes, r.scope_eff || "both")}</select>
-      <select data-k="permission" onchange="ctlSetCmd(${jsq(r.name)})">
+      <select data-k="permission" onchange="ctlSetCmd(${jsq(r.name)}, 'permission')">
         ${opt(perms, r.permission_eff || "all")}</select>
       ${r.override ? `<button class="btn tiny" onclick="ctlResetCmd(${jsq(r.name)})">默认</button>`
                    : '<span class="kv" style="flex:none;min-width:44px"></span>'}
     </div>`).join("");
 }
-async function ctlSetCmd(name){
-  // 两个字段一起提交：服务端是按字段合并的，但整份发过来能顺手避免
-  // 「另一个 select 在请求飞行期间被改过」这类时序问题。
+async function ctlSetCmd(name, field){
+  // 只提交被改动的那一项：服务端是**按字段合并**的，两个字段一起发会把
+  // 「没动的那一项」从「跟随插件默认」变成一条显式覆盖 —— 以后插件默认值
+  // 放宽或收紧都不再生效（那正是这个设计要避免的静默覆盖）。
   const row = [...document.querySelectorAll("#ctlCmds .ctl-cmd")]
     .find(x => (x.querySelector("code") || {}).textContent === "." + name);
   if (!row){ flash("找不到这一行"); return; }
-  const body = {command: name,
-                scope: (row.querySelector('[data-k="scope"]') || {}).value || "",
-                permission: (row.querySelector('[data-k="permission"]') || {}).value || ""};
+  const sel = row.querySelector(`[data-k="${field}"]`);
+  if (!sel) return;
+  const body = {command: name};
+  body[field] = sel.value;
   const d = await post("/api/control/cmd", body);
   if (!d || !d.ok){ flash("没保存：" + ((d && d.error) || "未知")); return; }
   ctlData = d.after;
@@ -6139,7 +6143,22 @@ async function ctlSaveChat(id){
   body.quiet_mention = !!(qm && qm.checked);
   const d = await post("/api/control/chat", body);
   if (!d || !d.ok){ flash("没保存：" + ((d && d.error) || "未知")); return; }
-  ctlData = d.after; ctlRenderChats(); flash("已保存：" + chatLabel(id));
+  ctlData = d.after;
+  // 不整表重渲染：用户改完「静默开始」按 Tab 进「静默结束」时，change 先触发，
+  // 请求回来后把正在输入的框整个换掉会丢焦点、吞字符。只刷新 meta 与这一行的
+  // 删除按钮。
+  const meta = $("ctlChatMeta");
+  if (meta) meta.textContent = `· 设了 ${Object.keys(ctlData.chats || {}).length} 个`;
+  const rowEl = document.querySelector(`[data-chat="${CSS.escape(id)}"]`);
+  if (rowEl && Object.keys(ctlData.chats || {}).includes(id)
+      && ![...rowEl.querySelectorAll("button")].some(b => b.textContent === "删")){
+    const btn = document.createElement("button");
+    btn.className = "btn tiny";
+    btn.textContent = "删";
+    btn.onclick = () => ctlClearChat(id);
+    rowEl.appendChild(btn);
+  }
+  flash("已保存：" + chatLabel(id));
 }
 async function ctlClearChat(id){
   const d = await post("/api/control/chat", {chat_id: id, mode: "inherit", quiet: [],
@@ -6155,6 +6174,8 @@ async function ctlAddChat(){
   const el = $("ctlNewChat");
   const raw = (el && el.value || "").trim();
   if (!raw){ flash("先填群号或 private:QQ号"); return; }
+  // 加会话这一行没有「群聊/私聊」下拉：5 位以上当群号（群里最常用），
+  // 其余当 QQ 号；已经带前缀的原样用。
   const id = /^(group|private):/.test(raw) ? raw
     : (/^\d{5,}$/.test(raw) ? "group:" + raw : "private:" + raw);
   if (id === "group:" || id === "private:"){ flash("群号/QQ号没填"); return; }
@@ -6178,7 +6199,7 @@ async function ctlSim(){
                 role: role === "me" ? (isGroup ? "owner" : "member") : role,
                 user_id: role === "me" ? (owner || "10001") : "10001",
                 user_name: role === "me" ? "主人" : "访客",
-                chat_id: ctlNormChat(($("simChat") || {}).value || "")};
+                chat_id: ctlNormChat(($("simChat") || {}).value || "", isGroup)};
   if (out) out.innerHTML = '<div class="kv" style="margin-top:8px">判定中…</div>';
   const d = await post("/api/simulate", body);
   if (!out) return;
