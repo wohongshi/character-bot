@@ -837,7 +837,8 @@ def _draw_budget() -> float:
         t = float(((raw.get("settings") or {}).get("draw") or {}).get("timeout") or 90)
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    return max(60.0, min(600.0, t * 2 + 90))
+    # t 的上限是 300（draw 的 schema），所以真实上界是 2*300+90=690，不是 600
+    return max(60.0, min(690.0, t * 2 + 90))
 
 
 def _panel_drain() -> float:
