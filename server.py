@@ -2107,15 +2107,15 @@ def _sched_view(it: dict) -> dict:
     # 而 _sched_view 是整页列表的渲染路径 —— 一条坏任务能让整个「定时任务」页 500。
     try:
         out["when_text"] = sched.describe(spec) if spec else "—"
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError, IndexError):
         out["when_text"] = "（时间规则无效）"
     try:
         out["next_text"] = sched.next_text(spec) if spec else "—"
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError, IndexError):
         out["next_text"] = "—"
     try:
         out["next_at"] = sched.next_due(spec) if spec else 0
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError, IndexError):
         out["next_at"] = 0
     return out
 

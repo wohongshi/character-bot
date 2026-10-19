@@ -4230,7 +4230,7 @@ async function mountAgentCard(){
   <div class="card">
     <h3>🔌 模型供应商 <span class="kv" style="font-family:var(--font-body)">Key 存 .env</span></h3>
     <div class="row" style="font-size:12px">
-      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${(p.models||[]).length} 个模型 · ${p.has_key===false?"缺 Key":"Key 已设置"} <a href="javascript:botProvEdit('${esc(p.id)}')">编辑</a> <a href="javascript:botProvDelete('${esc(p.id)}')">删除</a></span>`).join("")}
+      ${provs.map(p=>`<span class="tag">${esc(p.name||p.id)} · ${(p.models||[]).length} 个模型 · ${p.has_key===false?"缺 Key":"Key 已设置"} <a href="javascript:botProvEdit(${jsq(p.id)})">编辑</a> <a href="javascript:botProvDelete(${jsq(p.id)})">删除</a></span>`).join("")}
       <button class="btn tiny" onclick="botProvNew()">＋ 新增</button>
     </div>
     <div class="row" style="margin-top:10px;align-items:flex-end">
@@ -4498,7 +4498,7 @@ function cmRender(map){
     const models = optList(p.models, own ? own.model : "");
     return `<div class="opsline" style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
       <b style="flex:none;min-width:74px">${esc((c.emoji||"") + " " + (c.name||c.id))}</b>
-      <select id="cmp-${esc(c.id)}" onchange="cmFill('${esc(c.id)}')" style="min-width:150px">
+      <select id="cmp-${esc(c.id)}" onchange="cmFill(${jsq(c.id)})" style="min-width:150px">
         ${provs.map(x=>`<option value="${esc(x.id)}" ${x.id===pid?"selected":""}>${esc(x.name||x.id)}</option>`).join("")}
       </select>
       <select id="cmm-${esc(c.id)}" style="min-width:200px">

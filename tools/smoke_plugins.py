@@ -41,6 +41,11 @@ class FakeAdapter:
         return "private:" + str(user_id)
 
 
+async def _await_any(value):
+    """把任意 awaitable 包成协程：`asyncio.run()` 只接受 coroutine 对象。"""
+    return await value
+
+
 def build():
     from bot.framework import FeatureManager
 
@@ -66,7 +71,7 @@ def main(argv) -> int:
     # 外部插件（ext/*.ext.json）的失败多半是环境问题：干净 checkout 下
     # `bot/features/ext/tools/*.bin` 没编译（.gitignore），crc/sort/textstat 都会报错。
     # 那不算「代码坏了」，只警告；纯 Python 插件的加载失败才算失败。
-    bad = [p for p in all_bad if not p.get("external") and not p.get("ext")]
+    bad = [p for p in all_bad if not p.get("external")]
     if all_bad:
         print("!! 加载失败的插件：", [(p["name"], p["error"]) for p in all_bad])
 
@@ -92,7 +97,7 @@ def main(argv) -> int:
             res = cmd.handler(ctx)
             # 和 FeatureManager 一样用 isawaitable：Future / 自定义 awaitable 也算
             if inspect.isawaitable(res):
-                res = asyncio.run(res)
+                res = asyncio.run(_await_any(res))
             # handle_command 支持「直接 return 一段话」的处理器（lore / 一些老插件
             # 就是 `return "…"`）。只收 ctx.reply 的话，这些命令会被误报成「没有回复」。
             if isinstance(res, str) and res.strip() and not ad.sent:

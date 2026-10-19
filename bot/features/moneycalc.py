@@ -27,7 +27,16 @@ def raw_args(ctx) -> str:
 
 
 def money(x) -> Decimal:
-    return Decimal(str(x)).quantize(CENT, rounding=ROUND_HALF_UP)
+    """金额 → 分。非数字统一翻译成 ValueError（人话）。
+
+    以前 Decimal 的 InvalidOperation 会一路冒到处理器外面，四个命令各写一遍
+    `except (ValueError, InvalidOperation)` 还都直接 `str(e)` ——
+    用户看到的是 `[<class 'decimal.ConversionSyntax'>]`。收在这里处理一次。
+    """
+    try:
+        return Decimal(str(x)).quantize(CENT, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError(f"「{x}」不是数字，金额要写成 199 或 199.9") from None
 
 
 def parse_rate(token: str) -> Decimal:
@@ -83,8 +92,11 @@ def split(total, people: int) -> list[Decimal]:
 
 
 def compound(principal, rate_pct, years: int, times: int = 1) -> Decimal:
-    p = Decimal(str(principal))
-    r = Decimal(str(rate_pct)) / Decimal(100) / Decimal(times)
+    p = money(principal)                       # 顺带做「不是数字」的翻译
+    try:
+        r = Decimal(str(rate_pct)) / Decimal(100) / Decimal(times)
+    except InvalidOperation:
+        raise ValueError(f"「{rate_pct}」不是数字，利率要写成 3 或 3.5（百分数）") from None
     return money(p * (1 + r) ** (years * times))
 
 

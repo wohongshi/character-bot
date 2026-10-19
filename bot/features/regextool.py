@@ -43,14 +43,14 @@ def risky_pattern(pattern: str) -> str:
     """看起来会指数回溯的模式返回原因，否则返回空串。"""
     for m in _GROUP_QUANT.finditer(pattern):
         inner, full = m.group(1), m.group(0)
-        body = inner[3:] if inner.startswith("?:") else inner
+        body = inner[2:] if inner.startswith("?:") else inner   # "?:" 是 2 个字符
         if _TRAIL_QUANT.search(body):
             return f"这个写法（{full}）容易指数回溯"
         branches = [b for b in body.split("|") if b]
         if len(branches) > 1:
             for a in branches:
                 for b in branches:
-                    if a is not b and b.startswith(a) and len(a) < len(b):
+                    if b.startswith(a) and len(a) < len(b):
                         return f"这个写法（{full}）里的交替有前缀关系，容易指数回溯"
     if pattern.count("(") > 12:
         return "分组太多了"

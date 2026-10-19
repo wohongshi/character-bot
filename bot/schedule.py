@@ -73,11 +73,23 @@ def next_due(spec: dict, now: Optional[float] = None) -> float:
     hh, mm = _at_hm(spec)
     target = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
     if kind == "weekly":
-        wd = int(spec.get("weekday") or 0)
-        target += datetime.timedelta(days=(wd - target.weekday()) % 7)
+        target += datetime.timedelta(days=(_wd(spec) - target.weekday()) % 7)
     if target <= base:
         target += datetime.timedelta(days=1 if kind == "daily" else 7)
     return target.timestamp()
+
+
+def _wd(spec: dict) -> int:
+    """星期几：**0=周一 … 6=周日**（面板/parse_when 的约定）。
+
+    7 也按周日算（很多人这么写）；其它越界值一律钳进来 ——
+    以前直接把 int() 丢给 `WEEKDAY_CN[wd]`，手改成 7 就是 IndexError。
+    """
+    try:
+        wd = int(spec.get("weekday") or 0)
+    except (TypeError, ValueError):
+        wd = 0
+    return 6 if wd == 7 else max(0, min(6, wd))
 
 
 def describe(spec: dict) -> str:
@@ -91,8 +103,7 @@ def describe(spec: dict) -> str:
         return f"每 {m} 分钟"
     at = str(spec.get("at") or "00:00")
     if kind == "weekly":
-        wd = int(spec.get("weekday") or 0)
-        return f"每周{WEEKDAY_CN[wd]} {at}"
+        return f"每周{WEEKDAY_CN[_wd(spec)]} {at}"
     return f"每天 {at}"
 
 
