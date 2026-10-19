@@ -66,7 +66,7 @@ def next_due(spec: dict, now: Optional[float] = None) -> float:
     base = datetime.datetime.fromtimestamp(ts)
     kind = str(spec.get("kind") or "daily")
     if kind == "every":
-        minutes = max(MIN_EVERY_MIN, _int_field(spec, "minutes", 60))
+        minutes = _minutes(spec)
         # 从「下一个整分」起算，别每次调度都因为几秒抖动往后滑
         return (base + datetime.timedelta(minutes=minutes)).replace(
             second=0, microsecond=0).timestamp()
@@ -91,6 +91,17 @@ def _int_field(spec: dict, key: str, default: int = 0) -> int:
         return default
 
 
+def _minutes(spec: dict) -> int:
+    """「每 N 分钟」的 N：钳到合法区间。
+
+    只挡「转不成 int」不够：`{"minutes": 1e20}` 能转成 int，但
+    `timedelta(minutes=10**20)` 抛 OverflowError（days 超上限），
+    一样会穿过所有兜底、把整轮调度带崩。夹住之后显示和调度也一致了
+    （以前 describe 里 `0` 会显示成「每 0 天」）。
+    """
+    return max(MIN_EVERY_MIN, min(MAX_EVERY_MIN, _int_field(spec, "minutes", 60)))
+
+
 def _wd(spec: dict) -> int:
     """星期几：**0=周一 … 6=周日**（面板/parse_when 的约定）。
 
@@ -104,7 +115,7 @@ def _wd(spec: dict) -> int:
 def describe(spec: dict) -> str:
     kind = str(spec.get("kind") or "daily")
     if kind == "every":
-        m = _int_field(spec, "minutes", 60)
+        m = _minutes(spec)
         if m % 1440 == 0:
             return f"每 {m // 1440} 天"
         if m % 60 == 0:

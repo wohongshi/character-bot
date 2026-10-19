@@ -121,11 +121,13 @@ def split(total, people: int) -> list[Decimal]:
 def compound(principal, rate_pct, years: int, times: int = 1) -> Decimal:
     p = money(principal)                       # 顺带做「不是数字」的翻译
     try:
-        r = Decimal(str(rate_pct)) / Decimal(100) / Decimal(times)
+        rate = Decimal(str(rate_pct))
     except InvalidOperation:
         raise ValueError(f"「{rate_pct}」不是数字，利率要写成 3 或 3.5（百分数）") from None
     with _big_number_guard():
-        # `**` 会抛 decimal.Overflow（`.复利 100 1e32 100 365` 就能撞上）
+        # 除法和 `**` 都会抛 ArithmeticError：`.复利 100 1e9999999 10` 是指数溢出、
+        # `times=0` 是 DivisionByZero。必须在同一道闸里，否则用户什么回复都收不到。
+        r = rate / Decimal(100) / Decimal(times)
         return money(p * (1 + r) ** (years * times))
 
 
