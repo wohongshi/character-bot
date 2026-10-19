@@ -731,6 +731,31 @@ class BotRuntime(RuntimeFeatures):
             self.stats["commands"] += 1
             return
 
+        # 2.5) 关键词规则：确定性的那一层（问答、拦广告、不理某些话）。
+        # 放在「@ 才回」的判定**之前**：群策略是 mention 时，规则照样生效 ——
+        # 那正是它存在的意义（不然「早安 → 回一句早」还得先 @ 她）。
+        # 不想这样就把规则的范围设成「仅私聊」。
+        try:
+            hit = self._rule_hit(dispatch_text, is_group=is_group, chat_id=chat_id,
+                                 user=ctx.user_name)
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("关键词规则匹配失败（按没命中处理）：%s", e)
+            hit = None
+        if hit:
+            self.stats["rules"] = int(self.stats.get("rules") or 0) + 1
+            if hit["action"] == "ignore":
+                return
+            if hit["action"] == "command":
+                ctx.text = self.feature_prefix + str(hit["command"]).lstrip("./／")
+                if await self.mgr.handle_command(ctx):
+                    self.stats["commands"] += 1
+                return
+            reply = str(hit.get("reply") or "")
+            if reply:
+                self._log_msg(chat_id, "assistant", reply)
+                await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
+            return
+
         chime = False
         if is_group and self.group_policy == "mention" and not mentioned:
             chime = self._maybe_chime(group_id)
@@ -893,7 +918,10 @@ class BotRuntime(RuntimeFeatures):
                 if t not in ("list_skills", "read_skill", "use_skill")]
 
     def _agent_call(self, messages: list, ctx: FeatureContext) -> dict:
-        cfg = self.models.agent() if hasattr(self.models, "agent") else {}
+        # 角色专属模型优先，其次「工具模型」，最后跟全局
+        cfg = (self.models.for_agent(self.active_character)
+               if hasattr(self.models, "for_agent") else
+               (self.models.agent() if hasattr(self.models, "agent") else {}))
         return agent_mod.run(
             self.models, messages,
             provider=str(cfg.get("provider") or ""),
@@ -915,12 +943,61 @@ class BotRuntime(RuntimeFeatures):
             character=self.active_character,
         )
 
+    _RULE_CACHE: tuple = (None, [])
+
+    def _rule_hit(self, text: str, *, is_group: bool, chat_id: str, user: str = ""):
+        """按 mtime 缓存规则表：每条群消息都读一次 JSON 太浪费，但改完要立刻生效。"""
+        from . import rules as rules_mod
+        try:
+            mt = (Path(self.state_dir) / "rules.json").stat().st_mtime
+        except OSError:
+            mt = 0
+        mt_c, items = self._RULE_CACHE
+        if mt_c != mt:
+            items = rules_mod.load(self.state_dir)
+            self._RULE_CACHE = (mt, items)
+        hit = rules_mod.match(items, text, is_group=is_group, chat_id=chat_id)
+        if not hit:
+            return None
+        rules_mod.bump(self.state_dir, hit["id"])
+        out = dict(hit)
+        out["reply"] = rules_mod.render_reply(hit, user=user)
+        return out
+
     def _hist_key(self, chat_id: str) -> str:
         """聊天历史按「角色 + 会话」隔离，换角色不会串味。"""
         return f"{self.active_character}:{chat_id}"
 
+    def _shrink_hist(self, hist: list, chat_id: str) -> tuple[list, str]:
+        """把过长的历史压成「前情提要 + 最近几条」。
+
+        同步阻塞（摘要要调模型），调用方用 `asyncio.to_thread` 包起来 ——
+        直接在事件循环里调会把整条适配器卡住：那期间心跳、别的群的消息全排队。
+        """
+        from . import context as ctx_mod
+        budget = int((self.config or {}).get("context_budget", ctx_mod.MAX_CHARS) or 0)
+        if budget <= 0 or not hist:
+            return hist, ""
+        mm = (self.models.for_character(self.active_character)
+              if hasattr(self.models, "for_character") else {})
+
+        def _summarize(m, **kw):
+            return self.models.chat(m, provider=str(mm.get("provider") or ""),
+                                    model=str(mm.get("model") or ""), **kw)
+
+        try:
+            pl = ctx_mod.build(
+                [{"role": m.get("role"), "content": m.get("content") or "",
+                  "ts": m.get("ts")} for m in hist],
+                state_dir=self.state_dir, key=f"{self.active_character}:{chat_id}",
+                complete=_summarize, budget=budget)
+            return list(pl.get("recent") or []), str(pl.get("summary") or "")
+        except Exception as e:                                     # noqa: BLE001
+            logging.getLogger("klee.bot.runtime").info("压缩历史失败（这一轮截断）：%s", e)
+            return hist[-self.hist_limit:], ""
+
     def _build_messages(self, ctx: FeatureContext, text: str, *,
-                        hist: list | None = None, kb: str = "") -> list:
+                        hist: list | None = None, kb: str = "", summary: str = "") -> list:
         """人格 + 知识库 + 历史 + 本轮输入；聊天和 agent 共用（全部同步、不联网）。"""
         persona = self._persona()
         sys_rules = ("\n\n【QQ 聊天规则】直接说话，别用 Markdown；一次回复 1~3 句短句，"
@@ -952,6 +1029,9 @@ class BotRuntime(RuntimeFeatures):
         if kb:
             msgs.append({"role": "system",
                          "content": "【相关背景资料（可参考，不必照搬）】\n" + kb})
+        if summary:
+            msgs.append({"role": "system",
+                         "content": "【前情提要（更早的对话压缩而成，供你参考）】\n" + summary})
         for m in (hist or [])[-self.hist_limit:]:
             if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
                 msgs.append({"role": m["role"], "content": str(m.get("content") or "")[:800]})
@@ -978,7 +1058,9 @@ class BotRuntime(RuntimeFeatures):
                 self.hist.pop(oldest)
             hist_snapshot = list(hist)
         kb = await asyncio.to_thread(self._kb_context, text)
-        msgs = self._build_messages(ctx, text, hist=hist_snapshot, kb=kb)
+        # 历史太长就先压成一段提要走（模型调用必须离开事件循环）
+        hist_used, ctx_sum = await asyncio.to_thread(self._shrink_hist, hist_snapshot, chat_id)
+        msgs = self._build_messages(ctx, text, hist=hist_used, kb=kb, summary=ctx_sum)
         self.stats["chats"] += 1
         reply = ""
         if self._agent_allowed(ctx):
@@ -998,10 +1080,16 @@ class BotRuntime(RuntimeFeatures):
                 logger.warning("agent 失败，回退普通聊天: %s", e)
                 reply = ""
         if not reply:
+            mm = (self.models.for_character(self.active_character)
+                  if hasattr(self.models, "for_character") else {})
+            mkw = {"provider": str(mm.get("provider") or ""),
+                   "model": str(mm.get("model") or "")}
+            if not mkw["model"]:
+                mkw = {}
             try:
                 reply = await asyncio.to_thread(
                     self.models.chat, msgs,
-                    max_tokens=int(self.config.get("max_tokens") or 800))
+                    max_tokens=int(self.config.get("max_tokens") or 800), **mkw)
             except Exception as e:                                 # noqa: BLE001
                 self.stats["errors"] += 1
                 logger.warning("聊天失败: %s", e)
@@ -1011,8 +1099,9 @@ class BotRuntime(RuntimeFeatures):
         self._log_msg(chat_id, "assistant", reply)
         async with self._hist_lock:
             hist = self.hist.setdefault(self._hist_key(chat_id), [])
-            hist.extend([{"role": "user", "content": text[:500]},
-                         {"role": "assistant", "content": reply[:800]}])
+            now = time.time()
+            hist.extend([{"role": "user", "content": text[:500], "ts": now},
+                         {"role": "assistant", "content": reply[:800], "ts": now + 0.001}])
             del hist[:-max(2, self.hist_limit * 2)]
             blob = json.dumps(self.hist, ensure_ascii=False, indent=2) + "\n"
             await asyncio.to_thread(self._write_text_atomic, self.hist_path, blob)

@@ -35,7 +35,8 @@ def set_usage_hook(fn) -> None:
     _USAGE_HOOK = fn
 
 
-def _emit_usage(provider: str, model: str, usage: dict, ms: float, kind: str) -> None:
+def _emit_usage(provider: str, model: str, usage: dict, ms: float, kind: str,
+                fails: int = 0) -> None:
     hook = _USAGE_HOOK
     if hook is None:
         return
@@ -44,7 +45,10 @@ def _emit_usage(provider: str, model: str, usage: dict, ms: float, kind: str) ->
               "prompt_tokens": int(usage.get("prompt_tokens") or 0),
               "completion_tokens": int(usage.get("completion_tokens") or 0),
               "total_tokens": int(usage.get("total_tokens") or 0),
-              "est": bool(usage.get("est")), "ms": round(float(ms), 1), "kind": kind})
+              "est": bool(usage.get("est")), "ms": round(float(ms), 1), "kind": kind,
+              # 这一轮之前失败了几次（>0 = 走了备用模型）。只有成功那一跳才记一行，
+              # 失败不记 —— 否则「请求次数」会把重试也算进去，对不上账。
+              "fails": int(fails or 0)})
     except Exception as e:                                       # noqa: BLE001
         log.info("用量回调出错（已忽略）：%s", e)
 
@@ -444,6 +448,125 @@ class ModelStore:
             self._ensure_model(provider or self.active().get("provider", ""), model)
             self._save_locked()
 
+    # ---------- 备用模型（主模型挂了自动换一个） ----------
+    def fallbacks(self) -> list:
+        """`models.json` 的 `fallbacks` 段：`[{provider, model}]`，按顺序试。
+
+        只在**主模型彻底没拿到答案**时才用（见 `complete_raw`）。已经被删掉的
+        provider、空模型、以及和当前 active 完全一样的条目一律跳过 —— 否则会
+        出现「主模型超时 → 备用还是它 → 再超时一遍」。
+        """
+        raw = self.data.get("fallbacks")
+        act = self.active()
+        seen = {(act["provider"], act["model"])}
+        out = []
+        for i in raw if isinstance(raw, list) else []:
+            if not isinstance(i, dict):
+                continue
+            p = self.get_provider(str(i.get("provider") or ""))
+            if not p:
+                continue
+            m = str(i.get("model") or "").strip()
+            if not m:
+                models = p.get("models") if isinstance(p.get("models"), list) else []
+                m = str(models[0]) if models else ""
+            if not m:
+                continue
+            k = (str(p.get("id")), m)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append({"provider": k[0], "model": m})
+        return out[:4]
+
+    def set_fallbacks(self, items) -> list:
+        """整段覆盖备用模型清单。空列表 = 只用主模型。"""
+        clean = []
+        for i in items if isinstance(items, list) else []:
+            if not isinstance(i, dict):
+                raise ValueError("备用模型每项必须是 {provider, model}")
+            pid = str(i.get("provider") or "").strip()
+            m = str(i.get("model") or "").strip()
+            p = self.get_provider(pid)
+            if not p:
+                raise ValueError(f"未知 provider: {pid or '（空）'}")
+            if not m:
+                models = p.get("models") if isinstance(p.get("models"), list) else []
+                m = str(models[0]) if models else ""
+            if not m:
+                raise ValueError(f"provider {pid} 没有可用模型")
+            clean.append({"provider": pid, "model": m})
+        if len(clean) > 4:
+            raise ValueError("备用模型最多 4 个（再多也只是排队等超时）")
+        # 和主模型一模一样的「备用」没有任何意义，写进去也会被 fallbacks() 过滤掉
+        # —— 与其静默消失，不如当场说清楚。
+        act = self.active()
+        for c in clean:
+            if (c["provider"], c["model"]) == (act["provider"], act["model"]):
+                raise ValueError("这条就是当前主模型，起不到备用作用")
+        with _SAVE_LOCK:
+            self.data["fallbacks"] = clean
+            for c in clean:
+                self._ensure_model(c["provider"], c["model"])
+            self._save_locked()
+        return clean
+
+    # ---------- 角色专属模型 ----------
+    def characters(self) -> dict:
+        """每个角色单独指定的模型：`{cid: {provider, model}}`。没配的角色不出现。"""
+        raw = self.data.get("characters")
+        out = {}
+        if isinstance(raw, dict):
+            for cid, v in raw.items():
+                if not isinstance(v, dict) or not v.get("model"):
+                    continue
+                p = self.get_provider(str(v.get("provider") or ""))
+                if not p:
+                    continue
+                out[str(cid)] = {"provider": str(p.get("id")), "model": str(v["model"])}
+        return out
+
+    def for_character(self, cid: str) -> dict:
+        """这个角色这一轮该用哪个模型：**角色专属 > 全局 active**。
+
+        配置坏了（provider 被删 / model 为空）就静默回退到全局 —— 不能让某个
+        角色因为一条坏配置而完全不能说话。
+        """
+        c = self.characters().get(str(cid or ""))
+        if c:
+            return {**c, "own": True}
+        return {**self.active(), "own": False}
+
+    def for_agent(self, cid: str) -> dict:
+        """agent 工具循环用哪个：角色专属 > 「工具模型」配置 > 全局 active。"""
+        c = self.characters().get(str(cid or ""))
+        if c:
+            return {**c, "own": True}
+        return self.agent()
+
+    def set_char_model(self, cid: str, provider: str = "", model: str = "") -> None:
+        """给某个角色指定模型；`model` 传空 = 恢复「跟全局一样」。"""
+        cid = str(cid or "").strip()
+        if not cid:
+            raise ValueError("缺少角色 id")
+        provider = str(provider or "").strip()
+        model = str(model or "").strip()
+        with _SAVE_LOCK:
+            raw = self.data.get("characters")
+            raw = dict(raw) if isinstance(raw, dict) else {}
+            if not model:
+                raw.pop(cid, None)
+                self.data["characters"] = raw
+                self._save_locked()
+                return
+            p = self.get_provider(provider)
+            if not p:
+                raise ValueError(f"未知 provider: {provider or '（空）'}")
+            raw[cid] = {"provider": str(p.get("id")), "model": model}
+            self.data["characters"] = raw
+            self._ensure_model(str(p.get("id")), model)
+            self._save_locked()
+
     def upsert_provider(self, prov: dict) -> None:
         pid = str(prov.get("id") or "").strip()
         if not pid:
@@ -495,8 +618,86 @@ class ModelStore:
                      temperature: float = 0.85, max_tokens: int = 800,
                      tools: list | None = None, tool_choice: str | None = None,
                      extra_body: dict | None = None,
-                     stream: bool = False, on_delta=None) -> dict:
-        """调一次 chat/completions，返回 {text, tool_calls, finish_reason}。
+                     stream: bool = False, on_delta=None,
+                     allow_fallback: bool = True) -> dict:
+        """调一次 chat/completions；主模型没拿到答案时按 `fallbacks` 顺序换一个。
+
+        什么时候降级：连接失败 / HTTP 错误 / 返回里没有正文。
+        什么时候**不**降级：
+        - `allow_fallback=False`（降级链自己再调时，防止套娃）；
+        - 流式已经吐过字了 —— 换模型把前半句再念一遍，比直接报错更糟；
+        - 报的是「配置错」（没有 provider / 没有模型）：换一个也救不了。
+        """
+        if not allow_fallback:
+            return self._complete_once(
+                messages, model=model, provider=provider, timeout=timeout,
+                temperature=temperature, max_tokens=max_tokens, tools=tools,
+                tool_choice=tool_choice, extra_body=extra_body,
+                stream=stream, on_delta=on_delta)
+        emitted = {"any": False}
+
+        def _delta(txt):
+            emitted["any"] = True
+            if on_delta is not None:
+                on_delta(txt)
+
+        act = self.active()
+        first = {"provider": provider or act["provider"], "model": model or act["model"]}
+        fails: list = []
+        try:
+            res = self._complete_once(
+                messages, model=model, provider=provider, timeout=timeout,
+                temperature=temperature, max_tokens=max_tokens, tools=tools,
+                tool_choice=tool_choice, extra_body=extra_body,
+                stream=stream, on_delta=_delta if on_delta else None)
+            res["fails"] = fails
+            res["fallback"] = False
+            return res
+        except RuntimeError as e:
+            if emitted["any"]:
+                # 已经显示了一半，不能再换个模型从头说
+                raise
+            fails.append({**first, "error": str(e)[:200]})
+            log.warning("模型 %s/%s 失败，准备降级：%s", first["provider"], first["model"], e)
+            # 注意：这一整段必须在 except 里。挪到外面之后 `raise` 会变成
+            # 「No active exception to reraise」—— 原本的错误信息全丢了，
+            # 面板上只看到一句莫名其妙的 RuntimeError。
+            chain = self.fallbacks()
+            if not chain:
+                raise
+            last = None
+            for fb in chain:
+                # 备用模型给短一点的预算：主模型已经耗掉一截，用户等不起第二遍全量超时
+                left = max(15.0, float(timeout or 0) * 0.6)
+                try:
+                    res = self._complete_once(
+                        messages, model=fb["model"], provider=fb["provider"], timeout=left,
+                        temperature=temperature, max_tokens=max_tokens, tools=tools,
+                        tool_choice=tool_choice, extra_body=extra_body,
+                        stream=stream, on_delta=_delta if on_delta else None,
+                        _fails=len(fails))
+                    res["fails"] = fails
+                    res["fallback"] = True
+                    log.info("已降级到备用模型 %s/%s（前面失败 %d 次）",
+                             fb["provider"], fb["model"], len(fails))
+                    return res
+                except RuntimeError as e2:
+                    if emitted["any"]:
+                        raise
+                    fails.append({**fb, "error": str(e2)[:200]})
+                    last = e2
+                    log.warning("备用模型 %s/%s 也失败：%s", fb["provider"], fb["model"], e2)
+            raise last or RuntimeError("所有备用模型都失败了")
+
+    def _complete_once(self, messages: list, *, model: str | None = None,
+                       provider: str | None = None, timeout: float = 90,
+                       temperature: float = 0.85, max_tokens: int = 800,
+                       tools: list | None = None, tool_choice: str | None = None,
+                       extra_body: dict | None = None,
+                       stream: bool = False, on_delta=None, _fails: int = 0) -> dict:
+        """真正的单次调用（不含降级）。
+
+        返回 {text, tool_calls, finish_reason, usage}。
 
         `tool_calls` 已归一化成 [{id, name, arguments}]；没有工具调用就是 []。
 
@@ -561,8 +762,10 @@ class ModelStore:
                         if not gu:
                             gu = _estimate(messages, str(got.get("text") or ""))
                         got["usage"] = gu
+                        got["provider"] = str(prov.get("id") or provider or "")
+                        got["model"] = str(model or "")
                         _emit_usage(str(prov.get("id") or provider or ""), str(model or ""), gu,
-                                    (time.monotonic() - _t0) * 1000.0, "stream")
+                                    (time.monotonic() - _t0) * 1000.0, "stream", _fails)
                         return got                # 流式成功：结构与非流式完全一致
                     # 服务端没按 SSE 回（直接吐了整段 JSON / 或者干脆不支持）：
                     # 这一份响应已经被读掉了，**先退出 with** 再重发。
@@ -581,10 +784,11 @@ class ModelStore:
             raise RuntimeError(f"模型接口请求失败：{type(e).__name__}: {e}") from e
         if fallback:
             left = max(5.0, deadline - time.monotonic())
-            return self.complete_raw(
+            return self._complete_once(
                 messages, model=model, provider=provider, timeout=left,
                 temperature=temperature, max_tokens=max_tokens, tools=tools,
-                tool_choice=tool_choice, extra_body=extra_body, stream=False)
+                tool_choice=tool_choice, extra_body=extra_body, stream=False,
+                _fails=_fails)
         try:
             data = json.loads(raw)
         except ValueError as e:
@@ -621,10 +825,12 @@ class ModelStore:
                   "total_tokens": int(u.get("total_tokens") or 0)} if u
                  else _estimate(messages, text))
         _emit_usage(str(prov.get("id") or provider or ""), str(model or ""), usage,
-                    (time.monotonic() - _t0) * 1000.0, "chat")
+                    (time.monotonic() - _t0) * 1000.0, "chat", _fails)
+        # 带上实际用了哪个：降级之后调用方（和看板）要能看出「这句是备用模型答的」
         return {"text": text, "tool_calls": calls,
                 "finish_reason": str(choice.get("finish_reason") or ""),
-                "usage": usage}
+                "usage": usage, "provider": str(prov.get("id") or provider or ""),
+                "model": str(model or "")}
 
     def chat(self, messages: list, *, model: str | None = None, provider: str | None = None,
              timeout: float = 90,

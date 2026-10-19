@@ -168,6 +168,12 @@ CHAT_TIMEOUT = 240
 
 CHAT_WORKERS = 3          # 同时在跑的对话数（同一个会话永远只有 1 个）
 
+# 上下文预算：历史超过这么多字就把更早的部分压成一段「前情提要」。
+# 0 = 关掉（回到「只带最近 12 条」的老行为）。为什么是 6000：CJK 大约 1 字 1 token，
+# 6000 字 ≈ 3000 token 输入，在 90 秒预算和 4 GB 内存的机器上都还有余量。
+CTX_BUDGET = 6000
+CTX_SCAN = 60             # 读多少条历史参与压缩判断
+
 
 class _JobQueue:
     """按「会话 + 角色」串行的作业队列，允许多个 worker 并发。
@@ -1031,9 +1037,11 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
     kw["images_out"] = imgs
     drain = _panel_drain()
     try:
+        # 角色被单独指定了模型就听它的；否则用「工具模型」那条配置
+        mm = rt.models.for_agent(cid) if hasattr(rt.models, "for_agent") else {}
         return agent_mod.run(
             rt.models, msgs,
-            provider="", model="",
+            provider=str(mm.get("provider") or ""), model=str(mm.get("model") or ""),
             tools=tools,
             skills=(rt.skills if cfg.get("agent_skills", True) else None),
             # adapter 不能给 None：插件技能几乎都要 adapter（`ctx.adapter._chat_id(...)`、
@@ -1678,7 +1686,8 @@ def _usage_rows(days: int = 7) -> list[dict]:
 
 def _usage_summary(days: int = 7) -> dict:
     rows = _usage_rows(days)
-    tot = {"requests": 0, "prompt": 0, "completion": 0, "total": 0, "ms": 0.0, "est": 0}
+    tot = {"requests": 0, "prompt": 0, "completion": 0, "total": 0, "ms": 0.0,
+           "est": 0, "fallback": 0, "fails": 0}
     by_model: dict[str, dict] = {}
     by_day: dict[str, dict] = {}
     for r in rows:
@@ -1693,6 +1702,10 @@ def _usage_summary(days: int = 7) -> dict:
         tot["ms"] += ms
         if r.get("est"):
             tot["est"] += 1
+        # 这一答是备用模型给的 / 这个过程中总共失败了几次
+        if int(r.get("fails") or 0) > 0:
+            tot["fallback"] += 1
+            tot["fails"] += int(r.get("fails") or 0)
         key = f"{r.get('provider') or '?'}/{r.get('model') or '?'}"
         m = by_model.setdefault(key, {"model": key, "requests": 0, "prompt": 0,
                                       "completion": 0, "total": 0, "ms": 0.0})
@@ -1945,9 +1958,10 @@ def _run_job_body(job: dict, cid: str) -> None:
         kb_ctx = _kb_context(dtxt, cid)
         if kb_ctx:
             msgs.append({"role": "system", "content": "【相关背景资料】\n" + kb_ctx})
+        budget = int((rt.config or {}).get("context_budget", CTX_BUDGET) or 0) if rt else 0
         hist = [e for e in _read_jsonl(CHAT_JSONL)
                 if e.get("session") == job["session"] and e.get("text")
-                and str(e.get("character") or "klee") == cid][-12:]
+                and str(e.get("character") or "klee") == cid][-(CTX_SCAN if budget else 12):]
         # 当前这轮已在入队时落盘：按入队时生成的 entry id 精确移除。
         # （以前按文本从后往前找，连发两条相同消息时会删错别人的那条）
         eid = job.get("eid")
@@ -1958,9 +1972,44 @@ def _run_job_body(job: dict, cid: str) -> None:
                 if hist[i].get("role") == "user" and str(hist[i].get("text")) == job["text"]:
                     hist.pop(i)
                     break
-        for e in hist:
-            if e.get("role") in ("user", "assistant"):
-                msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
+        # ---- 上下文预算：超了就把更早的部分压成一段「前情提要」 ----
+        if budget and hist:
+            try:
+                from bot import context as ctx_mod
+
+                mm0 = (BOT.models.for_character(cid)
+                       if hasattr(BOT.models, "for_character") else {})
+
+                def _summarize(m, **kw):
+                    # 注意：闭包里别用后面才赋值的 `mm`（那是普通聊天的模型），
+                    # 这里用的是这一轮的角色模型 mm0 —— 名字写错就是 UnboundLocalError，
+                    # 而它会被下面的 except 吞掉，表现成「压缩从来没生效」。
+                    return BOT.models.chat(
+                        m, provider=str(mm0.get("provider") or ""),
+                        model=str(mm0.get("model") or ""), **kw)
+                pl = ctx_mod.build(
+                    [{"role": e.get("role"), "content": str(e.get("text") or ""),
+                      "id": e.get("id") or e.get("ts")} for e in hist],
+                    state_dir=_state_dir(), key=f"{cid}:{job['session']}",
+                    complete=_summarize, budget=budget)
+                if pl.get("summary"):
+                    msgs.append({"role": "system",
+                                 "content": "【前情提要（更早的对话压缩而成，供你参考）】\n"
+                                            + str(pl["summary"])})
+                for e in pl.get("recent") or []:
+                    if e.get("role") in ("user", "assistant"):
+                        msgs.append({"role": e["role"],
+                                     "content": str(e.get("content") or "")[:800]})
+            except Exception as e:                              # noqa: BLE001
+                logger.warning("压缩上下文失败，退回最近 12 条：%s", e)
+                hist = hist[-12:]
+                for e in hist:
+                    if e.get("role") in ("user", "assistant"):
+                        msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
+        else:
+            for e in hist:
+                if e.get("role") in ("user", "assistant"):
+                    msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
         msgs.append({"role": "user", "content": dtxt})
 
         # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
@@ -2001,16 +2050,21 @@ def _run_job_body(job: dict, cid: str) -> None:
         if reasoning and reasoning != "default":
             # 推理强度：映射到常见参数；不认识的原样透传
             kw["reasoning_effort"] = reasoning
+        mm = (BOT.models.for_character(cid)
+              if hasattr(BOT.models, "for_character") else {})
+        mkw = {"provider": str(mm.get("provider") or ""), "model": str(mm.get("model") or "")}
+        if not mkw["model"]:
+            mkw = {}
         try:
             text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
-                                   stream=True, on_delta=on_delta, **kw)
+                                   stream=True, on_delta=on_delta, **mkw, **kw)
         except TypeError:
             # 模型层不认 reasoning_effort（或者不认 stream）就别带它们
             try:
                 text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
-                                       stream=True, on_delta=on_delta)
+                                       stream=True, on_delta=on_delta, **mkw)
             except TypeError:
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, **mkw)
         _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + job["session"],
                                   "role": "assistant", "text": text[:800]})
     except Exception as e:                                 # noqa: BLE001
@@ -3608,6 +3662,8 @@ def _models_get() -> dict:
     return {"ok": True, "active": BOT.models.active(), "providers": provs,
             "vision": BOT.models.vision(),
             "agent": BOT.models.agent() if hasattr(BOT.models, "agent") else {},
+            "fallbacks": BOT.models.fallbacks() if hasattr(BOT.models, "fallbacks") else [],
+            "characters": BOT.models.characters() if hasattr(BOT.models, "characters") else {},
             "data": safe}
 
 
@@ -3705,7 +3761,7 @@ _SENSITIVE_GET = frozenset({
     "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
-    "/api/memories", "/api/scheduled", "/api/usage",
+    "/api/memories", "/api/scheduled", "/api/usage", "/api/rules",
 })
 
 
@@ -3884,9 +3940,16 @@ class Handler(BaseHTTPRequestHandler):
             entries = [e for e in _read_jsonl(CHAT_JSONL)
                        if e.get("session") == session
                        and str(e.get("character") or "klee") == cid]
+            ctx_info = {}
+            try:
+                from bot import context as ctx_mod
+                ctx_info = ctx_mod.peek(_state_dir(), f"{cid}:{session}")
+            except Exception as e:                              # noqa: BLE001
+                logger.info("读上下文提要失败：%s", e)
             self._json({"session": session, "character": cid, "after": after,
                         "total": len(entries), "messages": entries[after:],
                         "queue": _chat_q.qsize(),
+                        "context": ctx_info,
                         "running": _run_get(session, cid)})
             return
         if u.path == "/api/backup":
@@ -4165,6 +4228,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/usage":
             self._json(_usage_summary(_int_param(q, "days", 7, lo=0, hi=365)))
             return
+        if u.path == "/api/rules":
+            from bot import rules as rules_mod
+            items = rules_mod.load(_state_dir())
+            self._json({"ok": True, "items": items, "count": len(items),
+                        "max": rules_mod.MAX_RULES,
+                        "matches": list(rules_mod.MATCHES),
+                        "actions": list(rules_mod.ACTIONS),
+                        "scopes": list(rules_mod.SCOPES),
+                        "hint": "只对外部平台进来的消息生效（面板里直接跟她说话不走规则）"})
+            return
         if u.path == "/api/scheduled":
             from bot import schedule as sched
             items = [_sched_view(it) for it in _sched_load()]
@@ -4414,6 +4487,13 @@ class Handler(BaseHTTPRequestHandler):
                 ag = body.get("agent")
                 if isinstance(ag, dict):
                     BOT.models.set_agent(str(ag.get("provider") or ""), str(ag.get("model") or ""))
+                if isinstance(body.get("fallbacks"), list):
+                    BOT.models.set_fallbacks(body["fallbacks"])
+                cm = body.get("char_model")
+                if isinstance(cm, dict) and cm.get("character"):
+                    BOT.models.set_char_model(str(cm["character"]),
+                                              str(cm.get("provider") or ""),
+                                              str(cm.get("model") or ""))
                 if body.get("delete_provider"):
                     BOT.models.delete_provider(str(body["delete_provider"]))
                 self._json(_models_get())
@@ -4752,6 +4832,48 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "session": session, "queued": True})
             return
 
+        if u.path in ("/api/rules", "/api/rules/test"):
+            from bot import rules as rules_mod
+            if u.path == "/api/rules/test":
+                # 试跑：只回答「会不会命中」，不发送、不计数
+                text = str(body.get("text") or "")
+                items = rules_mod.load(_state_dir())
+                hit = rules_mod.match(items, text, is_group=bool(body.get("is_group")),
+                                      chat_id=str(body.get("chat_id") or ""))
+                self._json({"ok": True, "hit": hit,
+                            "reply": rules_mod.render_reply(hit, user=str(body.get("user") or "你"))
+                            if hit and hit.get("action") == "reply" else "",
+                            "count": len(items)})
+                return
+            try:
+                op = str(body.get("op") or "add")
+                if op == "add":
+                    rec = rules_mod.add(_state_dir(), body.get("rule") or {})
+                    self._json({"ok": True, "item": rec,
+                                "items": rules_mod.load(_state_dir())})
+                elif op == "update":
+                    rid = str(body.get("id") or "")
+                    rec = rules_mod.update(_state_dir(), rid, body.get("patch") or {})
+                    self._json({"ok": True, "item": rec,
+                                "items": rules_mod.load(_state_dir())})
+                elif op == "delete":
+                    ok = rules_mod.delete(_state_dir(), str(body.get("id") or ""))
+                    self._json({"ok": ok, "items": rules_mod.load(_state_dir())},
+                               200 if ok else 404)
+                elif op == "toggle":
+                    rid = str(body.get("id") or "")
+                    cur = next((x for x in rules_mod.load(_state_dir()) if x["id"] == rid), None)
+                    if not cur:
+                        self._json({"ok": False, "error": "没有这条规则"}, 404)
+                        return
+                    rules_mod.update(_state_dir(), rid, {"enabled": not cur["enabled"]})
+                    self._json({"ok": True, "items": rules_mod.load(_state_dir())})
+                else:
+                    self._json({"ok": False, "error": f"不认识的 op：{op}"}, 400)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+            return
+
         if u.path == "/api/chat/edit":
             # 改一句自己说过的话，然后从那里重来：这条之后的回复全部作废。
             # 和「删除 + 重新发送」的区别是：提问被替换掉，不会在历史里留两份。
@@ -4827,6 +4949,18 @@ class Handler(BaseHTTPRequestHandler):
             meta["pins"] = pins
             _save_session_meta(meta)
             self._json({"ok": True, "pins": pins, "pinned": want})
+            return
+
+        if u.path == "/api/chat/context/forget":
+            session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or "studio-main"))[:48]
+            cid = re.sub(r"[^a-z0-9_\-]", "", str(body.get("character") or "").lower())[:32] or _active_cid()
+            try:
+                from bot import context as ctx_mod
+                ctx_mod.forget(_state_dir(), f"{cid}:{session}")
+            except Exception as e:                              # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 400)
+                return
+            self._json({"ok": True, "session": session, "character": cid})
             return
 
         if u.path == "/api/chat/session/rename":

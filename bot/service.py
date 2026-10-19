@@ -65,6 +65,8 @@ DEFAULT_CONFIG = {
     "max_reply_chars": 1200,
     "max_tokens": 800,
     "history_messages": 12,
+    # 上下文预算（字）。历史超过这么多字就把更早的部分压成一段提要；0 = 关掉。
+    "context_budget": 6000,
     "kb_enabled": True,
     "kb_url": "http://127.0.0.1:8797",
     "kb_topk": 3,

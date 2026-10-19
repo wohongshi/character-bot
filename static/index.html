@@ -2633,6 +2633,8 @@ async function viewChat(){
         <option value="medium" ${chatOpts.reasoning==="medium"?"selected":""}>🧠 中</option>
         <option value="high" ${chatOpts.reasoning==="high"?"selected":""}>🧠 深思</option>
       </select>
+      <button class="btn tiny" id="ctxChip" hidden onclick="showCtx()"
+              title="更早的对话被压成了一段提要，点开看">🧠 前情</button>
       <span class="kv" id="chatStat"></span>
     </div>
     <div id="csearch">
@@ -3242,6 +3244,38 @@ function jumpBottom(){
   box.scrollTo({top: box.scrollHeight, behavior: "smooth"});
   updateToBottom();
 }
+let lastCtx = {};
+function paintCtx(c){
+  lastCtx = c || {};
+  const b = document.getElementById("ctxChip");
+  if (!b) return;
+  const n = Number(lastCtx.n || 0);
+  b.hidden = !lastCtx.text;
+  b.textContent = n ? `🧠 已压缩 ${n} 条` : "🧠 前情";
+}
+/* 「前情提要」是模型自己压的，用户有权看它到底记住了什么 ——
+   而且要能一键清掉（压歪了就重新开始）。 */
+function showCtx(){
+  if (!lastCtx.text) return;
+  const box = document.getElementById("ctxBox");
+  if (box){ box.remove(); return; }
+  const d = document.createElement("div");
+  d.id = "ctxBox"; d.className = "card";
+  d.style.cssText = "margin:8px 0 0;padding:10px 12px;font-size:13px;line-height:1.65";
+  d.innerHTML = `<div class="row" style="justify-content:space-between;align-items:center">
+      <b>🧠 前情提要（${Number(lastCtx.n||0)} 条压成）</b>
+      <button class="btn tiny" onclick="clearCtx()">忘掉这段</button></div>
+    <div class="kv" style="margin-top:6px;white-space:pre-wrap">${esc(lastCtx.text)}</div>`;
+  const msgs = document.getElementById("msgs");
+  if (msgs) msgs.parentNode.insertBefore(d, msgs);
+}
+async function clearCtx(){
+  const d = await post("/api/chat/context/forget", {session: chat.session, character: ACTIVE.id});
+  const box = document.getElementById("ctxBox");
+  if (box) box.remove();
+  if (d.ok){ lastCtx = {}; paintCtx({}); flash("已忘掉这段前情"); }
+}
+
 async function pollChat(){
   const j = await api(`/api/chat?session=${encodeURIComponent(chat.session)}&after=${chat.after}&character=${encodeURIComponent(ACTIVE.id)}`);
   if (!j || j.session !== chat.session){ return; }
@@ -3260,6 +3294,7 @@ async function pollChat(){
   // 间隔由 armChatPoll 每轮自己算，这里不再手动重排
   lastRunning = j.running;
   $("chatStat").textContent = j.queue > 0 ? `队列里还有 ${j.queue} 条` : "";
+  paintCtx(j.context);
   const t = $("typingB");
   if (j.running && !t){
     box.insertAdjacentHTML("beforeend", `<div class="msg klee typing" id="typingB">${charAva()}
@@ -3878,7 +3913,9 @@ function renderPlugGrid(){
 /* ================= 运维 · 模型（只留模型；QR/审批/告警已搬进插件页） ================= */
 async function viewModels(target){
   const T = target || "view";
-  const md = await api("/api/models");
+  const [md, ch] = await Promise.all([api("/api/models"), api("/api/characters")]);
+  window.__md = md;
+  window.__chars = (ch && ch.items) || [];
   const act = (md && md.active) || {};
   const provs = (md && md.providers) || [];
   window.__provs = provs;
@@ -3918,7 +3955,114 @@ async function viewModels(target){
     <div id="mvOut" class="kv" style="margin-top:8px">${vis.configured
       ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
       : "没配（发图时只会请你描述）"}</div>
+  </div>
+  <div class="card">
+    <h3>🔁 备用模型 <span class="kv" style="font-family:var(--font-body)">主模型连不上/超时，按顺序自动换</span></h3>
+    <div id="fbList"></div>
+    <div class="row" style="margin-top:10px">
+      <select id="fbProv" onchange="fbFillModels()" style="min-width:170px">
+        ${provs.map(p=>`<option value="${esc(p.id)}">${esc(p.name||p.id)}</option>`).join("")}
+      </select>
+      <select id="fbModel" style="min-width:210px">
+        ${(cur.models||[]).map(m=>`<option>${esc(m)}</option>`).join("")}
+      </select>
+      <button class="btn tiny" onclick="fbAdd()">＋ 加进备选</button>
+    </div>
+    <div id="fbOut" class="kv" style="margin-top:8px">最多 4 个；已经出过字的那一轮不会换模型（免得把前半句再念一遍）</div>
+  </div>
+  <div class="card">
+    <h3>🎭 角色专属模型 <span class="kv" style="font-family:var(--font-body)">不选就跟全局</span></h3>
+    <div id="cmList"></div>
+    <div id="cmOut" class="kv" style="margin-top:8px"></div>
   </div>`;
+  fbRender((md && md.fallbacks) || []);
+  cmRender((md && md.characters) || {});
+}
+
+/* ---- 备用模型 ---- */
+let __fb = [];
+function fbRender(items){
+  __fb = (items || []).slice();
+  const box = document.getElementById("fbList");
+  if (!box) return;
+  box.innerHTML = __fb.length ? __fb.map((f,i)=>`
+    <div class="opsline" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">
+      <span class="tag" style="flex:none">${i+1}</span>
+      <b style="flex:none">${esc(f.provider)}</b>
+      <span class="kv" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.model)}</span>
+      <button class="btn tiny" style="flex:none" onclick="fbMove(${i},-1)" ${i===0?"disabled":""}>↑</button>
+      <button class="btn tiny" style="flex:none" onclick="fbMove(${i},1)" ${i===__fb.length-1?"disabled":""}>↓</button>
+      <button class="btn tiny" style="flex:none" onclick="fbDel(${i})">删</button>
+    </div>`).join("")
+    : `<div class="kv">还没配备用模型 —— 主模型挂了就是「呜……脑袋卡住了」</div>`;
+}
+function fbFillModels(){
+  const p = (window.__provs || []).find(x => x.id === $("fbProv").value) || {models: []};
+  $("fbModel").innerHTML = (p.models || []).map(m=>`<option>${esc(m)}</option>`).join("");
+}
+async function fbSave(msg){
+  const d = await post("/api/models", {fallbacks: __fb});
+  const out = document.getElementById("fbOut");
+  if (d.ok) { fbRender(d.fallbacks || []); if (out) out.textContent = msg || "✓ 已保存"; }
+  else if (out) out.textContent = "✗ " + (d.error || "保存失败");
+}
+function fbAdd(){
+  const p = $("fbProv").value, m = $("fbModel").value;
+  if (!p || !m) return;
+  if (__fb.length >= 4) { $("fbOut").textContent = "最多 4 个"; return; }
+  if (__fb.some(x => x.provider === p && x.model === m)) { $("fbOut").textContent = "已经在列表里了"; return; }
+  const act = (window.__md || {}).active || {};
+  if (act.provider === p && act.model === m) { $("fbOut").textContent = "这就是当前主模型，加进来也不会被用到"; return; }
+  __fb.push({provider: p, model: m});
+  fbSave(`✓ 已加：${p} / ${m}（${__fb.length} 个备选）`);
+}
+function fbDel(i){ __fb.splice(i,1); fbSave("✓ 已删除"); }
+function fbMove(i, d){
+  const j = i + d;
+  if (j < 0 || j >= __fb.length) return;
+  [__fb[i], __fb[j]] = [__fb[j], __fb[i]];
+  fbSave("✓ 顺序已调整");
+}
+
+/* ---- 角色专属模型 ---- */
+let __cm = {};
+function cmRender(map){
+  __cm = Object.assign({}, map || {});
+  const box = document.getElementById("cmList");
+  if (!box) return;
+  const chars = window.__chars || [];
+  const provs = window.__provs || [];
+  box.innerHTML = chars.map(c => {
+    const own = __cm[c.id] || null;
+    const pid = own ? own.provider : (provs[0] || {}).id;
+    const p = provs.find(x => x.id === pid) || {models: []};
+    const models = optList(p.models, own ? own.model : "");
+    return `<div class="opsline" style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <b style="flex:none;min-width:74px">${esc((c.emoji||"") + " " + (c.name||c.id))}</b>
+      <select id="cmp-${esc(c.id)}" onchange="cmFill('${esc(c.id)}')" style="min-width:150px">
+        ${provs.map(x=>`<option value="${esc(x.id)}" ${x.id===pid?"selected":""}>${esc(x.name||x.id)}</option>`).join("")}
+      </select>
+      <select id="cmm-${esc(c.id)}" style="min-width:200px">
+        <option value="">（跟全局）</option>
+        ${models.map(m=>`<option ${own && m===own.model?"selected":""}>${esc(m)}</option>`).join("")}
+      </select>
+      <button class="btn tiny" onclick="cmSave('${esc(c.id)}')">保存</button>
+      ${own ? `<span class="kv">用 ${esc(own.model)}</span>` : ""}
+    </div>`;
+  }).join("");
+}
+function cmFill(cid){
+  const p = (window.__provs || []).find(x => x.id === $("cmp-"+cid).value) || {models: []};
+  const own = __cm[cid] || null;
+  $("cmm-"+cid).innerHTML = '<option value="">（跟全局）</option>' +
+    optList(p.models, own ? own.model : "").map(m=>`<option>${esc(m)}</option>`).join("");
+}
+async function cmSave(cid){
+  const model = $("cmm-"+cid).value;
+  const d = await post("/api/models", {char_model: {character: cid, provider: $("cmp-"+cid).value, model}});
+  const out = document.getElementById("cmOut");
+  if (d.ok) { cmRender(d.characters || {}); if (out) out.textContent = model ? `✓ ${cid} 已单独指定：${model}` : `✓ ${cid} 恢复跟全局一样`; }
+  else if (out) out.textContent = "✗ " + (d.error || "保存失败");
 }
 
 /* 下拉候选 = provider 的模型清单 + 已保存的那个值。
@@ -4496,6 +4640,79 @@ function feedMore(){
   const box = $("feedList");
   if (box) box.innerHTML = feedListHTML(feedCache, feedShown);
 }
+let __rules = [];
+function ruleRender(items){
+  __rules = items || [];
+  const box = document.getElementById("ruleList");
+  if (!box) return;
+  if (!__rules.length){
+    box.innerHTML = `<div class="kv">还没有规则 —— 比如「包含 早安 → 回一句 早呀」这种。</div>`;
+    return;
+  }
+  const actCN = {reply:"回一句", ignore:"不回", command:"当命令"};
+  const mCN = {contains:"包含", equals:"等于", prefix:"开头是", regex:"正则"};
+  const scCN = {all:"所有", group:"仅群", dm:"仅私聊"};
+  box.innerHTML = __rules.map(r => `
+    <div class="opsline" style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <span class="tag" style="flex:none">${r.enabled ? "● 开" : "○ 关"}</span>
+      <b style="flex:none">${esc(r.name || r.pattern)}</b>
+      <span class="kv" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${esc(mCN[r.match] || r.match)}「${esc(r.pattern)}」→ ${esc(actCN[r.action] || r.action)}${
+        r.action === "reply" ? "：「" + esc(r.reply.slice(0, 24)) + "」"
+        : r.action === "command" ? "：" + esc(r.command) : ""}
+        ${r.scope && r.scope !== "all" ? " · " + esc(scCN[r.scope] || r.scope) : ""}
+        ${r.hits ? ` · 命中 ${r.hits} 次` : ""}</span>
+      <button class="btn tiny" style="flex:none" onclick="ruleToggle('${esc(r.id)}')">${r.enabled ? "暂停" : "启用"}</button>
+      <button class="btn tiny" style="flex:none" onclick="ruleDel('${esc(r.id)}')">删</button>
+    </div>`).join("");
+}
+function ruleFormToggle(){
+  const f = document.getElementById("ruleForm");
+  if (!f) return;
+  f.style.display = f.style.display === "none" ? "" : "none";
+}
+function ruleSyncForm(){
+  const cmd = $("ruAction").value === "command";
+  $("ruReply").style.display = cmd ? "none" : "";
+  $("ruCommand").style.display = cmd ? "" : "none";
+}
+async function ruleAdd(){
+  const rule = {
+    name: $("ruName").value, match: $("ruMatch").value, pattern: $("ruPattern").value,
+    action: $("ruAction").value, reply: $("ruReply").value, command: $("ruCommand").value,
+    scope: $("ruScope").value,
+  };
+  const d = await post("/api/rules", {op: "add", rule});
+  const out = document.getElementById("ruOut");
+  if (d.ok){
+    ruleRender(d.items || []);
+    $("ruName").value = $("ruPattern").value = $("ruReply").value = $("ruCommand").value = "";
+    ruleFormToggle();
+    if (out) out.textContent = "✓ 已加";
+  } else if (out) out.textContent = "✗ " + (d.error || "保存失败");
+}
+async function ruleToggle(id){
+  const d = await post("/api/rules", {op: "toggle", id});
+  if (d.ok) ruleRender(d.items || []);
+}
+async function ruleDel(id){
+  if (!confirm("删掉这条规则？")) return;
+  const d = await post("/api/rules", {op: "delete", id});
+  if (d.ok) ruleRender(d.items || []);
+}
+async function ruleTest(){
+  const text = $("ruTest").value;
+  if (!text.trim()) return;
+  const d = await post("/api/rules/test", {text, is_group: true});
+  const out = document.getElementById("ruOut");
+  if (!out) return;
+  if (!d.hit) { out.textContent = "没有命中任何规则 → 会走模型"; return; }
+  const r = d.hit;
+  out.textContent = r.action === "ignore" ? `命中「${r.name}」→ 不回`
+    : r.action === "command" ? `命中「${r.name}」→ 当命令跑 ${r.command}`
+    : `命中「${r.name}」→ 回「${d.reply}」`;
+}
+
 async function viewFeed(target){
   const T = target || "view";
   const embed = T !== "view";
@@ -4575,6 +4792,7 @@ const CFG_GROUPS = [
      {k:"max_reply_chars", label:"单条回复字数上限"},
      {k:"max_tokens", label:"单次输出上限（max_tokens）"},
      {k:"history_messages", label:"带给模型的历史消息数"},
+     {k:"context_budget", label:"上下文预算（字）", hint:"历史超过就压成提要，0 = 关"},
      {k:"quote_reply", label:"回复带引用", bool:true},
      {k:"at_sender", label:"回复 @ 提问者", bool:true},
    ]},
@@ -5017,7 +5235,8 @@ async function viewOps(target){
     <div class="skelrow"><span class="skel w60"></span></div></div>
   <div class="skelcard"><div class="skelrow"><span class="skel w40 h18"></span></div>
     <div class="skelrow"><span class="skel w80"></span></div><div class="skelrow"><span class="skel w60"></span></div></div>`;
-  const [ov, cfg, pl] = await Promise.all([api("/api/overview"), api("/api/config"), api("/api/plugins")]);
+  const [ov, cfg, pl, ru] = await Promise.all([api("/api/overview"), api("/api/config"),
+                                               api("/api/plugins"), api("/api/rules")]);
   const a = ov.adapter || {}, g = ov.gateway || {}, n = ov.napcat || {};
   const st = a.stats || {};
   const feats = a.features || [];
@@ -5058,6 +5277,43 @@ async function viewOps(target){
     <div class="kv" style="line-height:1.7">包含：聊天记录、会话名与置顶、六个角色的 SOUL、模型与常用配置、插件设置与状态。<br>
       不含：密钥、运行日志、消息索引（可重建）、卡片与图片缓存 —— 所以体积很小。</div>
   </div>
+  <div class="card" style="margin-top:14px" id="ruleCard">
+    <h3>🧩 关键词规则 <span class="kv" style="font-family:var(--font-body)">看到什么就怎么办，不走模型</span>
+      <button class="btn tiny" style="float:right" onclick="ruleFormToggle()">＋ 新增</button></h3>
+    <div class="kv" style="line-height:1.6">只对<b>外部平台</b>（QQ / 飞书 / 微信 / Webhook）进来的消息生效 ——
+      面板里你直接跟她说话不走规则。命令优先于规则，规则优先于模型。</div>
+    <div id="ruleList" style="margin-top:8px"></div>
+    <div id="ruleForm" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <input id="ruName" placeholder="名字（可空）" style="flex:1;min-width:110px">
+        <select id="ruMatch" onchange="ruleSyncForm()" style="min-width:120px">
+          <option value="contains">包含</option><option value="equals">等于</option>
+          <option value="prefix">开头是</option><option value="regex">正则</option>
+        </select>
+        <input id="ruPattern" placeholder="关键词 / 正则" style="flex:2;min-width:150px">
+        <select id="ruScope" style="min-width:110px">
+          <option value="all">所有来源</option><option value="group">仅群聊</option>
+          <option value="dm">仅私聊</option>
+        </select>
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+        <select id="ruAction" onchange="ruleSyncForm()" style="min-width:120px">
+          <option value="reply">回一句</option><option value="ignore">不回</option>
+          <option value="command">当命令跑</option>
+        </select>
+        <input id="ruReply" placeholder="回复内容，{user} 换成对方昵称" style="flex:1;min-width:200px">
+        <input id="ruCommand" placeholder=".骰子 2d6" style="flex:1;min-width:150px;display:none">
+        <button class="btn primary" onclick="ruleAdd()">保存规则</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      <span class="kv" style="flex:none">试跑</span>
+      <input id="ruTest" placeholder="打一句群消息，看会不会命中" style="flex:1;min-width:180px"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();ruleTest()}">
+      <button class="btn tiny" onclick="ruleTest()">试一下</button>
+      <span class="kv" id="ruOut"></span>
+    </div>
+  </div>
   <div class="card" style="margin-top:14px"><h3>${t("ops.config")} <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
     ${cfg.ok ? `<div class="row" style="margin-bottom:10px;flex-wrap:nowrap">
         <input type="text" id="cfgSearch" placeholder="搜索配置项…" style="flex:1;min-width:120px;height:34px" oninput="cfgFilter(this.value)">
@@ -5088,6 +5344,8 @@ async function viewOps(target){
     if ($("logAuto").checked) logTimer = setInterval(logTick, 5000);
   };
   opsCfgPrev = cfg.values || {};
+  ruleRender((ru && ru.items) || []);
+  ruleSyncForm();
   loadRuntime();
   logHash = null; logInited = false;                    // 页面重新装好，第一次必须真渲染
   opsLogs();
