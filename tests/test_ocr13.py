@@ -130,6 +130,12 @@ def main() -> int:
     check("2.12 作用域按整条丢，不留半截", all(len(x) > 0 and not x.endswith("会话-")
                                               for x in sc.split(",")), sc)
     check("2.13 最新加进去的作用域一定保得住", "web:会话-5" in sc.split(","), sc)
+    # 同一个会话再说一遍：它在 old 里已经存在，仍要算「本次的」
+    for i in range(7):
+        M.add(td, "dup", "再说一遍", scope="web:会话-%d" % i)
+    M.add(td, "dup", "再说一遍", scope="web:会话-0")      # 再回到 0 号会话
+    sc2 = str(M.all_items(td, "dup")[0].get("scope") or "")
+    check("2.14 同一会话重复记，本次的 scope 不会被裁掉", "web:会话-0" in sc2.split(","), sc2)
     # 写失败不能把「没落盘的 ts」留在缓存里
     blocked2 = M.path_for(td, "ghost")
     blocked2.mkdir(parents=True, exist_ok=True)

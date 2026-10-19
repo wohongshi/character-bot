@@ -147,11 +147,20 @@ def _merge_scope(old: str, new: str) -> str:
         return ""                          # 任一处是全局 → 升级成全局
     if a == b:
         return a
-    parts = []
-    for x in (a.split(",") + b.split(",")):
+    parts: list[str] = []
+    for x in a.split(","):
         x = x.strip()
         if x and x not in parts:
             parts.append(x)
+    # 本次记的 scope 一律挪到末尾：它可能本来就在 old 里（同一个群又说了一遍），
+    # 去重时留在老位置的话，下面「从最新一头保留」反而会把它先丢掉。
+    for x in b.split(","):
+        x = x.strip()
+        if not x:
+            continue
+        if x in parts:
+            parts.remove(x)
+        parts.append(x)
     # 按**整条**作用域丢，不要按字符截：截出个 `web:studio-ma` 半截，
     # 那个会话就永远匹配不上了 —— 又变回「记下了但注入不到」。
     # 而且要从**最新**的一头开始留：丢老的不影响新加的这条生效。

@@ -816,7 +816,10 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
     return sys_text
 
 
-_PANEL_TOOL_DRAIN = 60.0       # 面板 agent 调技能后等后台任务（出图）的秒数
+# 面板 agent 调技能后等后台任务（出图）的秒数。
+# 必须 ≥ 出图插件自己的超时（draw 默认 90 秒），否则图会在 drain 到点时被取消 ——
+# 和 TASK_DRAIN_SECONDS 那个「设成 40 就是画到一半被取消」是同一个坑。
+_PANEL_TOOL_DRAIN = 90.0
 
 
 def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
@@ -848,9 +851,9 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
               # 把 adapter 包成 _Capture，后台任务产的图要等 drain 才收得到，
               # `tool_use_skill` 读 res["images"] 时早就返回了。
               # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
-              # drain 不能超过这一轮 agent 自己的预算：use_skill 的处理上限是 30 秒，
+              # drain 要和这一轮 agent 的预算对得上：use_skill 的处理上限是 30 秒，
               # drain 完还有两段各 5 秒的取消等待，最后还得留时间给「不带工具」的收尾。
-              # 60 + 30 + 12 = 102，剩下 ~48 秒够收尾（总预算见下面的 timeout）。
+              # 30 + 90 + 12 = 132 < 180（总预算见下面的 timeout）。
               "loop": None, "loop_thread": None, "drain": _PANEL_TOOL_DRAIN},
         max_steps=int(cfg.get("agent_max_steps") or 3),
         # 至少给「工具的 handler + drain + 收尾」留够；用户配更小就按他的来
