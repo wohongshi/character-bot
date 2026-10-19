@@ -600,6 +600,9 @@ def _hhmmss(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
+_QQ_HEALTH_CACHE: dict = {}
+
+
 def qq_health(state_path: Path | None = None) -> dict:
     """QQ 健康度。
 
@@ -623,15 +626,31 @@ def qq_health(state_path: Path | None = None) -> dict:
     if BOT is None or not getattr(BOT, "runtime", None):
         return {"connected": False, "age": None, "reason": "no_bot",
                 "detail": _BOT_IMPORT_ERR or "面板 Bot 没跑起来"}
+    # 10 秒缓存：这个方法每个开着的面板每 15 秒调一次，插件页每 5 秒一次，
+    # 每次都往 NapCat 打一发 HTTP 纯属浪费（而且 NapCat 会限流）。
+    now = time.time()
+    hit = _QQ_HEALTH_CACHE
+    if hit.get("ts") and now - hit["ts"] < 10.0:
+        return hit["data"]
+    # 走适配器自己的 health()：它内部才认识该调哪个接口（`raw.get_status`）。
+    # 以前这里直接调 `runtime.ob.get_status()` —— OneBotAdapter 上根本没这个方法，
+    # 于是**永远** AttributeError，面板恒报「协议端连不上」、掉线告警也一直在误报。
+    ad = getattr(BOT.runtime, "ob", None)
     try:
-        st = BOT.runtime.ob.get_status()
-        if st.get("online") is False or st.get("good") is False:
-            return {"connected": False, "age": 0.0, "reason": "qq_offline",
-                    "detail": "NapCat 在跑但 QQ 未登录（可能被踢，需要扫码）"}
-        return {"connected": True, "age": 0.0, "reason": "", "detail": ""}
+        h = ad.health() if ad is not None and hasattr(ad, "health") else {}
+        if h.get("ok"):
+            val = {"connected": True, "age": 0.0, "reason": "", "detail": ""}
+        elif h.get("online") is False:
+            val = {"connected": False, "age": 0.0, "reason": "qq_offline",
+                   "detail": "NapCat 在跑但 QQ 未登录（可能被踢，需要扫码）"}
+        else:
+            val = {"connected": False, "age": None, "reason": "napcat_unreachable",
+                   "detail": str(h.get("detail") or h.get("error") or "协议端没有响应")[:160]}
     except Exception as e:                                     # noqa: BLE001
-        return {"connected": False, "age": None, "reason": "napcat_unreachable",
-                "detail": f"OneBot HTTP 连不上：{type(e).__name__}: {e}"[:160]}
+        val = {"connected": False, "age": None, "reason": "napcat_unreachable",
+               "detail": f"健康检查失败：{type(e).__name__}: {e}"[:160]}
+    _QQ_HEALTH_CACHE.update(ts=now, data=val)
+    return val
 
 
 def read_alerts(n: int = 20, path: Path | None = None) -> list:
@@ -3531,9 +3550,13 @@ def _overview_lite() -> dict:
     bst = BOT.status() if BOT else {"ok": False}
     nap = _napcat_status_cached()
     stats = bst.get("stats") or {}
+    # `online` 是「最近一小时有没有收到消息」——重启后没人说话就一直是 false，
+    # 顶栏于是笃定地报「QQ 未连接」，把人引去扫码/重启 NapCat（都没用）。
+    # 连通性要问协议端（10 秒缓存，localhost 一发 get_status，~2ms）。
+    conn = bool(qq_health().get("connected"))
     return {"lite": True,
             "gateway": {"active": bool(bst.get("ok"))},
-            "adapter": {"connected": bool(bst.get("online")),
+            "adapter": {"connected": conn,
                         "age": bst.get("last_event_age_s"),
                         "stats": {"events": stats.get("events", 0),
                                   "sent": stats.get("sent", 0)}},
@@ -3555,7 +3578,8 @@ def _overview(max_age: float = 2.0) -> dict:
 def _overview_uncached() -> dict:
     bst = BOT.status() if BOT else {"ok": False, "error": _BOT_IMPORT_ERR or "bot 未启动"}
     stats = bst.get("stats") or {}
-    adapter = {"connected": bool(bst.get("online")),
+    health = qq_health()
+    adapter = {"connected": bool(health.get("connected")),
                "age": bst.get("last_event_age_s"),
                "uptime": bst.get("uptime_s") or 0,
                "in": stats.get("events", 0), "stats": stats,
@@ -3567,7 +3591,7 @@ def _overview_uncached() -> dict:
                         "restarts": "0", "since": ""},
             "adapter": adapter, "napcat": nap,
             "alerts": read_alerts(5),
-            "health": qq_health(),
+            "health": health,
             "chat": {"queue": qlen, "running": (runs[0] if runs else None), "runs": runs},
             "bot": bst}
 
@@ -3602,6 +3626,12 @@ def _bot_status_for_panel() -> dict:
         rows.append(row)
     st["adapters"] = rows
     st["napcat"] = _napcat_status_cached()
+    health = qq_health()
+    # 自带页面读 `d.health.connected` 显示「当前在线 / 当前离线」。以前这里没有这个字段，
+    # 于是不管 QQ 通不通，那行字恒为「当前离线」。
+    st["health"] = health
+    if health.get("connected"):
+        st["online"] = True            # 连通 ≠ 最近有人说话，别把 idle 说成掉线
     return st
 
 

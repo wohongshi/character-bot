@@ -4118,14 +4118,15 @@ async function botAgentToolsAll(){
 }
 
 async function botSaveAgent(){
-  // 没有勾选框时**不能**传 tools：空数组在服务端是「一个工具都不给」，会把 agent 弄瞎
-  const box = document.getElementById("agTools");
+  // 工具清单已经搬到插件页管理，这张卡只改「权限 / 步数 / 超时 / 技能 / 模型」。
+  // 这里**不能**顺手传 tools：空数组在服务端是「一个工具都不给」，会把 agent 弄瞎。
+  // （以前这里读一个并不存在的 #agTools，靠 null 判断才没出事 —— 那种「靠不存在」
+  //  的写法早晚被当成 bug 修掉，所以直接删干净。）
   const d = await post("/api/agent", {
     owner_only: $("agOwner").checked,
     max_steps: Number($("agSteps").value || 3),
     timeout: Number($("agTimeout").value || 120),
     skills: $("agSkills").checked,
-    ...(box ? {tools: [...box.querySelectorAll("input:checked")].map(x=>x.value)} : {}),
     model: {provider: $("agProv").value, model: $("agModel").value},
   });
   $("agOut").textContent = d.ok
