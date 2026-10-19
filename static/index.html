@@ -386,6 +386,16 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 .plrow span{color:var(--ink-soft)}
 .plrow i{font-style:normal;opacity:.75}
 .plrow .req{color:var(--red);font-weight:700}
+.tag.bad{color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,var(--line))}
+/* 表情包网格：一行能塞几个塞几个，图统一 96px 高，名字一行省略 */
+.stkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:10px;margin-top:6px}
+.stk{border:2px solid var(--line);border-radius:14px;background:var(--surface-2);
+  padding:8px;display:flex;flex-direction:column;gap:6px;align-items:center;min-width:0}
+.stk img{width:100%;height:96px;object-fit:contain;border-radius:10px;background:var(--surface);
+  cursor:zoom-in}
+.stk .nm{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stk .ops{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
+.stk .ops .btn{padding:2px 7px;font-size:11.5px}
 .plrow input,.plrow select{border-radius:10px;border:2px solid var(--line);background:var(--surface-2);
   color:var(--ink);padding:6px 9px;font-size:12.5px;font-family:var(--font-body)}
 .mpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:2px 14px;
@@ -1519,6 +1529,7 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
 </div>
 <div class="cmenu" id="cmenu">
   <button onclick="renameConv();closeConvMenu()">✏️ 重命名</button>
+  <button onclick="exportConv('html');closeConvMenu()">🌐 导出网页（可分享）</button>
   <button onclick="exportConv();closeConvMenu()">⬇️ 导出 Markdown</button>
   <button onclick="togglePin();closeConvMenu()" id="pinItem">📌 置顶</button>
   <hr>
@@ -2926,11 +2937,14 @@ async function renameConv(){
   if (sel) Array.from(sel.options).forEach(o => { o.textContent = sessLabel(o.value); });
   flash("改好了");
 }
-async function exportConv(){
+async function exportConv(fmt){
   // 不能 window.open：这个接口在「要登录」名单里，导航请求带不了 X-Klee-Studio，
   // 只会拿到 403。和备份一样 fetch → blob → a[download]。
+  // fmt=html 是自包含单页（图片 base64 进去），md 是纯文本 —— 给人看用 html，
+  // 想再加工/喂给别的工具用 md。
   const u = `/api/chat/export?session=${encodeURIComponent(chat.session)}` +
-            `&character=${encodeURIComponent(ACTIVE.id)}`;
+            `&character=${encodeURIComponent(ACTIVE.id)}` +
+            (fmt === "html" ? "&fmt=html" : "");
   try{
     const r = await fetch(u, {headers: {"X-Klee-Studio": "1"}});
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -2940,7 +2954,7 @@ async function exportConv(){
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = m ? m[1] : `${ACTIVE.id}-${chat.session}.md`;
+    a.download = m ? m[1] : `${ACTIVE.id}-${chat.session}.${fmt === "html" ? "html" : "md"}`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 8000);
     flash(`导出好了（${(blob.size / 1024).toFixed(0)} KB）`);
@@ -3616,6 +3630,7 @@ async function viewPersona(){
     <button id="ptSoul" class="on" onclick="ptab('soul')">📝 人格</button>
     <button id="ptKb" onclick="ptab('kb')">📚 知识库</button>
     <button id="ptMem" onclick="ptab('mem')">🧠 记忆</button>
+    <button id="ptStk" onclick="ptab('stk')">😀 表情包</button>
   </div>
   <div id="paneSoul">
   <div class="card">
@@ -3663,6 +3678,19 @@ async function viewPersona(){
     <div id="kbRecent" style="margin-top:6px"></div>
   </div>
   </div>
+  <div id="paneStk" style="display:none">
+  <div class="card">
+    <h3>😀 表情包 <span class="kv" style="font-family:var(--font-body)">文件名就是它的意思</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="stkPick()">＋ 上传</button></h3>
+    <div class="kv" style="margin:6px 0 10px;line-height:1.7">
+      一个角色一套，最多 ${40} 张、单张 2MB。上传后<b>文件名</b>就是它的意思（<code>开心.png</code>），
+      回复里写 <code>[表情:开心]</code> 就会发这张；聊天里也能用 <code>.表情 开心</code>。
+    </div>
+    <input type="file" id="stkFile" accept="image/*" multiple hidden onchange="stkUpload(this)">
+    <div id="stkGrid" class="stkgrid"><div class="kv">读取中…</div></div>
+    <div class="kv" id="stkMsg" style="margin-top:8px"></div>
+  </div>
+  </div>
   <div id="paneMem" style="display:none">
   <div class="card">
     <h3>🧠 长期记忆 <span class="kv" style="font-family:var(--font-body)">聊天里点「记住」也进这里</span>
@@ -3687,15 +3715,73 @@ async function viewPersona(){
 let personaTab = "soul";
 function ptab(name){
   personaTab = name;
-  const soul = $("paneSoul"), kb = $("paneKb"), mem = $("paneMem");
-  if (!soul || !kb) return;
-  soul.style.display = name === "soul" ? "" : "none";
-  kb.style.display = name === "kb" ? "" : "none";
-  if (mem) mem.style.display = name === "mem" ? "" : "none";
-  $("ptSoul").classList.toggle("on", name === "soul");
-  $("ptKb").classList.toggle("on", name === "kb");
-  if ($("ptMem")) $("ptMem").classList.toggle("on", name === "mem");
+  const panes = {soul: $("paneSoul"), kb: $("paneKb"), mem: $("paneMem"), stk: $("paneStk")};
+  const btns = {soul: $("ptSoul"), kb: $("ptKb"), mem: $("ptMem"), stk: $("ptStk")};
+  for (const [k, el] of Object.entries(panes)) if (el) el.style.display = k === name ? "" : "none";
+  for (const [k, el] of Object.entries(btns)) if (el) el.classList.toggle("on", k === name);
   if (name === "mem") loadMemories();
+  if (name === "stk") loadStickers();
+}
+
+/* ---------- 表情包 ----------
+   一个角色一套，存在 state/stickers/<角色>/，文件名=语义。
+   上传直接走 data URL（和发图同一条解码路径），服务端按魔数认格式。 */
+let stkItems = [];
+async function loadStickers(){
+  const box = $("stkGrid"); if (!box) return;
+  const d = await api("/api/stickers?character=" + encodeURIComponent(ACTIVE.id));
+  stkItems = (d && d.items) || [];
+  if (!stkItems.length){
+    box.innerHTML = `<div class="empty"><b>😀</b><span>还没有表情</span>
+      <i>点右上「＋ 上传」，文件名写它的意思（开心.png）</i></div>`;
+    return;
+  }
+  box.innerHTML = stkItems.map(it => `
+    <div class="stk" title="${esc(it.name)} · ${Math.round(it.bytes / 1024)}KB">
+      <img src="/api/chat/image?p=${encodeURIComponent(it.ref)}" alt="${esc(it.name)}" loading="lazy">
+      <div class="nm">${esc(it.name)}</div>
+      <div class="ops">
+        <button class="btn tiny" onclick="stkSend('${esc(it.name)}')">发到对话</button>
+        <button class="btn tiny" onclick="stkDel('${esc(it.name)}')">删</button>
+      </div>
+    </div>`).join("");
+}
+function stkPick(){ const el = $("stkFile"); if (el){ el.value = ""; el.click(); } }
+async function stkUpload(inp){
+  const files = Array.from(inp.files || []);
+  inp.value = "";
+  const msg = $("stkMsg");
+  if (!files.length) return;
+  let ok = 0, fail = [];
+  for (const f of files.slice(0, 12)){
+    if (f.size > 2 * 1024 * 1024){ fail.push(f.name + "（超过 2MB）"); continue; }
+    const data = await new Promise(res => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result || ""));
+      r.onerror = () => res("");
+      r.readAsDataURL(f);
+    });
+    if (!data){ fail.push(f.name + "（读不到）"); continue; }
+    const nm = String(f.name || "").replace(/\.[^.]+$/, "");
+    const d = await post("/api/stickers/upload", {character: ACTIVE.id, name: nm, data});
+    if (d && d.ok) ok++; else fail.push(nm + "：" + ((d && d.error) || "失败"));
+  }
+  if (msg) msg.textContent = fail.length
+    ? `✓ ${ok} 张，${fail.length} 张没成：${fail.slice(0, 3).join("；")}`
+    : `✓ 已上传 ${ok} 张`;
+  loadStickers();
+}
+async function stkDel(name){
+  if (!confirm(`删掉「${name}」这张表情？`)) return;
+  const d = await post("/api/stickers/delete", {character: ACTIVE.id, name});
+  if (d && d.ok) loadStickers();
+}
+async function stkSend(name){
+  // 直接发到当前会话：想看效果不用先编一句话等模型回应
+  const d = await post("/api/stickers/send", {character: ACTIVE.id, name,
+                                              session: chat.session || "studio-main"});
+  if (d && d.ok){ flash("发好啦，回对话页看"); }
+  else flash((d && d.error) || "没发出去");
 }
 
 /* ---------- 长期记忆 ---------- */
@@ -3780,12 +3866,63 @@ async function kbSearch(){
 
 /* ================= 插件工坊 ================= */
 let plFiles = [], plSel = null, plCfg = null, plTab = "file", plMeta = {};
+/* ---------- 插件体检 ----------
+   命令名/别名是全局唯一的：撞名时框架只写一行日志、把整条命令丢掉，
+   面板上看不出来（插件显示正常、命令就是不在）。这里把这类「静默失效」
+   翻出来 —— 项目已经因此丢过 .字数 和 .draw 两次。 */
+async function plugAudit(){
+  const box = $("auditBox");
+  if (!box) return;
+  box.innerHTML = `<div class="card"><div class="kv">正在体检…（读插件目录 + 已注册命令）</div></div>`;
+  const d = await api("/api/plugins/audit");
+  if (!d || !d.ok){
+    box.innerHTML = `<div class="card"><div class="kv">✗ ${esc((d && d.error) || "体检失败")}</div></div>`;
+    return;
+  }
+  const issues = d.issues || [];
+  const c = d.counts || {};
+  if (!issues.length){
+    box.innerHTML = `<div class="card" style="border-color:color-mix(in srgb,var(--green) 40%,var(--line))">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <b style="color:var(--green)">✓ 没发现问题</b>
+        <span class="kv">${c.plugins || 0} 个插件 · ${c.commands || 0} 条命令 · ${esc(d.checked_at || "")}</span>
+        <button class="btn tiny" onclick="plugAudit()">再查一次</button></div></div>`;
+    return;
+  }
+  const kindCN = {command_taken:"命令被占", command_missing:"命令没注册上",
+                  not_loaded:"没装载", ghost:"配置开着但没跑", plugin_error:"插件报错",
+                  unknown_character:"角色不存在", tool_plugin_missing:"工具插件没装载",
+                  tool_unregistered:"工具没人注册", ext_missing:"外部插件入口丢了",
+                  schema:"配置项写坏", toolbox:"工具表读不到"};
+  box.innerHTML = `<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <b>🩺 体检：${c.error || 0} 个必须修 · ${c.warn || 0} 个建议看看</b>
+      <button class="btn tiny" onclick="plugAudit()">再查一次</button>
+    </div>
+    <div style="margin-top:8px">
+      ${issues.map(i => `<div class="opsline" style="display:flex;gap:8px;align-items:flex-start;
+          padding:6px 0;border-bottom:1px solid var(--line)">
+        <span class="tag ${i.level === "error" ? "bad" : ""}" style="flex:none"
+          >${i.level === "error" ? "必修" : "建议"}</span>
+        <div style="flex:1;min-width:0">
+          <div><b>${esc(i.plugin || "（全局）")}</b>
+            <span class="kv">· ${esc(kindCN[i.kind] || i.kind)}</span></div>
+          <div class="kv" style="line-height:1.6">${esc(i.message)}</div>
+          ${i.fix ? `<div class="kv" style="opacity:.8">↳ ${esc(i.fix)}</div>` : ""}
+        </div>
+        ${i.plugin && plMeta[i.plugin] ? `<button class="btn tiny" style="flex:none"
+            onclick="openPluginDrawer('${esc(i.plugin)}')">打开</button>` : ""}
+      </div>`).join("")}
+    </div></div>`;
+}
+
 async function viewPlugins(readonly){
   const d = await api("/api/plugins");
   plFiles = d.files || []; plCfg = d.config || {}; plMeta = d.meta || {};
   $("view").innerHTML = `
   <div class="pagehead">
     <h2 class="page">🧩 插件</h2>
+    <button class="btn tiny" onclick="plugAudit()">🩺 体检</button>
     <button class="btn tiny" onclick="pickPluginZip()">📦 安装插件包</button>
   </div>
   <div class="plugbar">
@@ -3800,6 +3937,7 @@ async function viewPlugins(readonly){
     <button class="fbtn" data-pf="off" onclick="plugFilter('off')">已禁用</button>
     <button class="fbtn" data-pf="err" onclick="plugFilter('err')">报错</button>
   </div>
+  <div id="auditBox"></div>
   <div class="pluggrid" id="plugGrid"></div>
   <div class="card" id="marketCard"><h3>🏪 插件市场 <span class="kv" style="font-family:var(--font-body)">按语言统计，数据由 PHP 扫目录得出</span></h3>
     <div id="marketBox" class="kv">读取中…</div>

@@ -1025,6 +1025,15 @@ class BotRuntime(RuntimeFeatures):
                     sys_rules += "\n" + mem
         except Exception as e:                                     # noqa: BLE001
             logger.info("读记忆失败：%s", e)
+        # 表情包清单要**在拼 system 之前**加进 sys_rules —— 加到后面那句
+        # `msgs = [...]` 之后就永远进不了提示（改完看起来没坏，只是没生效）。
+        try:
+            from . import stickers as st_mod
+            pack = st_mod.names_for_hint(self.state_dir, self.active_character)
+            if pack:
+                sys_rules += "\n" + pack
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("读表情包失败：%s", e)
         msgs = [{"role": "system", "content": persona + sys_rules}]
         if kb:
             msgs.append({"role": "system",
@@ -1096,6 +1105,16 @@ class BotRuntime(RuntimeFeatures):
                 await self.send(chat_id, "呜……脑袋卡住了，等等再试好不好～", reply_to=ctx.message_id)
                 return
         reply = await self.mgr.run_reply_hooks(chat_id, ctx.is_group, reply)
+        # 表情标记 → 真的发图。洗在「写历史」之前：历史里只留那句人话，
+        # 不然下次把它当上下文喂回去时，模型会以为自己在念标记。
+        try:
+            from . import stickers as st_mod
+            reply, mark_files = st_mod.apply_marks(reply, self.state_dir, self.active_character)
+        except Exception as e:                                     # noqa: BLE001
+            mark_files = []
+            logger.info("表情替换失败（按原样发）：%s", e)
+        for fp in (mark_files or [])[:3]:
+            await self.send_image_file(chat_id, str(fp))
         self._log_msg(chat_id, "assistant", reply)
         async with self._hist_lock:
             hist = self.hist.setdefault(self._hist_key(chat_id), [])

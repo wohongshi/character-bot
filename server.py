@@ -24,6 +24,7 @@ from collections import OrderedDict
 import io
 import hashlib
 import hmac
+import html as _html
 import json
 import logging
 import mimetypes
@@ -995,6 +996,14 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
     memories = _memories_text(cid, text, scope=("web:" + session) if session else "")
     if memories:
         sys_text += "\n" + memories
+    # 表情包也跟技能目录无关：插件框架没起来也得能发表情
+    try:
+        from bot import stickers as st
+        pack_hint = st.names_for_hint(_state_dir(), cid)
+        if pack_hint:
+            sys_text += "\n" + pack_hint
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("读表情包失败：%s", e)
     if rt is None or getattr(rt, "skills", None) is None:
         return sys_text
     if (rt.config or {}).get("agent_skills", True) is False:
@@ -1312,6 +1321,9 @@ class _WebAdapter:
         self.features_dir = ""
         self.feature_prefix = str(rt.config.get("feature_prefix") or ".")
         self.images: list[dict] = []          # 插件发的图，交给 worker 落盘
+        # 插件会读这两项（表情包按角色存盘）：以前面板侧没有，插件只能猜默认角色。
+        self.active_character = str(cid or "klee").strip().lower()
+        self.state_dir = _state_dir()
         self.texts: list[str] = []            # 插件直接 adapter.send 的文字
         self.sink = sink if sink is not None else self.texts   # 没有外部表就写自己的
 
@@ -1480,6 +1492,31 @@ def _plugin_silent(web_reply, job: dict) -> bool:
     return not str(web_reply or "").strip() and not (job.get("images") or [])
 
 
+def _apply_stickers(text: str, job: dict, cid: str) -> str:
+    """把回复里的 `[表情:名字]` 变成真的表情图。
+
+    图走 `job["images"]`（和技能出图同一条路），所以面板会落成独立的
+    图片气泡、QQ 走适配器 send_image —— 两边都不用另写一套。
+    """
+    try:
+        from bot import stickers as st
+        clean, files = st.apply_marks(text, _state_dir(), cid)
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("表情替换失败（按原样发）：%s", e)
+        return text
+    if not files:
+        return text
+    job["images"] = list(job.get("images") or [])
+    seen = {str(i.get("ref") or "") for i in job["images"]}
+    for fp in files:
+        ref = _img_ref(fp)
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        job["images"].append({"ref": ref, "caption": ""})
+    return clean
+
+
 def _append_images(job: dict, cid: str) -> None:
     """把这一轮插件/技能生成的图片写成独立的聊天行（前端按 kind=image 渲染）。"""
     for img in (job.get("images") or [])[:6]:
@@ -1580,6 +1617,167 @@ def _scrub_secrets(obj):
                                  or ("?" in obj and "=" in obj)):
         return _scrub_url(obj)
     return obj
+
+
+def _export_rows(session: str, cid: str) -> list:
+    return [e for e in _read_jsonl_all(CHAT_JSONL)
+            if e.get("session") == session
+            and str(e.get("character") or "klee") == cid]
+
+
+def _inline_image(ref: str) -> str:
+    """把一张聊天图片变成 data URI；太大/读不到就返回空串。"""
+    fp = _img_file(str(ref or ""))
+    if fp is None:
+        return ""
+    try:
+        blob = fp.read_bytes()
+    except OSError:
+        return ""
+    if not blob or len(blob) > EXPORT_IMG_MAX:
+        return ""
+    mime = mimetypes.guess_type(str(fp))[0] or "image/png"
+    return f"data:{mime};base64," + base64.b64encode(blob).decode("ascii")
+
+
+#: 单张图内联上限。整页还有总预算（见 `_export_html`）——手机打开一个
+#: 40MB 的 HTML 会直接白屏，宁可留个占位也不要把文件撑爆。
+EXPORT_IMG_MAX = 1_500_000
+EXPORT_IMG_TOTAL = 8_000_000
+
+
+def _export_html(session: str, cid: str) -> bytes:
+    """导出一份**自包含**的网页：双击就能看，不发任何请求。
+
+    为什么不是 md：md 在手机上看是一堆星号；发给人看的东西应该是
+    「一个文件、打开就是聊天记录」，图片也跟着进去（base64），
+    断网/转发都不掉图。没有 JS —— 静态页最不容易坏，还能直接打印成 PDF。
+    """
+    info = _char_store().get(cid) or {}
+    cname = str(info.get("name") or cid)
+    emoji = str(info.get("emoji") or "")
+    accent = str(info.get("color") or "#e4573d")
+    rows = _export_rows(session, cid)
+    title = str((_session_labels() or {}).get(session) or session)
+
+    budget = EXPORT_IMG_TOTAL
+    used_imgs = 0
+    skipped = 0
+    body = []
+    last_day = ""
+    for e in rows:
+        ts = float(e.get("ts") or 0)
+        lt = time.localtime(ts) if ts else None
+        day = time.strftime("%Y-%m-%d", lt) if lt else ""
+        hhmm = time.strftime("%H:%M", lt) if lt else ""
+        if day and day != last_day:
+            body.append(f'<div class="day"><span>{_html.escape(day)}</span></div>')
+            last_day = day
+        mine = e.get("role") == "user"
+        who = "我" if mine else cname
+        text = str(e.get("text") or "").strip()
+        imgs = []
+        if e.get("kind") == "image" and e.get("img"):
+            imgs = [str(e["img"])]
+        else:
+            imgs = [str(r) for r in (e.get("images") or []) if str(r).strip()]
+        if not text and not imgs and not e.get("caption"):
+            continue
+        pic_html = []
+        for ref in imgs:
+            if budget <= 0:
+                skipped += 1
+                continue
+            data = _inline_image(ref)
+            if not data:
+                skipped += 1
+                continue
+            budget -= len(data)
+            used_imgs += 1
+            cap = str(e.get("caption") or "").strip()
+            pic_html.append(
+                f'<figure><img src="{data}" alt="{_html.escape(cap or "图片")}" loading="lazy">'
+                + (f"<figcaption>{_html.escape(cap)}</figcaption>" if cap else "")
+                + "</figure>")
+        cap = "" if imgs else str(e.get("caption") or "").strip()
+        cls = "m me" if mine else "m her"
+        parts = [f'<div class="{cls}" data-ts="{int(ts)}">',
+                 f'<div class="who">{_html.escape(who)}<time>{hhmm}</time></div>',
+                 '<div class="bub">']
+        if text:
+            # 保留换行：聊天里的「一行一句」是这个产品的基本语感
+            parts.append("<p>" + _html.escape(text).replace("\n", "<br>") + "</p>")
+        if cap:
+            parts.append("<p>" + _html.escape(cap) + "</p>")
+        if pic_html:
+            parts.append('<div class="pics">' + "".join(pic_html) + "</div>")
+        if e.get("error"):
+            parts.append('<p class="err">（这条出错了：' + _html.escape(str(e["error"])[:120]) + "）</p>")
+        parts.append("</div></div>")
+        body.append("".join(parts))
+
+    stats = (f"{len(rows)} 条 · {used_imgs} 张图"
+             + (f" · {skipped} 张未内联（太大或超出总预算）" if skipped else ""))
+    doc = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_html.escape(cname)} · {_html.escape(title)}</title>
+<style>
+  :root{{color-scheme:light dark;--accent:{_html.escape(accent)};
+    --paper:#fdf9f3;--card:#fff;--ink:#2b2119;--dim:#8a7c70;--line:rgba(0,0,0,.09)}}
+  @media (prefers-color-scheme:dark){{:root{{--paper:#191512;--card:#221c18;
+    --ink:#f2e8de;--dim:#a8988a;--line:rgba(255,255,255,.10)}}}}
+  *{{box-sizing:border-box}}
+  body{{margin:0;padding:0 0 60px;background:var(--paper);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",
+    "Microsoft YaHei",sans-serif}}
+  header{{padding:26px 20px 18px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 12%,transparent),transparent)}}
+  header h1{{margin:0;font-size:20px;letter-spacing:.5px}}
+  header .sub{{color:var(--dim);font-size:13px;margin-top:6px}}
+  .wrap{{max-width:760px;margin:0 auto;padding:18px 16px}}
+  .day{{text-align:center;margin:18px 0 10px}}
+  .day span{{font-size:12px;color:var(--dim);background:var(--card);
+    border:1px solid var(--line);border-radius:999px;padding:2px 12px}}
+  .m{{display:flex;flex-direction:column;margin:10px 0;align-items:flex-start}}
+  .m.me{{align-items:flex-end}}
+  .who{{font-size:11.5px;color:var(--dim);margin:0 4px 3px}}
+  .who time{{margin-left:8px;opacity:.8}}
+  .bub{{max-width:86%;background:var(--card);border:1px solid var(--line);
+    border-radius:16px;padding:9px 13px;box-shadow:0 2px 8px rgba(0,0,0,.04)}}
+  .m.her .bub{{border-top-left-radius:6px}}
+  .m.me .bub{{border-top-right-radius:6px;
+    background:color-mix(in srgb,var(--accent) 14%,var(--card))}}
+  .bub p{{margin:0}}
+  .bub p+p{{margin-top:6px}}
+  .bub .err{{color:#c0392b;font-size:13px}}
+  .pics{{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}}
+  .pics figure{{margin:0;max-width:min(260px,100%)}}
+  .pics img{{max-width:100%;border-radius:12px;display:block}}
+  .pics figcaption{{font-size:11.5px;color:var(--dim);margin-top:3px}}
+  footer{{text-align:center;color:var(--dim);font-size:12px;margin-top:34px}}
+  @media print{{
+    :root{{--paper:#fff;--card:#fff;--ink:#000;--dim:#666;--line:#ddd}}
+    header{{background:none}} .m{{break-inside:avoid}} .pics img{{max-width:200px}}
+  }}
+</style>
+</head>
+<body>
+<header>
+  <h1>{_html.escape(emoji + " " + cname).strip()}</h1>
+  <div class="sub">{_html.escape(title)} · 导出于 {time.strftime("%Y-%m-%d %H:%M")}</div>
+  <div class="sub">{_html.escape(stats)}</div>
+</header>
+<div class="wrap">
+{chr(10).join(body) if body else '<div class="sub">这段会话还没有消息。</div>'}
+</div>
+<footer>共 {len(rows)} 条 · 由 Character Bot 导出</footer>
+</body>
+</html>
+"""
+    return doc.encode("utf-8")
 
 
 def _build_backup() -> bytes:
@@ -2044,7 +2242,7 @@ def _run_job_body(job: dict, cid: str) -> None:
                     # 图先落盘，别让整批丢掉。
                     _append_images(job, cid)
                 if reply_agent:
-                    text = reply_agent
+                    text = _apply_stickers(reply_agent, job, cid)
                     tool_calls = len(res.get("tool_calls") or [])
                     _append_jsonl(MSG_JSONL, {"ts": time.time(),
                                               "chat_id": "web:" + job["session"],
@@ -2084,6 +2282,9 @@ def _run_job_body(job: dict, cid: str) -> None:
                                        stream=True, on_delta=on_delta, **mkw)
             except TypeError:
                 text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, **mkw)
+        # 表情标记在这里洗：正文写进历史的是「洗干净的那句」，
+        # 图上单独一条气泡 —— 否则搜索/复制里会带上 [表情:开心] 这种标记。
+        text = _apply_stickers(text, job, cid)
         _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + job["session"],
                                   "role": "assistant", "text": text[:800]})
     except Exception as e:                                 # noqa: BLE001
@@ -2094,6 +2295,8 @@ def _run_job_body(job: dict, cid: str) -> None:
             "role": "assistant", "text": text if ok else "", "error": err,
             "elapsed": round(time.time() - t0, 1),
         })
+        if ok and job.get("images"):
+            _append_images(job, cid)
     except Exception as e:                                 # noqa: BLE001
         logger.error("写 chat.jsonl 失败（worker 继续跑）：%s", e)
 
@@ -2844,6 +3047,161 @@ def _callback_url(ingress: str) -> dict:
     base = str((BOT.config if BOT else {}).get("public_base") or "").strip().rstrip("/")
     return {"path": ing, "url": (base + ing) if base else "", "public_base": base,
             "absolute": bool(base)}
+
+
+def _plugin_audit() -> dict:
+    """插件体检：找出「装了但没生效、而且没人告诉你」的那些情况。
+
+    背景：命令名和别名是**全局唯一**的，`register_command` 撞名时只往日志写一行
+    然后整条丢掉 —— 面板上看不出来（插件显示正常、命令就是不在）。
+    这个项目已经因此丢过 `.字数`（被 textstat 占）和 `.draw`（被画画占）两次。
+
+    体检只读不写：不发请求、不改配置，随时可以点。
+    """
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    mgr = getattr(rt, "mgr", None)
+    issues = []
+
+    def add(level, kind, plugin, message, fix=""):
+        issues.append({"level": level, "kind": kind, "plugin": str(plugin or ""),
+                       "message": str(message), "fix": str(fix)})
+
+    if mgr is None:
+        return {"ok": False, "error": "插件框架还没起来", "issues": [], "counts": {}}
+
+    # 已注册的命令：name → 命令对象（别名也指向同一个对象）
+    reg = {}
+    for cmd in {id(c): c for c in (mgr.commands or {}).values()}.values():
+        reg.setdefault(cmd.plugin, set()).add(cmd.name)
+    by_name = {}
+    for c in {id(c): c for c in (mgr.commands or {}).values()}.values():
+        for k in [c.name.lower(), *[a.lower() for a in c.aliases]]:
+            by_name.setdefault(k, c)
+
+    # ---- 1) 源码里声明了、运行时没注册上 ----
+    # 只认字面量写法（本项目所有插件都是 `api.on_command("名字", …)`）；
+    # 变量拼出来的名字会读不到 —— 那种情况下面「注册数对不上」也不会误报，
+    # 因为两边都拿的是实际注册结果。
+    decl_re = re.compile(r"""\.on_command\(\s*["']([^"']{1,40})["']""")
+    files = sorted(FEATURES_DIR.glob("*.py")) if FEATURES_DIR.exists() else []
+    for fp in files:
+        stem = fp.stem
+        info = (mgr.plugins or {}).get(stem) or {}
+        if not isinstance(info, dict):        # 防御：插件表被人塞了怪东西也别炸体检
+            info = {}
+        if info.get("external"):
+            continue
+        try:
+            src = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        declared = {m.group(1) for m in decl_re.finditer(src)}
+        if not declared:
+            continue
+        if not info:
+            add("error", "not_loaded", stem, "文件在，但插件没装载（可能导入就报错了）",
+                "看面板插件卡上的错误，或先关掉再看看")
+            continue
+        if not info.get("enabled", True):
+            continue                      # 用户主动关的，不算问题
+        have = reg.get(stem, set())
+        for name in sorted(declared - have):
+            owner = by_name.get(name.lower())
+            if owner is not None and owner.plugin != stem:
+                add("error", "command_taken", stem,
+                    f"命令「{name}」没生效：它和 {owner.plugin} 的「{owner.name}」重名，"
+                    "框架把整条命令丢掉了",
+                    f"给 {stem} 的这个命令改个名字（或去掉那个别名）")
+            else:
+                add("warn", "command_missing", stem,
+                    f"命令「{name}」声明了但没注册上", "重启一次面板；还在就是插件内部报错了")
+
+    # ---- 2) 修了插件但没生效（config 里开着，运行时没有）----
+    cfg_enabled = set()
+    try:
+        raw = json.loads((FEATURES_DIR / "config.json").read_text(encoding="utf-8"))
+        if isinstance(raw.get("enabled"), list):
+            cfg_enabled = {str(x) for x in raw["enabled"]}
+    except (OSError, ValueError, TypeError):
+        pass
+    for stem in sorted(cfg_enabled - set(mgr.plugins or {})):
+        if not (FEATURES_DIR / f"{stem}.py").exists():
+            continue
+        add("error", "ghost", stem, "配置里开着，但运行时没有这个插件（重载失败/文件被删）",
+            "点一次「重载插件」；还不行就看日志")
+
+    # ---- 3) 插件自己报的错 ----
+    for stem, info in sorted((mgr.plugins or {}).items()):
+        info = info if isinstance(info, dict) else {}
+        err = str(info.get("error") or "").strip()
+        if err:
+            add("error", "plugin_error", stem, err[:200], "按这条错误修；不需要就关掉它")
+
+    # ---- 4) 角色限定插件写了未知角色 ----
+    try:
+        known = set((_char_store().defs or {}).keys())
+    except Exception:                                            # noqa: BLE001
+        known = set()
+    if known:
+        for stem, info in sorted((mgr.plugins or {}).items()):
+            chars = [str(c) for c in (info.get("characters") or [])]
+            bad = [c for c in chars if c not in known]
+            if bad:
+                add("warn", "unknown_character", stem,
+                    f"限定给不存在的角色：{'、'.join(bad)}", "改成现有角色，或去掉 CHARACTERS")
+
+    # ---- 5) 工具插件清单里写了不存在的插件 ----
+    try:
+        from bot import toolbox as tb
+        tool_names = set(tb.names() or [])
+        for pid in sorted(set(getattr(tb, "TOOL_PLUGINS", ()))):
+            if pid not in (mgr.plugins or {}) and (FEATURES_DIR / f"{pid}.py").exists():
+                add("warn", "tool_plugin_missing", pid,
+                    f"工具插件清单里有 {pid}，但它没装载 —— 相关工具在 agent 里会消失",
+                    "重载插件；还不行就看 {pid}.py 的报错")
+        # 默认工具里有没有「没有任何插件注册」的
+        for tool in sorted(set(getattr(tb, "DEFAULT_TOOLS", ()))):
+            if tool not in tool_names:
+                add("error", "tool_unregistered", "",
+                    f"默认工具 {tool} 没有任何插件注册 —— 模型永远看不到它",
+                    "把它的 TOOL_PLUGINS 补上，或从 DEFAULT_TOOLS 去掉")
+    except Exception as e:                                        # noqa: BLE001
+        add("warn", "toolbox", "", f"读工具表失败：{type(e).__name__}: {e}")
+
+    # ---- 6) 外部插件：入口文件没了 ----
+    for stem, info in sorted((mgr.plugins or {}).items()):
+        if not info.get("external"):
+            continue
+        entry = str(info.get("entry") or "").strip()
+        if not entry:
+            continue
+        # 外部插件住在 bot/features/ext/，entry 是相对那个目录的路径
+        # （`tools/crc.bin` 之类）—— 别拿仓库根去拼，会全部误报成「找不到」。
+        base = FEATURES_DIR / "ext"
+        if not (base / entry).exists():
+            add("warn", "ext_missing", stem, f"外部插件入口 {entry} 找不到", "重新构建或删掉这个插件")
+
+    # ---- 7) schema 写坏 ----
+    kinds = {"str", "int", "float", "bool", "list"}
+    for stem, info in sorted((mgr.plugins or {}).items()):
+        schema = info.get("schema") if isinstance(info.get("schema"), dict) else {}
+        for key, f in schema.items():
+            if not isinstance(f, dict):
+                add("warn", "schema", stem, f"配置项 {key} 不是对象", "写成 {{type, default}}")
+                continue
+            typ = str(f.get("type") or "").strip().lower()
+            if typ and typ not in kinds:
+                add("warn", "schema", stem, f"配置项 {key} 的类型「{typ}」不认识", "用 str/int/float/bool/list")
+
+    order = {"error": 0, "warn": 1, "info": 2}
+    issues.sort(key=lambda x: (order.get(x["level"], 9), x["plugin"]))
+    return {"ok": True,
+            "issues": issues,
+            "counts": {"error": sum(1 for i in issues if i["level"] == "error"),
+                       "warn": sum(1 for i in issues if i["level"] == "warn"),
+                       "plugins": len(mgr.plugins or {}),
+                       "commands": len({id(c): c for c in (mgr.commands or {}).values()})},
+            "checked_at": time.strftime("%H:%M:%S")}
 
 
 def _plugin_schema(name: str) -> dict:
@@ -3844,7 +4202,7 @@ _SENSITIVE_GET = frozenset({
     "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
-    "/api/memories", "/api/scheduled", "/api/usage", "/api/rules",
+    "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
 })
 
 
@@ -4055,11 +4413,18 @@ class Handler(BaseHTTPRequestHandler):
                              str((q.get("session") or ["studio-main"])[0]))[:48] or "studio-main"
             cid = re.sub(r"[^a-z0-9_\-]", "",
                          str((q.get("character") or [""])[0]).strip().lower())[:32] or _active_cid()
+            if str((q.get("fmt") or [""])[0]).lower() in ("html", "htm", "web"):
+                # 自包含单页：双击就能看，图片在文件里，发给人不用担心掉图
+                blob = _export_html(session, cid)
+                info_h = _char_store().get(cid) or {}
+                fname_h = f"{cid}-{session}.html"
+                self._send_bytes(blob, "text/html; charset=utf-8", cache="no-store",
+                                 extra=[("Content-Disposition",
+                                         f'attachment; filename="{fname_h}"')])
+                return
             info = _char_store().get(cid) or {}
             cname = info.get("name") or cid
-            rows = [e for e in _read_jsonl_all(CHAT_JSONL)
-                    if e.get("session") == session
-                    and str(e.get("character") or "klee") == cid]
+            rows = _export_rows(session, cid)
             labels = _session_labels()
             title = labels.get(session) or session
             lines = [f"# {cname} · {title}", "",
@@ -4310,6 +4675,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/usage":
             self._json(_usage_summary(_int_param(q, "days", 7, lo=0, hi=365)))
+            return
+        if u.path == "/api/stickers":
+            from bot import stickers as st
+            cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
+            items = st.list_pack(_state_dir(), cid)
+            self._json({"ok": True, "character": cid, "items": items,
+                        "count": len(items), "max": st.MAX_PER_CHAR,
+                        "max_bytes": st.MAX_BYTES,
+                        "hint": "文件名就是它的意思（开心.png）；回复里写 [表情:开心] 就会发它"})
+            return
+        if u.path == "/api/plugins/audit":
+            self._json(_plugin_audit())
             return
         if u.path == "/api/rules":
             from bot import rules as rules_mod
@@ -4953,6 +5330,41 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "items": rules_mod.load(_state_dir())})
                 else:
                     self._json({"ok": False, "error": f"不认识的 op：{op}"}, 400)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+            return
+
+        if u.path in ("/api/stickers/upload", "/api/stickers/delete", "/api/stickers/send"):
+            from bot import stickers as st
+            cid = re.sub(r"[^a-z0-9_\-]", "",
+                         str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+            try:
+                if u.path == "/api/stickers/upload":
+                    item = st.save(_state_dir(), cid, str(body.get("name") or ""),
+                                   str(body.get("data") or ""))
+                    self._json({"ok": True, "item": item, "character": cid,
+                                "items": st.list_pack(_state_dir(), cid)})
+                    return
+                if u.path == "/api/stickers/delete":
+                    ok = st.delete(_state_dir(), cid, str(body.get("name") or ""))
+                    self._json({"ok": ok, "items": st.list_pack(_state_dir(), cid)},
+                               200 if ok else 404)
+                    return
+                # send：立刻把这张表情发到面板当前会话（写一条 kind=image）。
+                # 用户想「试一下这张图长什么样」，不该逼他先发一句话等模型回应。
+                name = str(body.get("name") or "")
+                item = st.pick(_state_dir(), cid, name)
+                if item is None:
+                    self._json({"ok": False, "error": "没有这张表情"}, 404)
+                    return
+                session = re.sub(r"[^A-Za-z0-9_\-]", "",
+                                 str(body.get("session") or "studio-main"))[:48] or "studio-main"
+                _append_jsonl(CHAT_JSONL, {
+                    "ts": time.time(), "session": session, "character": cid,
+                    "role": "assistant", "kind": "image", "img": item["ref"],
+                    "caption": "", "via": "sticker",
+                })
+                self._json({"ok": True, "item": item, "session": session})
             except ValueError as e:
                 self._json({"ok": False, "error": str(e)}, 400)
             return

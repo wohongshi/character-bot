@@ -157,7 +157,8 @@
     "colortool",
     "subnet",
     "timestamptools",
-    "cronexpr"
+    "cronexpr",
+    "stickers_cmd"
   ],
   "settings": {
     "keyword": {
