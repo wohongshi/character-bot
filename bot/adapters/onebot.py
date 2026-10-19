@@ -210,8 +210,10 @@ async function loadStatus(){
   const n = (d && d.napcat) || {};
   const note = ad.ready_note
     ? ' · <span class="kv">' + esc(ad.ready_note) + '</span>' : '';
+  // 三件事要分开说，别混成一个「在线/离线」：
+  //   Bot 进程在不在跑（d.ok）、协议端通不通（ad.ready）、QQ 登没登录（n.is_login）。
   document.getElementById("st").innerHTML =
-    "运行：<b>" + (d && d.online ? "在线" : "待机") + "</b>" +
+    "Bot：<b>" + (d && d.ok ? "运行中" : "未启动") + "</b>" +
     " · 协议端：<b>" + (ad.ready ? "已连通" : "未连通") + "</b>" + note +
     "<br>登录：<b>" + (n.is_login ? "已登录" : "未登录") + "</b>" +
     (n.uin ? " · " + esc(n.uin) + (n.nick ? " " + esc(n.nick) : "") : "") +
@@ -222,6 +224,14 @@ async function loadStatus(){
 }
 async function qrReload(){
   const box = document.getElementById("qr");
+  // 已经登录了就别再摆一张 26 分钟前的旧码：那张图既没用又让人以为掉线了
+  const b = await ks.api("/api/bot");
+  const n = (b && b.napcat) || {};
+  if (n.is_login){
+    box.innerHTML = '<b class="ok">已登录</b>（' + esc(n.uin || "") +
+      (n.nick ? " " + esc(n.nick) : "") + "）· 不用扫码";
+    return;
+  }
   const d = await ks.api("/api/napcat/qr");
   if (!d || !d.ok){
     box.innerHTML = "<b>现在没有可扫的码。</b><br>" + esc((d && d.error) || "NapCat 可能不在登录流程里") +

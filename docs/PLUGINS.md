@@ -170,9 +170,25 @@ def register(api):
 
 - `add_tool`：登记进 `bot/toolbox.py`；**关掉插件，模型的可调用列表里就没有这个工具**。
   `SYSTEM = True` 的插件登记的工具归「系统」分类。
-- `add_page`：面板抽屉里会出现「🧩 打开插件页」，内容渲染在同源 iframe 里；
-  页面脚本可以用注入的 `ks.api/ks.post/ks.toast/ks.goto/ks.reload`。
+- `add_page`：面板抽屉里会出现「🧩 打开插件页」，内容渲染在同源 iframe 里。
   平台自己的扫码、诊断、控制台都放这里，别堆到运维页。
+
+### 插件页能用的桥（`ks.*`）
+
+| 用法 | 说明 |
+|---|---|
+| `ks.api(path)` / `ks.post(path, body)` | 调面板的同源接口，自动带 `X-Klee-Studio`；非 2xx 也会把 `ok:false` 带回来 |
+| `ks.send(text, {session, character, timeout})` | **发一句并等回复**。`POST /api/chat` 只是入队（返回 `{queued:true}`，没有正文），所以别自己读 `d.messages` —— 这个原语把「入队 → 轮询到那条助手回复」包掉了 |
+| `ks.char` / `ks.session` | 当前角色 / 当前会话。**别依赖服务端默认值**：`/api/chat/delete` 这类接口不带 `character` 就会落到「当前角色」，换角色后会删错人的会话 |
+| `ks.toast(text)` | 面板右上角的一行提示 |
+| `ks.goto(view)` / `ks.reload()` | 跳到某个页面 / 重载插件列表 |
+| `ks.esc(s)` | HTML 转义 |
+
+页面里可以正常用 `confirm()` / `alert()`（iframe 沙箱带 `allow-modals`）、`<a download>`（带 `allow-downloads`）。
+
+写页面时的两个坑：
+- **别在 Python 源码里用 `\n` 拼 JS**：`_PAGE_HTML = """..."""` 会把 `\n` 变成真换行，整段 `<script>` 静默语法错误、页面只剩静态文字。要么用 `r"""`，要么在 JS 里用 `String.fromCharCode(10)`。
+- 主题变量由面板在打开时抄进 iframe，取不到值的会跳过 —— 所以 CSS 里用 `var(--x, fallback)` 写兜底。
 
 ## 7. 状态与并发
 

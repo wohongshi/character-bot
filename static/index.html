@@ -638,6 +638,9 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
 :root{
   --ui-accent:var(--red); --ui-accent2:var(--gold);
   --ui-radius:20px; --ui-scale:1;
+  /* --radius 被 .skelcard / 插件页骨架用到，但一直没定义过：
+     var() 取到空值是「计算时无效」→ 整个 border-radius 失效（直角）。 */
+  --radius:var(--ui-radius);
   /* 分辨率自适应：--fx 是「小字号系数」，由脚本按 DPR 与视口宽度算出来。
      1x 屏（老显示器 / 投影 / 4K 未缩放）字最小，会放大到 1.2 上下；
      2x+ 的视网膜屏保持 1，避免布局被撑破。1 是安全默认值。 */
@@ -2211,24 +2214,60 @@ const FRAME_BASE = `
 
 function pluginFrameDoc(html){
   const cs = getComputedStyle(document.documentElement);
-  const vars = FRAME_VARS.map(v => `${v}:${cs.getPropertyValue(v).trim()}`).join(";");
+  // 空值不能抄进去：`--radius:` 这种「声明了但为空」会让 var() 在计算时失效，
+  // 比不写还糟（border-radius 直接变 0）。没值的就跳过，让 FRAME_BASE 的默认值生效。
+  const vars = FRAME_VARS
+    .map(v => { const val = cs.getPropertyValue(v).trim(); return val ? `${v}:${val}` : ""; })
+    .filter(Boolean).join(";");
   return `<!doctype html><html data-theme="${esc(document.documentElement.dataset.theme || "")}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>:root{${vars}}${FRAME_BASE}</style></head>
+<style>:root{--radius:14px;--paper-2:var(--paper);${vars}}${FRAME_BASE}</style></head>
 <body><script>
   async function ksApi(path, opt){
     const o = Object.assign({headers:{"X-Klee-Studio":"1"}}, opt || {});
     if (o.body && typeof o.body !== "string"){ o.headers["Content-Type"]="application/json"; o.body=JSON.stringify(o.body); }
     const r = await fetch(path, o);
-    try { return await r.json(); } catch(e){ return {ok:false, error:"HTTP "+r.status}; }
+    let body = null;
+    try { body = await r.json(); } catch(e){ return {ok:false, error:"HTTP "+r.status}; }
+    // 403/400 之类要能看出来，别让页面把错误当成功
+    if (!r.ok && body && body.ok === undefined) body.ok = false;
+    return body;
   }
+  const KS_CHAR = ${JSON.stringify(String((typeof ACTIVE !== "undefined" && ACTIVE && ACTIVE.id) || ""))};
+  const KS_SESSION = ${JSON.stringify(String((typeof chat !== "undefined" && chat && chat.session) || "studio-main"))};
   window.ks = {
+    // 当前角色 / 当前会话：插件页不用猜，也不要依赖「服务端默认值」
+    char: KS_CHAR,
+    session: KS_SESSION,
     api: (p) => ksApi(p),
     post: (p, b) => ksApi(p, {method:"POST", body:b}),
     toast: (t) => parent.postMessage({ks:"toast", text:String(t||"")}, "*"),
     reload: () => parent.postMessage({ks:"reload"}, "*"),
     goto: (v) => parent.postMessage({ks:"goto", view:String(v||"chat")}, "*"),
     esc: (s) => String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])),
+    /* 「发一句、等回复」。
+       POST /api/chat 只是**入队**（返回 {queued:true}，没有正文），
+       插件页以前直接读 d.messages 拿到的是 undefined —— 这就是「试发一条」永远不给回复的原因。
+       这里把「入队 → 轮询到那条助手回复」封成一个原语，别让每个插件页各写一遍。 */
+    send: async (text, opts) => {
+      const o = opts || {};
+      const session = String(o.session || ks.session || "web-console");
+      const char = String(o.character || ks.char || "");
+      const qs = "session=" + encodeURIComponent(session) + "&character=" + encodeURIComponent(char);
+      const before = await ksApi("/api/chat?" + qs + "&after=0");
+      const base = Number((before && before.total) || 0);
+      const q = await ksApi("/api/chat", {method:"POST", body:{session, text, character: char}});
+      if (!q || !q.ok) return {ok:false, error:(q && q.error) || "没发出去"};
+      const end = Date.now() + Number(o.timeout || 90000);
+      while (Date.now() < end){
+        await new Promise(r => setTimeout(r, 500));
+        const d = await ksApi("/api/chat?" + qs + "&after=" + base);
+        const rows = (d && d.messages) || [];
+        const reply = rows.filter(m => m.role === "assistant").pop();
+        if (reply) return {ok:true, reply: reply.text, message: reply, rows, session};
+      }
+      return {ok:false, error:"等回复超时（可能还在队列里）"};
+    },
   };
 <\/script>${html || ""}</body></html>`;
 }
@@ -2303,7 +2342,7 @@ async function openPluginPage(name){
       <span class="kv">${esc(d.title || name)} · 插件自带页面</span>
     </div>
     <iframe id="plugFrame" class="plugframe" title="${esc(d.title || name)}"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups" srcdoc=""></iframe>`;
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads" srcdoc=""></iframe>`;
   const f = $("plugFrame");
   if (f) f.srcdoc = pluginFrameDoc(d.html);
 }

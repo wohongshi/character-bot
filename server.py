@@ -3143,6 +3143,39 @@ def _overview_uncached() -> dict:
             "bot": bst}
 
 
+def _bot_status_for_panel() -> dict:
+    """`/api/bot`：`BotService.status()` + 面板要的两样东西。
+
+    两样都是**给插件自带的页面**用的，缺了它们页面就只能瞎猜：
+    - `napcat`：QQ 到底登没登录、uin、登录阶段（20 秒缓存，走 NapCat WebUI 接口）；
+    - 每个适配器的 `ready` / `ready_note`：协议端通没通、为什么不通
+      （走 `_adapter_health` 的 30 秒缓存 —— 飞书/微信那种会真发网络请求换 token）。
+    以前 `onebot11` 自带页面读的就是这两个字段，一直没有 → 页面永远显示
+    「协议端：未连通 / 登录：未登录」，哪怕 QQ 明明在线。
+    """
+    if not BOT:
+        return {"ok": False, "error": _BOT_IMPORT_ERR or "bot 未启动"}
+    st = BOT.status()
+    if not isinstance(st, dict):
+        return {"ok": False, "error": "bot 状态异常"}
+    st = dict(st)
+    rt = getattr(BOT, "runtime", None)
+    ads = getattr(rt, "adapters", None) or {}
+    rows = []
+    for row in (st.get("adapters") or []):
+        row = dict(row) if isinstance(row, dict) else {}
+        pid = str(row.get("platform") or "")
+        ad = ads.get(pid)
+        if ad is not None:
+            h = _adapter_health(ad, 30.0)
+            row["ready"] = bool(h.get("ok") or h.get("ready"))
+            row["ready_note"] = str(h.get("detail") or h.get("error") or "")
+        rows.append(row)
+    st["adapters"] = rows
+    st["napcat"] = _napcat_status_cached()
+    return st
+
+
 def _napcat_status_cached() -> dict:
     now = time.time()
     with _lock:
@@ -3437,7 +3470,7 @@ class Handler(BaseHTTPRequestHandler):
                        else _overview())
             return
         if u.path == "/api/bot":
-            self._json(BOT.status() if BOT else {"ok": False, "error": _BOT_IMPORT_ERR or "bot 未启动"})
+            self._json(_bot_status_for_panel())
             return
 
         if u.path == "/api/models":

@@ -109,7 +109,7 @@ class WebAdapter(BaseAdapter):
         return _PAGE_HTML
 
 
-_PAGE_HTML = """
+_PAGE_HTML = r"""
 <div class="card">
   <div class="row" style="justify-content:space-between">
     <div><b>网页聊天</b> <span class="tag ok">面板自带 · 常开</span></div>
@@ -120,7 +120,7 @@ _PAGE_HTML = """
 </div>
 
 <div class="card">
-  <h4>会话</h4>
+  <h4>会话 <span class="kv" id="who" style="font-weight:400"></span></h4>
   <div id="sess" class="kv">读取中…</div>
 </div>
 
@@ -132,14 +132,17 @@ _PAGE_HTML = """
            onkeydown="if(event.key==='Enter')sendMsg()">
     <button class="btn primary" id="sendBtn" onclick="sendMsg()">发送</button>
   </div>
-  <pre id="out" style="display:none;max-height:220px"></pre>
+  <pre id="out" style="display:none;max-height:220px;white-space:pre-wrap"></pre>
 </div>
 
 <script>
+const NL = String.fromCharCode(10);
 function openChat(){ parent.postMessage({ks:"goto", view:"chat"}, "*"); }
+function qs(p){ return p + "?character=" + encodeURIComponent(ks.char || ""); }
 async function loadSessions(){
   const box = document.getElementById("sess");
-  const d = await ks.api("/api/chat/sessions");
+  document.getElementById("who").textContent = "· " + (ks.char ? "角色 " + ks.char : "");
+  const d = await ks.api(qs("/api/chat/sessions"));
   const list = (d && d.sessions) || [];
   if (!list.length){ box.innerHTML = '<span class="kv">还没有会话</span>'; return; }
   box.innerHTML = list.slice(0, 12).map(s =>
@@ -153,15 +156,16 @@ async function loadSessions(){
 }
 async function peek(s){
   const out = document.getElementById("out");
-  const d = await ks.api("/api/chat?session=" + encodeURIComponent(s));
+  const d = await ks.api(qs("/api/chat") + "&session=" + encodeURIComponent(s) + "&after=0");
   const ms = (d && d.messages) || [];
   const last = ms.slice(-3).map(m => "[" + m.role + "] " + String(m.text || "").slice(0, 200));
   out.style.display = "block";
-  out.textContent = "会话 " + s + "（" + ms.length + " 条）\\n" + (last.join("\\n") || "（空）");
+  out.textContent = "会话 " + s + "（" + ms.length + " 条）" + NL + (last.join(NL) || "（空）");
 }
 async function clearOne(s){
-  if (!confirm("清空会话 " + s + " 的聊天记录？")) return;
-  const d = await ks.post("/api/chat/delete", {session: s});
+  if (!confirm("清空会话 " + s + " 的聊天记录？（只清当前角色的这一段）")) return;
+  // character 必须带上：不带就是「服务端当前角色」，换个角色再点会删错人的会话
+  const d = await ks.post("/api/chat/delete", {session: s, character: ks.char});
   ks.toast(d && d.ok ? "✓ 已清空" : ("✗ " + ((d && d.error) || "失败")));
   loadSessions();
 }
@@ -174,13 +178,11 @@ async function sendMsg(){
   btn.disabled = true; out.style.display = "block"; out.textContent = "发送中…";
   const t0 = Date.now();
   try {
-    const d = await ks.post("/api/chat", {session: "web-console", text: text});
-    const ms = (d && d.messages) || [];
-    const reply = ms.length ? ms[ms.length - 1] : null;
-    out.textContent = (reply ? reply.text : JSON.stringify(d))
-      + "\\n\\n（" + ((Date.now() - t0) / 1000).toFixed(2) + " 秒）";
-    inp.value = "";
-    if (d && d.ok === false) ks.toast("✗ " + (d.error || "发送失败"));
+    // POST /api/chat 只是入队，正文要等 worker 跑完 —— ks.send 会把这段等待包掉
+    const d = await ks.send(text, {session: "web-console"});
+    out.textContent = (d.ok ? d.reply : "✗ " + (d.error || "没有回复")) + NL + NL + "（" + ((Date.now() - t0) / 1000).toFixed(2) + " 秒）";
+    if (d.ok) inp.value = "";
+    else ks.toast("✗ " + (d.error || "发送失败"));
   } catch (e) {
     out.textContent = "✗ " + e;
   } finally { btn.disabled = false; loadSessions(); }
