@@ -66,7 +66,7 @@ def next_due(spec: dict, now: Optional[float] = None) -> float:
     base = datetime.datetime.fromtimestamp(ts)
     kind = str(spec.get("kind") or "daily")
     if kind == "every":
-        minutes = max(MIN_EVERY_MIN, int(spec.get("minutes") or 60))
+        minutes = max(MIN_EVERY_MIN, _int_field(spec, "minutes", 60))
         # 从「下一个整分」起算，别每次调度都因为几秒抖动往后滑
         return (base + datetime.timedelta(minutes=minutes)).replace(
             second=0, microsecond=0).timestamp()
@@ -79,24 +79,32 @@ def next_due(spec: dict, now: Optional[float] = None) -> float:
     return target.timestamp()
 
 
+def _int_field(spec: dict, key: str, default: int = 0) -> int:
+    """脏 json 里 `Infinity` / `"abc"` 都不能让调度循环整体中断。
+
+    `int(float("inf"))` 抛的是 `OverflowError`（既不是 TypeError 也不是 ValueError），
+    以前 `next_due` 会把它抛给调度线程 → 整轮 tick 挂掉，坏任务也不会被停用。
+    """
+    try:
+        return int(spec.get(key) if spec.get(key) not in (None, "") else default)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _wd(spec: dict) -> int:
     """星期几：**0=周一 … 6=周日**（面板/parse_when 的约定）。
 
     7 也按周日算（很多人这么写）；其它越界值一律钳进来 ——
     以前直接把 int() 丢给 `WEEKDAY_CN[wd]`，手改成 7 就是 IndexError。
     """
-    try:
-        wd = int(spec.get("weekday") or 0)
-    except (TypeError, ValueError, OverflowError):
-        # json 里的 Infinity 会解析成 float('inf')，int(inf) 抛 OverflowError
-        wd = 0
+    wd = _int_field(spec, "weekday", 0)
     return 6 if wd == 7 else max(0, min(6, wd))
 
 
 def describe(spec: dict) -> str:
     kind = str(spec.get("kind") or "daily")
     if kind == "every":
-        m = int(spec.get("minutes") or 60)
+        m = _int_field(spec, "minutes", 60)
         if m % 1440 == 0:
             return f"每 {m // 1440} 天"
         if m % 60 == 0:

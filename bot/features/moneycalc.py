@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 NAME = "折扣与账"
@@ -24,6 +25,21 @@ def raw_args(ctx) -> str:
     body = t[1:].strip() if t[:1] in "./／" else t
     parts = body.split(None, 1)
     return parts[1] if len(parts) > 1 else ""
+
+
+@contextmanager
+def _big_number_guard():
+    """把 Decimal 的算术异常翻成人话。
+
+    `InvalidOperation` / `Overflow` / `DivisionByZero` 都是 `ArithmeticError` 的子类
+    （**不是** `ValueError`），漏一个就会穿过处理器的 `except ValueError`，
+    最后被框架的通用 except 吞掉 —— 用户一个字都收不到。
+    这些只可能来自「数字大得离谱」，所以一句提示就够。
+    """
+    try:
+        yield
+    except ArithmeticError:
+        raise ValueError("这个数太大/太极端了，算不出来（换小一点的试试）") from None
 
 
 def money(x) -> Decimal:
@@ -78,7 +94,9 @@ def change(old, new) -> tuple[Decimal, Decimal]:
     if a == 0:
         raise ValueError("原价是 0，算不了百分比")
     diff = money(b - a)
-    pct = (diff / a * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    with _big_number_guard():
+        # 这里的 quantize 也会炸：`.涨跌 0.01 1e25` → 1e29 超出上下文精度
+        pct = (diff / a * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return diff, pct
 
 
@@ -87,7 +105,8 @@ def split(total, people: int) -> list[Decimal]:
     total = money(total)
     if people < 1:
         raise ValueError("人数至少 1")
-    base = (total / people).quantize(CENT, rounding=ROUND_HALF_UP)
+    with _big_number_guard():
+        base = (total / people).quantize(CENT, rounding=ROUND_HALF_UP)
     shares = [base] * people
     drift = money(total - base * people)
     step = CENT if drift >= 0 else -CENT
@@ -105,7 +124,9 @@ def compound(principal, rate_pct, years: int, times: int = 1) -> Decimal:
         r = Decimal(str(rate_pct)) / Decimal(100) / Decimal(times)
     except InvalidOperation:
         raise ValueError(f"「{rate_pct}」不是数字，利率要写成 3 或 3.5（百分数）") from None
-    return money(p * (1 + r) ** (years * times))
+    with _big_number_guard():
+        # `**` 会抛 decimal.Overflow（`.复利 100 1e32 100 365` 就能撞上）
+        return money(p * (1 + r) ** (years * times))
 
 
 def register(api):
