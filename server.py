@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2102,10 +2103,13 @@ def _selfcheck_env(bot=None) -> dict:
         # .env 里。读 prov["key"] 永远是空 → 会把配好的云端模型常报成「没填密钥」。
         key_env = str(prov.get("key_env") or "")
         has_key = bool(os.environ.get(key_env)) if key_env else False
+        # 内网网关不要求 key。判定复用 llm 里那份（含 10./172.16-31./::1 与 https），
+        # 自己写一份前缀匹配必然漏掉一半网段。
+        from bot.llm import _LOCAL_HOST_RE as _local_re
+        host = (urllib.parse.urlsplit(api).hostname or "").lower()
         model = {"provider": act.get("provider"), "model": act.get("model"),
                  "has_key": has_key,
-                 # 本地网关（127.0.0.1 / localhost / 内网）不要求 key
-                 "local": api.startswith(("http://127.", "http://localhost", "http://192.168."))}
+                 "local": bool(host and (_local_re.match(host) or host == "localhost"))}
     except Exception as e:                            # noqa: BLE001
         model = {"error": str(e)[:120]}
     # 适配器
@@ -2163,7 +2167,9 @@ def _selfcheck_env_cached(force: bool = False) -> dict:
             and now - float(_SC_ENV_CACHE["ts"]) < SC_ENV_TTL:
         return _SC_ENV_CACHE["env"]
     env = _selfcheck_env()
-    _SC_ENV_CACHE.update(ts=now, env=env)
+    # 时间戳要在探测**结束**后取：探活本身可能超过 TTL（OneBot 带 20 秒预算），
+    # 用开始时间写进去，缓存一落地就过期，慢探测场景等于没有缓存。
+    _SC_ENV_CACHE.update(ts=time.time(), env=env)
     return env
 
 
@@ -2194,7 +2200,11 @@ def _selfcheck_fix(action: str, env: dict | None = None) -> dict:
         return res
 
     def _drop_orphans():
-        orphan = set(env.get("orphan_sessions") or [])
+        # 现场重算，不复用 env 里的快照：`index_rebuild` 刚跑过时，旧快照里的
+        # 「孤儿」其实已经能被索引查到了（标签先写 sessions.json、索引晚 20 秒才追上），
+        # 按旧快照删就等于把用户刚起的会话名一起删掉。
+        known = _known_chat_sessions()
+        orphan = {k for k in _session_labels() if known and k not in known}
         if not orphan:
             return 0
         meta = _session_meta()
@@ -5776,19 +5786,24 @@ class Handler(BaseHTTPRequestHandler):
                 for it in _selfcheck().get("items", []):
                     if it.get("fix"):
                         out.append(_selfcheck_fix(it["fix"], env))
-                ok = bool(out) and all(r.get("ok") for r in out)
+                # 空列表 = 点下去那一刻已经没东西可修（索引自己追上了、缓存也回落了），
+                # 那是成功，不是失败。
+                ok = all(r.get("ok") for r in out)
                 err = next((r.get("error") for r in out if not r.get("ok")), "")
                 self._json({"ok": ok, "fixed": out, "error": err,
-                            "after": _selfcheck(force_env=True)},
+                            "after": _selfcheck(force_env=True) if ok else None},
                            code=200 if ok else 400)
                 return
             if not action:
                 self._json({"ok": False, "error": "缺 id"}, 400)
                 return
             res = _selfcheck_fix(action)
-            after = _selfcheck(force_env=True)
-            self._json({**res, "after": after} if res.get("ok") else res,
-                       code=200 if res.get("ok") else 400)
+            if not res.get("ok"):
+                # 失败路径不重算 after：force_env=True 会重新探一遍所有适配器
+                # （OneBot 带 20 秒预算），算完还被丢弃，纯粹拖慢错误响应。
+                self._json(res, code=400)
+                return
+            self._json({**res, "after": _selfcheck(force_env=True)})
             return
 
         if u.path == "/api/plugins/uninstall":

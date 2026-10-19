@@ -177,6 +177,18 @@ def main():
     check("7b.2 设了变量 → has_key True", env["model"]["has_key"] is True, str(env["model"]))
     os.environ.pop("KLEE_FAKE_KEY", None)
 
+    class LanModels(FakeModels):
+        def get_provider(self, pid):
+            return {"id": pid, "api": "http://10.0.0.5:8000/v1", "key_env": "KLEE_FAKE_KEY"}
+
+    class LanBot(FakeBot):
+        models = LanModels()
+
+    env = S._selfcheck_env(LanBot())
+    check("7b.3 内网网关（10.x）算本地", env["model"]["local"] is True, str(env["model"]))
+    model_item = by_id(sc.run(env))["model"]
+    check("7b.4 内网网关没 key 也不报警", model_item["level"] == "ok", model_item["detail"])
+
     section("8. 活服务")
     def get(url):
         req = urllib.request.Request(url, headers=HDR)

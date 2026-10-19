@@ -815,7 +815,7 @@ class ModelStore:
                 messages, model=model, provider=provider, timeout=left,
                 temperature=temperature, max_tokens=max_tokens, tools=tools,
                 tool_choice=tool_choice, extra_body=extra_body, stream=False,
-                _fails=_fails)
+                _fails=_fails, _character=_character)
         try:
             data = json.loads(raw)
         except ValueError as e:
