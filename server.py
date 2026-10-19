@@ -822,11 +822,24 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
 # 插件的 `except Exception` 兜底也接不住。
 TASK_DRAIN_SECONDS = 120.0
 
-# 面板 agent 调技能后等后台任务（出图）的秒数。
-# 必须 ≥ 出图插件自己的超时（draw 默认 90 秒，而且 GLM 那条路是先 POST 拿 URL
-# 再下载一次，最坏能到 ~2×timeout），所以直接用 TASK_DRAIN_SECONDS（120），
-# 和 QQ 侧的派发路径保持同一个口径。
-_PANEL_TOOL_DRAIN = TASK_DRAIN_SECONDS
+def _draw_budget() -> float:
+    """出图插件最坏要多久：先 POST 拿 URL，GLM 那条路**再下一张图**。
+
+    `_download()` 有自己的 90 秒超时，所以最坏是 2×`settings.draw.timeout`。
+    """
+    t = 90.0
+    try:
+        raw = json.loads((STUDIO_HOME / "bot" / "features" / "config.json")
+                         .read_text(encoding="utf-8"))
+        t = float(((raw.get("settings") or {}).get("draw") or {}).get("timeout") or 90)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return max(60.0, min(300.0 * 2, t * 2))
+
+
+def _panel_drain() -> float:
+    """面板调技能后等后台任务（出图）的秒数。"""
+    return max(TASK_DRAIN_SECONDS, _draw_budget())
 
 
 def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
@@ -846,6 +859,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
     # 至少能发给用户 —— 以前这条路径一超时图就没影了。
     imgs: list = []
     kw["images_out"] = imgs
+    drain = _panel_drain()
     try:
         return agent_mod.run(
             rt.models, msgs,
@@ -865,14 +879,14 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
                   # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
                   # drain 要和这一轮 agent 的预算对得上：use_skill 的处理上限是 30 秒，
                   # drain 完还有两段各 5 秒的取消等待，最后还得留时间给「不带工具」的收尾。
-                  # 30 + 120 + 12 = 162，加收尾 30 ≈ 192 < 282（总预算见下面的 timeout）。
-                  "loop": None, "loop_thread": None, "drain": _PANEL_TOOL_DRAIN},
+                  # 30 + drain + 12，加收尾 30 —— 总预算见下面的 timeout。
+                  "loop": None, "loop_thread": None, "drain": drain},
             max_steps=int(cfg.get("agent_max_steps") or 3),
             # 预算要装得下：先调模型（≤90）+ 工具的 handler（30）+ drain（120）
             # + 两段取消等待（12）+ 最后那次「不带工具」的收尾（30）。
             # 用户配得更大就按他的来。
             timeout=max(float(cfg.get("agent_timeout") or 120),
-                        90 + 30 + _PANEL_TOOL_DRAIN + 12 + 30),
+                        90 + 30 + drain + 12 + 30),
             max_tokens=int(cfg.get("max_tokens") or 800),
             kb_url=str(cfg.get("kb_url") or ""),
             state_dir=rt.state_dir,
@@ -886,6 +900,25 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
         logger.warning("面板 agent 失败（图 %d 张已保住）：%s", len(imgs), e)
         return {"text": "", "images": list(imgs), "tool_calls": [],
                 "steps": 0, "trace": [], "error": f"{type(e).__name__}: {e}"}
+
+
+def _merge_agent_images(job: dict, res: dict) -> list:
+    """把 agent 收集到的图并进 `job["images"]`（去重），返回合并后的列表。
+
+    **合并**，不覆盖：`_web_plugin_dispatch` 的钩子可能已经放过图了；
+    而 agent 失败时 `res["images"]` 是空，直接赋值会把那些图一起抹掉。
+    """
+    job["images"] = list(job.get("images") or [])
+    seen = {str(i.get("ref") or "") for i in job["images"]}
+    for i in (res.get("images") or []):
+        if not isinstance(i, dict) or not i.get("path"):
+            continue
+        ref = _img_ref(i.get("path"))
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        job["images"].append({"ref": ref, "caption": str(i.get("caption") or "")})
+    return job["images"]
 
 
 # ---------- 插件发出来的图片（卡片 / 画图 / 二维码） ----------
@@ -1560,10 +1593,8 @@ def _chat_worker() -> None:
                 try:
                     res = _web_agent_call(rt, msgs, cid, reasoning, on_delta=on_delta,
                                           session=str(job.get("session") or ""))
-                    # 技能生成的图片（ctx.images_out）在这里统一转成 URL 引用
-                    job["images"] = [{"ref": _img_ref(i.get("path")),
-                                      "caption": str(i.get("caption") or "")}
-                                     for i in (res.get("images") or []) if i.get("path")]
+                    # 技能生成的图片（ctx.images_out）在这里并进 job
+                    _merge_agent_images(job, res)
                     reply_agent = str(res.get("text") or "").strip()
                     if not reply_agent and job.get("images"):
                         # 技能执行成功了、图也生成了，但收尾那句人话没拿到：
@@ -3977,7 +4008,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "user_id": "panel", "user_name": "主人", "role": "owner",
                                     # 等异步插件把活干完：`.画画` 是 create_task 之后
                                     # 立刻返回的，不等的话试跑只有「在画啦」没有图。
-                                    "drain": 60})
+                                    "drain": _panel_drain()})
             except Exception as e:                               # noqa: BLE001
                 logger.exception("试跑命令失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)

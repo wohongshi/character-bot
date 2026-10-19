@@ -185,6 +185,29 @@ def main() -> int:
     check("2c.2 但已经出好的图留在外部 list 里", len(out) == 1 and out[0].get("path"),
           str(out)[:120])
 
+    print("\n[2d] agent 的图要和钩子已经放进去的图合并，不能覆盖")
+    # 造两张真的图，走 _img_ref 的白名单（放到 state/ 下，测完删掉）
+    probe = ROOT / "state" / ("_ocr13_probe_%d.png" % int(time.time()))
+    probe.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    probe2 = probe.with_name(probe.stem + "_2.png")
+    probe2.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    try:
+        job = {"images": [{"ref": S._img_ref(str(probe)), "caption": "钩子放的"}]}
+        merged = S._merge_agent_images(job, {"images": [{"path": str(probe2), "caption": "agent 放的"}]})
+        check("2d.1 两边的图都在", len(merged) == 2, str(merged))
+        # agent 失败时 res 里没有图 —— 钩子那张不能被抹掉
+        job2 = {"images": [{"ref": S._img_ref(str(probe)), "caption": "钩子放的"}]}
+        S._merge_agent_images(job2, {"text": "", "images": [], "error": "boom"})
+        check("2d.2 agent 失败不会抹掉钩子放的图", len(job2["images"]) == 1, str(job2["images"]))
+        # 同一张图重复出现只留一份
+        job3 = {"images": []}
+        S._merge_agent_images(job3, {"images": [{"path": str(probe)}, {"path": str(probe)}]})
+        check("2d.3 同一张图只留一份", len(job3["images"]) == 1, str(job3["images"]))
+    finally:
+        probe.unlink(missing_ok=True)
+        probe2.unlink(missing_ok=True)
+    check("2d.4 收尾：探针图已删", not probe.exists() and not probe2.exists())
+
     print("\n[3] 备份：不含密钥、收记忆")
     memfile = ROOT / "state" / "memories" / "_selftest.jsonl"
     memfile.parent.mkdir(parents=True, exist_ok=True)
