@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from _plugstore import safe_text
+
 NAME = "表情包"
 NAME_EN = "Stickers"
 DESCRIPTION = "把这个角色的表情包发出来：.表情 开心"
@@ -59,9 +61,10 @@ def register(api):
             more = "" if len(items) <= MAX_LIST else f"（还有 {len(items) - MAX_LIST} 张）"
             await ctx.reply("😀 我有这些表情：" + "、".join(names) + more + "\n用 .表情 名字 发一张")
             return
+        shown = safe_text(want, 20)      # 回显给用户：别把他打的出站标记原样发出去
         item = st.pick(root, cid, want)
         if item is None:
-            await ctx.reply(f"没有「{want}」这张诶。发 .表情 看看有哪些？")
+            await ctx.reply(f"没有「{shown}」这张诶。发 .表情 看看有哪些？")
             return
         path = st.pack_dir(root, cid) / item["file"]
         # 走适配器的标准发图口：QQ 是 send_image，面板是写进 job["images"]

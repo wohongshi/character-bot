@@ -102,6 +102,8 @@ def next_text(spec: dict, now: Optional[float] = None) -> str:
     left = next_due(spec, now) - (_t.time() if now is None else now)
     if left <= 0:
         return "马上"
+    if left < 60:
+        return f"{max(1, int(left))} 秒后"
     if left < 3600:
         return f"{int(left // 60)} 分钟后"
     if left < 86400:

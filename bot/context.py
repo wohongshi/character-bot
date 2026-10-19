@@ -92,16 +92,23 @@ def plan(entries: list, budget: int = MAX_CHARS, keep: int = KEEP_RECENT) -> dic
 
 
 def _trim_for_input(msgs: list) -> list:
-    """压缩输入从**最新**的一端往前取，最多 MAX_INPUT_CHARS 字。"""
-    out, used = [], 0
-    for m in reversed(msgs):
+    """压缩输入从**最新**的一端往前取，最多 MAX_INPUT_CHARS 字。
+
+    系统消息必须保住：那条是「之前已经压过的提要」，把它挤掉等于每轮都把
+    更早的历史重新丢一遍（压缩就白做了）。所以先扣系统消息，再按预算取新的。
+    """
+    sys_msgs = [m for m in msgs if m.get("role") == "system"]
+    rest = [m for m in msgs if m.get("role") != "system"]
+    used = sum(len(str(m.get("content") or "")) for m in sys_msgs)
+    out = []
+    for m in reversed(rest):
         t = str(m.get("content") or "")
         if used + len(t) > MAX_INPUT_CHARS and out:
             break
         out.append(m)
         used += len(t)
     out.reverse()
-    return out
+    return sys_msgs + out
 
 
 # 「这不是提要，是它的内心独白」的常见开头。推理模型在 token 不够时会漏出来。
@@ -229,11 +236,15 @@ def build(entries: list, *, state_dir: Path | str, key: str, complete=None,
                 "compressed": 0, "cache": True, "chars": pl["chars"]}
 
     payload = list(delta)
-    if hi >= 0 and rec.get("text"):
+    if rec.get("text"):
+        # 不管 `last` 还在不在这一窗里都要带上旧提要：
+        # hi == -1 只说明「上次覆盖的位置已经滑出窗口」，更早的历史更要在，
+        # 不然新提要会把它们整段抹掉（模型的记忆变成只剩最近几轮）。
         payload = [{"role": "system",
                     "content": "【之前已经压过的提要】\n" + str(rec.get("text"))}] + payload
     try:
-        text = summarize(payload, complete)
+        used = _trim_for_input(payload)
+        text = summarize(used, complete)
     except Exception as e:                                     # noqa: BLE001
         log.info("压缩历史失败（这一轮先截断）：%s", e)
         return {"recent": pl["recent"], "summary": str(rec.get("text") or ""),
@@ -241,8 +252,11 @@ def build(entries: list, *, state_dir: Path | str, key: str, complete=None,
     if not text:
         return {"recent": pl["recent"], "summary": str(rec.get("text") or ""),
                 "compressed": 0, "cache": True, "chars": pl["chars"]}
-    last_id = _ident(older[-1], len(older) - 1)
-    n = int(rec.get("n") or 0) + len(delta) if hi >= 0 else len(older)
+    # 记「实际喂进摘要的最后一条」，不是整个 older 的最后一条：
+    # _trim_for_input 会在超预算时丢掉最老的一段，声称全压过会让下一轮漏压。
+    tail = [m for m in used if m.get("role") != "system"] or used
+    last_id = _ident(tail[-1], len(older) - 1)
+    n = int(rec.get("n") or 0) + len(tail) if hi >= 0 else len(tail)
     store(state_dir, key, {"fp": fingerprint(older), "last": last_id, "text": text,
                            "n": n, "ts": time.time()})
     return {"recent": pl["recent"], "summary": text, "compressed": n,
@@ -268,6 +282,10 @@ def forget(state_dir: Path | str, key: str) -> None:
         if isinstance(d, dict) and key in d:
             d.pop(key, None)
             try:
-                p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+                # 和 store() 一样先写临时文件再 replace：write_text 是先截断后写，
+                # 面板 0.5 秒轮询读到的会是半个 JSON（于是「忘掉」看起来没生效）。
+                tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+                os.replace(tmp, p)
             except OSError:
                 pass

@@ -61,11 +61,8 @@ def register(api):
                 box["dup"] = True
             else:
                 days.add(day)
-                box["new"] = True
             # 只留最近 KEEP_DAYS 天
-            keep = sorted(days)[-KEEP_DAYS:]
-            state["days"] = keep
-            state["total"] = len(keep)
+            state["days"] = sorted(days)[-KEEP_DAYS:]
             return state
 
         state = db_update(FILE, key, mutate, {})

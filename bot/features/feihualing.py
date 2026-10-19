@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import random
-import re
 
 NAME = "飞花令"
 NAME_EN = "Poetry game"

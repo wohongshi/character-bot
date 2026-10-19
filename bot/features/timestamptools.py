@@ -28,8 +28,13 @@ def raw_args(ctx) -> str:
 def from_epoch(n: int) -> list[str]:
     if n > 10 ** 11:                     # 13 位毫秒
         n = n / 1000.0
-    local = datetime.datetime.fromtimestamp(n)
-    utc = datetime.datetime.fromtimestamp(n, datetime.timezone.utc)
+    # 超范围的数字（16 位、或者手滑多打了几位）会让 fromtimestamp 抛
+    # OverflowError/OSError，命令就变成「一个字都不回」。这里自己先兜住。
+    try:
+        local = datetime.datetime.fromtimestamp(n)
+        utc = datetime.datetime.fromtimestamp(n, datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        raise ValueError("这个时间戳超出可表示范围了（秒 9~11 位、毫秒 12~13 位）") from None
     now = time.time()
     diff = n - now
     lines = [f"🕒 {n:.0f}",
@@ -86,7 +91,10 @@ def register(api):
             return
         t = raw.replace(",", "").strip()
         if re.fullmatch(r"-?\d{9,16}", t):
-            await ctx.reply("\n".join(from_epoch(int(t))))
+            try:
+                await ctx.reply("\n".join(from_epoch(int(t))))
+            except ValueError as e:
+                await ctx.reply(str(e))
             return
         try:
             dt = parse_dt(t)

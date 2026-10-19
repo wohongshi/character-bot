@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import datetime
+import time
 
 NAME = "Cron 表达式"
 NAME_EN = "Cron explainer"
@@ -54,11 +55,13 @@ def _field(spec: str, idx: int) -> set[int]:
             a, b = int(a_s), int(b_s)
         else:
             a = b = int(part)
-        if idx == 4:                       # 周：7 也当周日
-            a, b = (0 if a == 7 else a), (0 if b == 7 else b)
-        if a < lo or b > hi or a > b:
-            raise ValueError(f"{NAMES[idx]} 超出范围（{lo}~{hi}）：{part}")
-        out.update(range(a, b + 1, step))
+        # 周字段允许 7（= 周日）。映射必须放在范围校验**之后**、并且对区间逐个映射：
+        # 以前先把 7 改成 0 再校验，`5-7`（周五~周日）会变成 `5-0` 直接报错，
+        # `0-7` 更会被悄悄压成 {0}（只剩周日）。
+        top = 7 if idx == 4 else hi
+        if a < lo or b > top or a > b:
+            raise ValueError(f"{NAMES[idx]} 超出范围（{lo}~{top}）：{part}")
+        out.update((x % 7) if idx == 4 else x for x in range(a, b + 1, step))
     return out
 
 
@@ -81,21 +84,30 @@ def matches(sets, dt: datetime.datetime) -> bool:
     dom_ok = dt.day in dom
     dow_ok = cron_dow in dow
     # 标准语义：日 和 周 都被限定（不是 *）时，任一命中即可
-    if dom != set(RANGES[2][0:1]) | set(range(1, 32)) and dow != set(range(0, 7)):
+    if dom != set(range(1, 32)) and dow != set(range(0, 7)):
         return dom_ok or dow_ok
     return dom_ok and dow_ok
 
 
-def next_runs(expr: str, count: int = 3, start: datetime.datetime | None = None) -> list[datetime.datetime]:
+def next_runs(expr: str, count: int = 3, start: datetime.datetime | None = None,
+              budget_s: float = 0.8) -> tuple[list[datetime.datetime], bool]:
+    """返回 (接下来 count 次触发时间, 是否因超时放弃)。
+
+    逐分钟扫最多 400 天：能触发的一般很快命中，撞不上的组合要空转 ~57 万次。
+    调用方把本函数丢到线程里，这里再用时间预算兜住最坏情况。
+    """
+    t0 = time.monotonic()
     sets = parse(expr)
     cur = (start or datetime.datetime.now()).replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
     out = []
     end = cur + datetime.timedelta(days=400)
     while cur < end and len(out) < count:
+        if time.monotonic() - t0 > budget_s:
+            return out, True
         if matches(sets, cur):
             out.append(cur)
         cur += datetime.timedelta(minutes=1)
-    return out
+    return out, False
 
 
 def _step_of(values: set[int], lo: int, hi: int) -> int:
@@ -151,12 +163,18 @@ def register(api):
             return
         try:
             desc = describe(raw)
-            runs = next_runs(raw, 3)
+            # 逐分钟扫 400 天，撞不上的组合要走完 ~57 万次 matches()。
+            # 丢线程 + 自带时间预算：算不完就如实说「没找到」，不假装「永远不会触发」。
+            runs, gave_up = await asyncio.to_thread(next_runs, raw, 3)
         except (ValueError, TypeError) as e:
             await ctx.reply(f"这个表达式有问题：{e}")
             return
         if not runs:
-            await ctx.reply(f"{desc}\n但未来 400 天里一次都不会触发（日期组合永远撞不上）")
+            if gave_up:
+                await ctx.reply(f"{desc}\n算了一秒多还没找到下一次（这个组合很稀疏），"
+                                "试试放宽日期或月份")
+            else:
+                await ctx.reply(f"{desc}\n但未来 400 天里一次都不会触发（日期组合永远撞不上）")
             return
         rows = "\n".join(f"  {r:%Y-%m-%d %H:%M}（周{DOW_CN[(r.weekday() + 1) % 7]}）"
                          for r in runs)

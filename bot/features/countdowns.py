@@ -47,7 +47,9 @@ def parse_date(s: str, today: datetime.date | None = None) -> datetime.date | No
             try:
                 d = datetime.date(year, mo, da)
             except ValueError:
-                return None
+                # 2-29 在平年是非法日期：换下一年再试，
+                # 以前这里直接 return None（今年不是闰年就永远算不出 2-29）。
+                continue
             if d >= today:
                 return d
         return None
@@ -169,7 +171,9 @@ def register(api):
     api.on_command("倒数列表", listing, cooldown=2, help=".倒数列表 —— 看清单")
     api.on_command("倒数删", drop, cooldown=2, help=".倒数删 <编号> —— 删一条")
 
-    async def tool_days(args: dict, ctx=None) -> str:
+    def tool_days(args: dict, ctx=None) -> str:
+        # 必须是普通 def：agent.run 是同步调用的（写成 async def 会返回协程对象，
+        # 工具等于没跑，模型收到的是 "<coroutine object …>"）。
         d = parse_date(args.get("date") or "")
         if not d:
             return "日期看不懂，写成 2027-06-07"

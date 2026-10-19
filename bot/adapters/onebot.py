@@ -39,8 +39,8 @@ class OneBotAdapter(BaseAdapter):
         "napcat_http": {"type": "str", "label": "协议端地址", "required": True, "default": "http://127.0.0.1:3101",
                         "description": "NapCat 的 HTTP 服务地址（不是 WebUI 端口）"},
         "napcat_token": {"type": "str", "label": "访问 Token", "default": "",
-                         "secret": True,
-                         "description": "协议端和事件上报都要用同一个 token"},
+                         "secret": True, "required": True,
+                         "description": "协议端和事件上报都要用同一个 token（空着会拒绝所有事件）"},
     }
     CAPABILITIES = {
         "text": True, "image": True, "voice": True,

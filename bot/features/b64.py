@@ -66,7 +66,15 @@ def register(api):
         if len(text) > MAX_IN:
             await ctx.reply(f"太长了（{len(text)} 字，上限 {MAX_IN}）～分两段来吧")
             return
-        await ctx.reply("🔐 " + _clip(encode(text)))
+        enc = encode(text)
+        if len(enc) > MAX_OUT:
+            # base64 会涨 4/3：截断后的编码解不回原文，等于给了一段废码。
+            # 宁可说清楚能编多少。
+            room = MAX_OUT * 3 // 4
+            await ctx.reply(f"编出来太长（{len(enc)} 字，上限 {MAX_OUT}）～"
+                            f"最多能编 {room} 字，分两段来吧")
+            return
+        await ctx.reply("🔐 " + enc)
 
     async def dec(ctx):
         text = raw_args(ctx)

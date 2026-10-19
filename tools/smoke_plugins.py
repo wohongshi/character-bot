@@ -86,7 +86,11 @@ def main(argv) -> int:
         try:
             res = cmd.handler(ctx)
             if asyncio.iscoroutine(res):
-                asyncio.run(res)
+                res = asyncio.run(res)
+            # handle_command 支持「直接 return 一段话」的处理器（lore / 一些老插件
+            # 就是 `return "…"`）。只收 ctx.reply 的话，这些命令会被误报成「没有回复」。
+            if isinstance(res, str) and res.strip() and not ad.sent:
+                ad.sent.append(res.strip())
         except Exception as e:                                   # noqa: BLE001
             print(f"✗ .{line} 抛异常：{type(e).__name__}: {e}")
             rc = 1
@@ -95,7 +99,9 @@ def main(argv) -> int:
         print("\n".join(ad.sent) if ad.sent else "（没有回复）")
         print()
     shutil.rmtree(TMP, ignore_errors=True)
-    return rc
+    # 插件装载失败必须算失败：CI 拿退出码判断，以前只打印一行警告就返回 0，
+    # 「160 个插件里有 3 个 import 崩了」会被当成通过 —— 而冒烟最该报红的就是它。
+    return 1 if bad else rc
 
 
 if __name__ == "__main__":

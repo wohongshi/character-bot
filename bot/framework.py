@@ -693,6 +693,15 @@ class FeatureManager:
         if not corrupt:
             self._load_ext(enabled_cfg)
 
+        # 关掉的插件：把 bootstrap 可能已经登记过的工具摘掉。
+        # 为什么需要：`bot.agent` 导入时会 `toolbox.bootstrap()` 把工具插件全注册一遍
+        # （那时还没有 manager），owner=None，`reset(self)` 清不到它。
+        # 只按「本目录里确实存在、且这次没启用」的插件名摘 —— 不能整表清空：
+        # 单测用的是临时插件目录，工具表就靠 bootstrap 那一份。
+        for _name, _info in self.plugins.items():
+            if not _info.get("enabled"):
+                toolbox.unregister_plugin(_name)
+
         self.hooks_in.sort(key=lambda h: h.priority)
         self.hooks_out.sort(key=lambda h: h.priority)
         self.hooks_notice.sort(key=lambda h: h.priority)

@@ -78,7 +78,6 @@ IDS_DYNAMIC |= set(re.findall(r"\bid\s*=\s*`([A-Za-z][\w-]*)", HTML))     # id="
 # 是选择器，不在这里核对（`box.querySelector("label")` 不是 id）。
 ID_REF = re.compile(r"(?:\$\(|getElementById\()\s*[\"'`]([A-Za-z][\w-]*)[\"'`]")
 # seg() 这类模板：`<input id="${id}">` —— id 名由调用处传入，静态核不了
-TPL_ID = re.compile(r"\bid\s*=\s*[\"'`]\$\{")
 referenced = {}
 for m in ID_REF.finditer(HTML):
     referenced.setdefault(m.group(1), []).append(HTML[:m.start()].count("\n") + 1)
@@ -93,15 +92,12 @@ prefixes |= {m.group(1) for m in re.finditer(r'\$\(\s*"([A-Za-z][\w-]*)"\s*\+', 
 # 由辅助函数生成的 id：seg("uiBg", …) → <input id="uiBg">。
 # 这些名字以字符串字面量传给 helper，静态 grep 不到 id= 那一侧。
 HELPER_IDS = set(re.findall(r'\bseg\(\s*"([A-Za-z][\w-]*)"', HTML))
-TPL_IDS = bool(TPL_ID.search(HTML))
 
 missing_ids = []
 for i, lines in sorted(referenced.items()):
     if i in IDS_IN_HTML or i in IDS_DYNAMIC or i in HELPER_IDS:
         continue
-    if any(i.startswith(p + "-") for p in prefixes):
-        continue
-    # 前 3 个字符和某个前缀型 id 同名（`cfg_` + k）也算解释得通
+    # 字符串拼出来的 id（`cfg_` + k、`cmm-` + cid）算解释得通
     if any(i.startswith(p) for p in prefixes):
         continue
     missing_ids.append((i, lines[:3]))

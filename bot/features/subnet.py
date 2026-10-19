@@ -37,16 +37,24 @@ def calc(spec: str) -> list[str]:
     except ValueError as e:
         raise ValueError(f"看不懂这个地址：{e}") from None
     net = iface.network
-    hosts = list(net.hosts()) if net.num_addresses > 2 else []
     lines = [f"🌐 地址：{iface.ip}／{net.prefixlen}（掩码 {net.netmask}）",
              f"网段：{net.network_address}",
              f"广播：{net.broadcast_address}",
              f"反掩码（wildcard）：{net.hostmask}"]
+    # 绝不能 `list(net.hosts())`：IPv6 的 /64、IPv4 的 /8 会真去构造 2^64 / 1600 万个对象，
+    # 事件循环直接卡死或者 OOM。首尾地址可以直接算，数量也是算术。
     if net.num_addresses <= 2:
-        lines.append("可用主机：0（点对点链路，两个地址都用掉了）")
+        # /31（RFC 3021）两个地址都是主机；/32 只有一个地址。
+        if net.num_addresses == 2:
+            h = list(net)
+            lines.append(f"可用主机：2（点对点链路，{h[0]} 与 {h[1]} 都是主机）")
+        else:
+            lines.append(f"可用主机：1（{net.network_address} 自己，/32 单主机）")
     else:
-        lines.append(f"可用范围：{hosts[0]} ~ {hosts[-1]}")
-        lines.append(f"可用主机数：{len(hosts)}（共 {net.num_addresses} 个地址）")
+        first = net.network_address + 1
+        last = net.broadcast_address - 1
+        lines.append(f"可用范围：{first} ~ {last}")
+        lines.append(f"可用主机数：{net.num_addresses - 2}（共 {net.num_addresses} 个地址）")
     try:
         priv = iface.ip.is_private
         lines.append(f"私有地址：{'是' if priv else '否'}" +

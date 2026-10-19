@@ -2059,6 +2059,12 @@ SCHED_MAX = 20
 SCHED_SESSION_PREFIX = "sched-"
 
 
+# 调度线程每 20 秒 `_sched_load → 改 → _sched_save`，面板的增删改走同样一套。
+# 不锁的话：面板刚加的任务会被 tick 那次「旧的整份存回」覆盖掉（用户看到的是
+# 「明明加了却不见了」）。可重入是因为 save 自己也要拿一次。
+_SCHED_LOCK = threading.RLock()
+
+
 def _sched_load() -> list[dict]:
     try:
         d = json.loads(SCHEDULED.read_text(encoding="utf-8"))
@@ -2069,9 +2075,18 @@ def _sched_load() -> list[dict]:
 
 
 def _sched_save(items: list[dict]) -> None:
-    tmp = SCHEDULED.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(SCHEDULED)
+    with _SCHED_LOCK:
+        tmp = SCHEDULED.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(SCHEDULED)
+
+
+def _sched_update(fn) -> None:
+    """在锁里做一次「读 → 改 → 写」。`fn(items)` 原地改，返回值忽略。"""
+    with _SCHED_LOCK:
+        items = _sched_load()
+        fn(items)
+        _sched_save(items)
 
 
 def _sched_view(it: dict) -> dict:
@@ -2141,7 +2156,15 @@ def _sched_tick(now: float | None = None) -> list[str]:
         except (TypeError, ValueError):
             due = 0.0
         if not due:                      # 老任务/手改坏了：补一个下次时间，不炸
-            it["next_at"] = sched.next_due(spec, now)
+            try:
+                it["next_at"] = sched.next_due(spec, now)
+            except (TypeError, ValueError) as e:
+                # when 规则坏了（面板/手改）：停用这一条并记下来，
+                # 别让它每 20 秒抛一次、把后面的任务全卡住。
+                it["next_at"] = 0
+                it["enabled"] = False
+                it["last_error"] = f"时间规则无效：{e}"[:200]
+                logger.warning("定时任务「%s」时间规则无效，已停用：%s", it.get("name"), e)
             changed = True
             continue
         if due > now:
@@ -2156,7 +2179,13 @@ def _sched_tick(now: float | None = None) -> list[str]:
             it["last_error"] = ""
             it["runs"] = int(it.get("runs") or 0) + 1
         it["last_ts"] = now
-        it["next_at"] = sched.next_due(spec, now)     # 不管成没成都往后排，别卡死循环
+        try:
+            it["next_at"] = sched.next_due(spec, now)   # 不管成没成都往后排，别卡死循环
+        except (TypeError, ValueError) as e:
+            it["next_at"] = 0
+            it["enabled"] = False
+            it["last_error"] = f"时间规则无效：{e}"[:200]
+            logger.warning("定时任务「%s」时间规则无效，已停用：%s", it.get("name"), e)
         changed = True
     if changed:
         _sched_save(items)
@@ -4324,7 +4353,7 @@ _SENSITIVE_GET = frozenset({
     "/api/chat/sessions", "/api/chat/export", "/api/backup", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
-    "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
+    "/api/kb/recent", "/api/kb/manual", "/api/search", "/api/plugin/page", "/api/plugins/detail",
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
@@ -4608,7 +4637,6 @@ class Handler(BaseHTTPRequestHandler):
             if str((q.get("fmt") or [""])[0]).lower() in ("html", "htm", "web"):
                 # 自包含单页：双击就能看，图片在文件里，发给人不用担心掉图
                 blob = _export_html(session, cid)
-                info_h = _char_store().get(cid) or {}
                 fname_h = f"{cid}-{session}.html"
                 self._send_bytes(blob, "text/html; charset=utf-8", cache="no-store",
                                  extra=[("Content-Disposition",
@@ -5454,61 +5482,64 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ("/api/scheduled/add", "/api/scheduled/delete",
                       "/api/scheduled/toggle", "/api/scheduled/run"):
             from bot import schedule as sched
-            items = _sched_load()
-            if u.path == "/api/scheduled/add":
-                name = str(body.get("name") or "").strip()[:40]
-                prompt = str(body.get("prompt") or "").strip()[:2000]
-                when_raw = str(body.get("when") or "").strip()
-                spec = sched.parse_when(when_raw)
-                if not spec:
-                    self._json({"ok": False,
-                                "error": f"看不懂这个时间：「{when_raw}」～试试 每天8:00 / 每周一 9:00 / 每2h"},
-                               400)
+            # 读-改-写要整段拿锁：调度线程每 20 秒会整份存回一次，
+            # 中间插进来就会把这里刚加/刚删的覆盖掉。
+            with _SCHED_LOCK:
+                items = _sched_load()
+                if u.path == "/api/scheduled/add":
+                    name = str(body.get("name") or "").strip()[:40]
+                    prompt = str(body.get("prompt") or "").strip()[:2000]
+                    when_raw = str(body.get("when") or "").strip()
+                    spec = sched.parse_when(when_raw)
+                    if not spec:
+                        self._json({"ok": False,
+                                    "error": f"看不懂这个时间：「{when_raw}」～试试 每天8:00 / 每周一 9:00 / 每2h"},
+                                   400)
+                        return
+                    if not prompt:
+                        self._json({"ok": False, "error": "得写清楚要她做什么"}, 400)
+                        return
+                    if len(items) >= SCHED_MAX:
+                        self._json({"ok": False, "error": f"最多 {SCHED_MAX} 条定时任务"}, 400)
+                        return
+                    cid = str(body.get("character") or "").strip().lower() or _active_cid()
+                    nid = max((int(it.get("id") or 0) for it in items), default=0) + 1
+                    item = {"id": nid, "name": name or f"任务 {nid}", "prompt": prompt,
+                            "when": spec, "character": cid,
+                            "target": "main" if str(body.get("target") or "") == "main" else "own",
+                            "enabled": True, "runs": 0, "last_ts": 0,
+                            "next_at": sched.next_due(spec), "last_error": ""}
+                    items.append(item)
+                    _sched_save(items)
+                    self._json({"ok": True, "item": _sched_view(item), "items": [_sched_view(x) for x in items]})
                     return
-                if not prompt:
-                    self._json({"ok": False, "error": "得写清楚要她做什么"}, 400)
+                try:
+                    tid = int(body.get("id"))
+                except (TypeError, ValueError):
+                    self._json({"ok": False, "error": "缺 id"}, 400)
                     return
-                if len(items) >= SCHED_MAX:
-                    self._json({"ok": False, "error": f"最多 {SCHED_MAX} 条定时任务"}, 400)
+                row = next((it for it in items if int(it.get("id") or 0) == tid), None)
+                if row is None:
+                    self._json({"ok": False, "error": "没有这条任务"}, 404)
                     return
-                cid = str(body.get("character") or "").strip().lower() or _active_cid()
-                nid = max((int(it.get("id") or 0) for it in items), default=0) + 1
-                item = {"id": nid, "name": name or f"任务 {nid}", "prompt": prompt,
-                        "when": spec, "character": cid,
-                        "target": "main" if str(body.get("target") or "") == "main" else "own",
-                        "enabled": True, "runs": 0, "last_ts": 0,
-                        "next_at": sched.next_due(spec), "last_error": ""}
-                items.append(item)
-                _sched_save(items)
-                self._json({"ok": True, "item": _sched_view(item), "items": [_sched_view(x) for x in items]})
-                return
-            try:
-                tid = int(body.get("id"))
-            except (TypeError, ValueError):
-                self._json({"ok": False, "error": "缺 id"}, 400)
-                return
-            row = next((it for it in items if int(it.get("id") or 0) == tid), None)
-            if row is None:
-                self._json({"ok": False, "error": "没有这条任务"}, 404)
-                return
-            if u.path == "/api/scheduled/delete":
-                _sched_save([it for it in items if int(it.get("id") or 0) != tid])
-                self._json({"ok": True, "deleted": tid})
-                return
-            if u.path == "/api/scheduled/toggle":
-                row["enabled"] = not bool(row.get("enabled", True))
-                spec = row.get("when") if isinstance(row.get("when"), dict) else {}
-                if row["enabled"] and spec:
-                    row["next_at"] = sched.next_due(spec)      # 重新打开：从现在起算
-                _sched_save(items)
-                self._json({"ok": True, "item": _sched_view(row)})
-                return
-            # run：立即跑一次，但**不动 next_at**（手动跑不该打乱它的节奏）
-            try:
-                session = _sched_run(row, manual=True)
-            except ValueError as e:
-                self._json({"ok": False, "error": str(e)}, 400)
-                return
+                if u.path == "/api/scheduled/delete":
+                    _sched_save([it for it in items if int(it.get("id") or 0) != tid])
+                    self._json({"ok": True, "deleted": tid})
+                    return
+                if u.path == "/api/scheduled/toggle":
+                    row["enabled"] = not bool(row.get("enabled", True))
+                    spec = row.get("when") if isinstance(row.get("when"), dict) else {}
+                    if row["enabled"] and spec:
+                        row["next_at"] = sched.next_due(spec)      # 重新打开：从现在起算
+                    _sched_save(items)
+                    self._json({"ok": True, "item": _sched_view(row)})
+                    return
+                # run：立即跑一次，但**不动 next_at**（手动跑不该打乱它的节奏）
+                try:
+                    session = _sched_run(row, manual=True)
+                except ValueError as e:
+                    self._json({"ok": False, "error": str(e)}, 400)
+                    return
             self._json({"ok": True, "session": session, "queued": True})
             return
 

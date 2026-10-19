@@ -265,6 +265,24 @@ class BotService:
                         resolve_tools(cfg.get("agent_tools"))
                         + ["list_skills", "read_skill", "use_skill"]))
                     self._config_needs_persist = True
+                # 「新增的默认工具」也要补进已有配置：`agent_tools` 是落盘的，
+                # 升级上来的用户永远停在老的那 10 个（convert_unit / days_until /
+                # todo 装了却调不到，看起来像插件没生效）。
+                # 用 `agent_tools_seen` 记「已经介绍过哪些默认工具」：
+                # 补过一次之后用户自己去勾掉，就真的勾掉了，不再回填。
+                try:
+                    from .toolbox import DEFAULT_TOOLS as _DEF
+                except Exception:                                   # noqa: BLE001
+                    _DEF = []
+                seen = disk.get("agent_tools_seen")
+                seen = [str(x) for x in seen] if isinstance(seen, list) else []
+                if _DEF:
+                    fresh = [t for t in _DEF if t not in seen]
+                    if fresh:
+                        cur = resolve_tools(cfg.get("agent_tools"))
+                        cfg["agent_tools"] = list(dict.fromkeys(cur + fresh))
+                        cfg["agent_tools_seen"] = list(dict.fromkeys(seen + list(_DEF)))
+                        self._config_needs_persist = True
         except (TypeError, ValueError) as e:                 # 结构怪但能解析：不覆盖
             logger.warning("bot 配置结构异常（%s），忽略磁盘内容", e)
         return cfg

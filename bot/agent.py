@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import base64
 import html
+import inspect
 import json
 import logging
 import math
@@ -853,6 +855,18 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             else:
                 try:
                     out = spec["handler"](args, ctx)
+                    if inspect.isawaitable(out):
+                        # 插件作者写成 `async def` 时，直接把它跑完 —— 否则返回的是协程对象，
+                        # `_clip()` 会把它变成 "<coroutine object tool_x at 0x…>" 交给模型，
+                        # 工具其实一次都没执行（还会刷 RuntimeWarning）。
+                        # 这里在 worker 线程里（run 由 to_thread 调用），没有运行中的事件循环。
+                        try:
+                            out = asyncio.run(out)
+                        except RuntimeError:
+                            if hasattr(out, "close"):
+                                out.close()
+                            out = (f"错误：工具 {name} 是 async 的，但当前上下文不能等待它；"
+                                   "请把这个工具改成普通的 def")
                 except Exception as e:                           # noqa: BLE001
                     out = f"工具 {name} 出错：{type(e).__name__}: {e}"
             ctx.timeout = old_timeout

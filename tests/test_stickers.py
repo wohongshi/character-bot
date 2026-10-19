@@ -5,7 +5,9 @@
 - 名字带路径要**拒**（不是悄悄改成别的名字），空名/超长要拒；
 - 只认真图片（按魔数，不看后缀），超 2MB 拒；
 - 同名换格式（png → gif）时旧文件必须消失，否则列表里出现两张同名的；
-- `[表情:开心]` 三种写法都能认出来，找不到就只删标记、留一句人话；
+- `[[sticker:开心]]` 两种写法都能认出来，找不到就只删标记、留一句人话；
+  **`[表情:呲牙]` 不能认**：那是人格里教模型的 QQ 表情写法（面板按 FACE 表渲染），
+  当成贴纸吃掉等于把那半句删了；
 - 面板/QQ 两条发送路径都落在同一套「图片气泡」上。
 """
 from __future__ import annotations
@@ -103,20 +105,25 @@ def main():
     check("3.6 空包返回 None", st.pick(tmp, "atri", "开心") is None)
 
     section("4. 回复里的标记")
-    for tpl in ("[表情:{n}]", "[[sticker:{n}]]", "[sticker:{n}]", "[表情：{n}]"):
+    for tpl in ("[[sticker:{n}]]", "[sticker:{n}]", "[[sticker：{n}]]", "[STICKER:{n}]"):
         out, files = st.apply_marks("好啊" + tpl.format(n="开心") + "～", tmp, "klee")
         check(f"4.1 认得 {tpl}", out == "好啊～" and len(files) == 1, f"{out!r} {files}")
-    out, files = st.apply_marks("那就这样吧[表情:生气]", tmp, "klee")
+    out, files = st.apply_marks("那就这样吧[[sticker:生气]]", tmp, "klee")
     check("4.2 找不到就只删标记（不留提示语）", out == "那就这样吧" and files == [], out)
+    out, files = st.apply_marks("[表情:呲牙]", tmp, "klee")
+    check("4.2b QQ 表情标记原样留着", out == "[表情:呲牙]" and files == [], out)
+    out, files = st.apply_marks("[[sticker:空气]]", tmp, "klee")
+    check("4.2c 整条只有一个认不出的标记时不当成空回复", out == "[[sticker:空气]]", out)
     out, files = st.apply_marks("没有标记的一句话", tmp, "klee")
     check("4.3 没标记原样返回", out == "没有标记的一句话" and files == [])
-    check("4.4 has_marks", st.has_marks("[表情:开心]") and not st.has_marks("普通"))
-    out, files = st.apply_marks("[表情:开心][表情:困]", tmp, "klee")
+    check("4.4 has_marks", st.has_marks("[[sticker:开心]]") and not st.has_marks("普通")
+          and not st.has_marks("[表情:呲牙]"))
+    out, files = st.apply_marks("[[sticker:开心]][[sticker:困]]", tmp, "klee")
     check("4.5 一句里两张都发", len(files) == 2 and out == "", f"{out!r} {len(files)}")
 
     section("5. 给模型的提示")
     hint = st.names_for_hint(tmp, "klee")
-    check("5.1 提示里列了名字", "开心" in hint and "[表情:" in hint, hint)
+    check("5.1 提示里列了名字和正确语法", "开心" in hint and "[[sticker:" in hint, hint)
     check("5.2 空包不给提示（免得提示里出现空目录）", st.names_for_hint(tmp, "atri") == "")
 
     section("6. 删除与角色隔离")
@@ -137,7 +144,7 @@ def main():
         # 图被静默丢掉（这条正是「插件图不在白名单」那个老坑）。测试里补进去。
         server.IMG_ROOTS = (tmp,) + tuple(real_roots)
         job = {}
-        clean = server._apply_stickers("嘿嘿[表情:开心]", job, "klee")
+        clean = server._apply_stickers("嘿嘿[[sticker:开心]]", job, "klee")
         check("7.1 洗掉标记", clean == "嘿嘿", clean)
         # 名字对，扩展名跟着实际文件走（第二轮存的是 .gif）
         want = st.pick(tmp, "klee", "开心")["ref"]

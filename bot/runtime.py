@@ -749,10 +749,16 @@ class BotRuntime(RuntimeFeatures):
             if hit["action"] == "ignore":
                 return
             if hit["action"] == "command":
-                ctx.text = self.feature_prefix + str(hit["command"]).lstrip("./／")
+                cname = str(hit["command"]).lstrip("./／")
+                ctx.text = self.feature_prefix + cname
                 if await self.mgr.handle_command(ctx):
                     self.stats["commands"] += 1
-                return
+                    return
+                # 规则里配的命令名不存在（打错字、或者那个插件被关了）。
+                # 以前这里无条件 return —— 消息被静默吞掉，用户以为机器人哑了。
+                # 现在记一条日志，然后把这条消息交回后面的正常流程。
+                logger.warning("关键词规则指向的命令不存在：%r（按普通消息继续处理）", cname)
+                ctx.text = chat_text
             reply = str(hit.get("reply") or "")
             if reply:
                 self._log_msg(chat_id, "assistant", reply)

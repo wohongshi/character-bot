@@ -110,7 +110,9 @@ def main():
         "qqofficial": {"qq_app_id", "qq_app_secret", "qq_bot_secret"},
         "wechat": {"wechat_app_id", "wechat_app_secret", "wechat_token"},
         "feishu": {"feishu_app_id", "feishu_app_secret", "feishu_verification_token"},
-        "onebot11": {"napcat_http"},
+        # token 也是必填：空着 parse_inbound 直接 503，一条事件都进不来
+        # （面板会标「缺 1 项」，而密钥已存过时不会被误报，见 4.5）
+        "onebot11": {"napcat_http", "napcat_token"},
     }
     got = {x["name"]: {k for k, f in (x.get("schema") or {}).items() if f.get("required")}
            for x in ad.system_plugins()}
@@ -123,6 +125,9 @@ def main():
           'value="" placeholder="' in html and "已保存 ${info.len} 位" in html)
     check("4.3 有显示/清除按钮", "peekSecret(" in html and "clearSecret(" in html)
     check("4.4 必填星号", 'class="req"' in html and "必填" in html)
+    # 密钥已存过、这次留空 → 不算缺（否则「留空不改」和「必填」互相打架，永远存不进去）
+    check("4.5 必填校验认已保存的密钥",
+          "__pdSecret" in html and "return !stored[k]" in html)
     check("4.5 字段名用 label 而不是 description",
           "esc(f.label || k)" in html and "const hint = esc(f.description" in html)
     check("4.6 回调地址那一行", "callbackRowHTML" in html and "回调地址（填到平台后台）" in html)

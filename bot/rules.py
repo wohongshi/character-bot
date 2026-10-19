@@ -32,11 +32,20 @@ MATCHES = ("contains", "equals", "prefix", "regex")
 ACTIONS = ("reply", "ignore", "command")
 SCOPES = ("all", "group", "dm")
 
-_LOCK = threading.Lock()
+# 可重入：save() 自己会拿这把锁，外层还得包住整个「读-改-写」。
+# 用普通 Lock 会自锁死（bump → save → 再拿一次）。
+_LOCK = threading.RLock()
 
 
 def _path(state_dir: Path | str) -> Path:
     return Path(state_dir) / "rules.json"
+
+
+def _num(v, cast):
+    try:
+        return cast(v or 0)
+    except (TypeError, ValueError):
+        return cast(0)
 
 
 def normalize(rule: dict, *, rid: str = "") -> dict:
@@ -81,8 +90,10 @@ def normalize(rule: dict, *, rid: str = "") -> dict:
         "scope": scope,
         "chat": str(rule.get("chat") or "").strip()[:64],
         "enabled": bool(rule.get("enabled", True)),
-        "hits": int(rule.get("hits") or 0),
-        "last_ts": float(rule.get("last_ts") or 0),
+        # 手改过的 rules.json 里这两个字段可能是字符串/None：int("abc") 抛 TypeError，
+        # 而 normalize 的调用方只挡了 ValueError —— 会让整个面板列表 500。
+        "hits": _num(rule.get("hits"), int),
+        "last_ts": _num(rule.get("last_ts"), float),
     }
 
 
@@ -127,36 +138,41 @@ def _next_id(items: list) -> str:
 
 
 def add(state_dir: Path | str, rule: dict) -> dict:
-    items = load(state_dir)
-    if len(items) >= MAX_RULES:
-        raise ValueError(f"规则最多 {MAX_RULES} 条")
-    rec = normalize(rule, rid=_next_id(items))
-    items.append(rec)
-    save(state_dir, items)
+    # 整个「读 → 改 → 写」要在同一把锁里：命中计数（bump）也在改同一个文件，
+    # 中间插进一次 save 就会把这里刚存的规则冲掉。
+    with _LOCK:
+        items = load(state_dir)
+        if len(items) >= MAX_RULES:
+            raise ValueError(f"规则最多 {MAX_RULES} 条")
+        rec = normalize(rule, rid=_next_id(items))
+        items.append(rec)
+        save(state_dir, items)
     return rec
 
 
 def update(state_dir: Path | str, rid: str, patch: dict) -> dict:
-    items = load(state_dir)
-    for i, it in enumerate(items):
-        if it["id"] != rid:
-            continue
-        merged = {**it, **(patch or {}), "id": rid}
-        # hits/last_ts 由运行时维护，面板改内容不该把它们清零
-        merged["hits"] = it["hits"]
-        merged["last_ts"] = it["last_ts"]
-        items[i] = normalize(merged, rid=rid)
-        save(state_dir, items)
-        return items[i]
+    with _LOCK:
+        items = load(state_dir)
+        for i, it in enumerate(items):
+            if it["id"] != rid:
+                continue
+            merged = {**it, **(patch or {}), "id": rid}
+            # hits/last_ts 由运行时维护，面板改内容不该把它们清零
+            merged["hits"] = it["hits"]
+            merged["last_ts"] = it["last_ts"]
+            items[i] = normalize(merged, rid=rid)
+            save(state_dir, items)
+            return items[i]
     raise ValueError(f"没有这条规则：{rid}")
 
 
 def delete(state_dir: Path | str, rid: str) -> bool:
-    items = load(state_dir)
-    left = [x for x in items if x["id"] != rid]
-    if len(left) == len(items):
-        return False
-    save(state_dir, left)
+    with _LOCK:
+        items = load(state_dir)
+        left = [x for x in items if x["id"] != rid]
+        if len(left) == len(items):
+            return False
+        save(state_dir, left)
     return True
 
 
@@ -181,16 +197,20 @@ def bump(state_dir: Path | str, rid: str) -> None:
         counts = dict(rec["n"])
         rec["n"] = {}
     try:
-        items = load(state_dir)
-        changed = False
-        for it in items:
-            c = int(counts.get(it["id"]) or 0)
-            if c:
-                it["hits"] = int(it.get("hits") or 0) + c
-                it["last_ts"] = time.time()
-                changed = True
-        if changed:
-            save(state_dir, items)
+        # 读-改-写必须整段上锁：面板的 add/update/delete 走的是同一条 load→save。
+        # 只锁写的那一半，面板在 bump 的 load 和 save 之间存了一条新规则，
+        # 就会被这里的 save 覆盖掉（而且用户看到的是「保存了但没生效」）。
+        with _LOCK:
+            items = load(state_dir)
+            changed = False
+            for it in items:
+                c = int(counts.get(it["id"]) or 0)
+                if c:
+                    it["hits"] = int(it.get("hits") or 0) + c
+                    it["last_ts"] = time.time()
+                    changed = True
+            if changed:
+                save(state_dir, items)
     except Exception as e:                                        # noqa: BLE001
         log.info("规则命中计数失败：%s", e)
 

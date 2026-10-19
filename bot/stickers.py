@@ -17,7 +17,6 @@ import os
 import random
 import re
 import threading
-import time
 from pathlib import Path
 
 MAX_BYTES = 2 * 1024 * 1024        # 表情包不是相册：2MB 已经很奢侈
@@ -28,9 +27,11 @@ EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 _BAD_NAME = re.compile(r"[/\\:*?\"<>|\x00-\x1f]")
 _LOCK = threading.Lock()
 
-# 模型偶尔会把标记写成 [[sticker:开心]]、[表情:开心]、[sticker:开心]。
-# 三种都认 —— 让它用哪个它未必记得住，认不出来就等于「说了要发表情却没发」。
-_MARK = re.compile(r"\[{1,2}\s*(?:表情|sticker)\s*[:：]\s*([^\]\n]{1,24})\s*\]{1,2}", re.I)
+# 只用 `sticker` 这个词，**不能**认 `[表情:名字]`：
+# `[表情:呲牙]` 是人格文件教模型的 QQ 表情写法（index.html 的 FACE 表也是按它渲染的），
+# 把它当贴纸吃掉等于「说了要发表情，结果那半句被删了」。
+# 贴纸自己一套语法：`[[sticker:开心]]` / `[sticker:开心]`。
+_MARK = re.compile(r"\[{1,2}\s*sticker\s*[:：]\s*([^\]\n]{1,24})\s*\]{1,2}", re.I)
 
 
 def root(state_dir: Path | str) -> Path:
@@ -189,11 +190,13 @@ def pick(state_dir: Path | str, cid: str, want: str) -> dict | None:
 
 
 def apply_marks(text: str, state_dir: Path | str, cid: str) -> tuple:
-    """把回复里的 `[表情:开心]` 换成真的表情。
+    """把回复里的 `[[sticker:开心]]` 换成真的表情图。
 
     返回 `(洗干净的正文, [表情文件绝对路径])`。
     找不到对应表情时**只删标记**，不留一句「没有这个表情」——
     那是给人看的话，混在角色的话里会露馅。
+    但如果整条回复只有这么一个标记、又没有对应表情，就原样返回：
+    否则 reply 变成空串，运行时直接不发（用户这边看起来就是「她没理我」）。
     """
     s = str(text or "")
     if not s:
@@ -208,6 +211,8 @@ def apply_marks(text: str, state_dir: Path | str, cid: str) -> tuple:
         return ""
 
     out = _MARK.sub(_sub, s)
+    if not found and not out.strip():
+        return s, []                   # 只剩一个认不出的标记：别把整条回复变空
     if found:
         out = re.sub(r"[ \t]{2,}", " ", out)
         out = re.sub(r"\n{3,}", "\n\n", out).strip()
@@ -224,4 +229,6 @@ def names_for_hint(state_dir: Path | str, cid: str, limit: int = 12) -> str:
     if not items:
         return ""
     nm = [x["name"] for x in items][:limit]
-    return "【表情】可用的表情：" + "、".join(nm) + "；想发的时候在回复里写 [表情:名字]，会变成一张图。"
+    return ("【表情】你可用的表情包：" + "、".join(nm)
+            + "；想发的时候在回复里写 [[sticker:名字]]，会变成一张图。"
+              "（`[表情:呲牙]` 那种是 QQ 表情，不是这个。）")

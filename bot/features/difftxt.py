@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 
 NAME = "文本对比"
@@ -65,9 +66,14 @@ def line_diff(old: str, new: str, limit: int = MAX_LINES) -> list[str]:
     a = old.splitlines()
     b = new.splitlines()
     out: list[str] = []
+    seen_hunk = False
     for ln in difflib.unified_diff(a, b, lineterm="", n=0):
-        if ln.startswith(("---", "+++")):
-            continue
+        if not seen_hunk:
+            # 头部 `--- a` / `+++ b` 只在第一个 @@ 之前；按前缀过滤会把
+            # 内容本身以 `--` / `++` 开头的行（如 "--注释"）也一起丢掉。
+            if not ln.startswith("@@"):
+                continue
+            seen_hunk = True
         if ln.startswith("@@"):
             out.append(ln)
             continue
@@ -103,14 +109,15 @@ def register(api):
         if old == new:
             await ctx.reply("✨ 两段一模一样，一个字都没改。")
             return
-        ratio = similarity(old, new)
+        # SequenceMatcher(autojunk=False) 是纯 CPU：8000 字重复文本能卡住事件循环几百毫秒
+        ratio = await asyncio.to_thread(similarity, old, new)
         head = f"🔍 相似度 {ratio * 100:.0f}%（{len(old)} 字 → {len(new)} 字）"
         single = ("\n" not in old) and ("\n" not in new)
         if single and max(len(old), len(new)) <= 300 and ratio >= INLINE_MIN_RATIO:
-            body = inline_diff(old, new)
+            body = await asyncio.to_thread(inline_diff, old, new)
             await ctx.reply(f"{head}\n{body}\n（[-删掉-] {{+新增+}}）")
             return
-        lines = line_diff(old, new)
+        lines = await asyncio.to_thread(line_diff, old, new)
         if not lines:
             await ctx.reply(head + "\n只差在空白字符上。")
             return

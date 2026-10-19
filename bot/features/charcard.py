@@ -28,6 +28,7 @@ _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 import _cardimg  # noqa: E402
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,14 @@ VERSION = "1.2"
 # 角色限定：只有这些角色启用；空 = 通用插件（可在面板关闭）
 CHARACTERS = ('klee', 'hutao', 'citlali')
 
-BASE = Path(__file__).resolve().parent / "state"
+def _state_root() -> "Path":
+    """状态目录：`KLEE_STATE_DIR` 可覆盖（干跑测试台/冒烟靠它把状态写到临时目录，
+    别让「跑一遍测试」改到真实战绩和抽卡记录）。"""
+    base = os.environ.get("KLEE_STATE_DIR")
+    return Path(base) if base else Path(__file__).resolve().parent / "state"
+
+
+BASE = _state_root()
 DATA_DIR = Path(__file__).resolve().parent / "genshin_data"
 CARDS_DIR = BASE / "char_cards"
 CACHE_TTL_DAYS = 30

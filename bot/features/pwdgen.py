@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import secrets
-import string
 
 NAME = "密码生成"
 NAME_EN = "Password generator"
@@ -97,7 +96,11 @@ def generate(length: int = 16, kind: str = "mix", rng=None) -> str:
 def strength(length: int, kind: str) -> str:
     """粗估一下强度（只按长度和字符集算熵，不装专业）。"""
     import math
-    size = {"digit": 8, "alpha": 52, "readable": 57, "mix": 66, "strong": 92}.get(kind, 66)
+    # 字符集大小必须**按真实的池子算**：以前写死 8/52/57/66/92，
+    # 而池子早把易混字符去掉了（LOWER 25、UPPER 24、DIGIT 8），
+    # 于是「20 位 · 约 130 bit」这种数字是虚高的（会让人以为更安全）。
+    chars = list(_pool(kind)[0]) + list(_pool(kind)[1])
+    size = len(set("".join(chars))) or 1
     bits = length * math.log2(size)
     if bits < 40:
         label = "偏弱"

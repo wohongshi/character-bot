@@ -70,7 +70,13 @@ def sha1_signature(token: str, timestamp: str, nonce: str) -> str:
 
 
 def safe_equal(a: str, b: str) -> bool:
-    return hmac.compare_digest(str(a or ""), str(b or ""))
+    """常量时间比较（token/签名）。
+
+    必须比**字节**而不是 str：`hmac.compare_digest` 对 str 只支持 ASCII，
+    token 里只要有一个中文字符就抛 TypeError —— 在入站路径上就是
+    一个 500（客户端看到一个莫名的服务器错误，而不是 403）。
+    """
+    return hmac.compare_digest(str(a or "").encode("utf-8"), str(b or "").encode("utf-8"))
 
 
 def header_lookup(headers: dict, name: str, default: str = "") -> str:

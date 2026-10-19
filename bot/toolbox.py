@@ -40,6 +40,10 @@ TOOL_PLUGINS: List[str] = ["web_tools", "utility", "notes", "knowledge", "skillb
 TOOLS: Dict[str, dict] = {}
 _LOCK = threading.RLock()
 _BOOTED = False
+# bootstrap 登记的工具挂这个「临时 owner」：真正的 FeatureManager 装载完之后
+# 它们要被清掉。否则用户关掉某个工具插件，模型那边照样能调 ——
+# 「插件关掉 = 工具消失」这条就不成立了（bootstrap 注册时 owner=None，谁都不清它）。
+_BOOT_OWNER = object()
 
 
 class ToolError(ValueError):
@@ -178,7 +182,7 @@ class _MiniAPI:
 
     def add_tool(self, name, *, description="", parameters=None, handler=None, system=False):
         register(self._plugin, name, handler, description=description,
-                 parameters=parameters, system=system)
+                 parameters=parameters, system=system, owner=_BOOT_OWNER)
 
     def __getattr__(self, item):                    # on_command / on_message …
         return lambda *a, **kw: None
@@ -201,30 +205,34 @@ def bootstrap(features_dir: str | Path | None = None, *, force: bool = False) ->
     if added:
         sys.path.append(str(d))
     n = 0
-    for stem in TOOL_PLUGINS:
-        path = d / f"{stem}.py"
-        if not path.exists():
-            log.warning("toolbox: 工具插件缺失 %s", path)
-            continue
-        mod_name = f"klee_toolplugin_{stem}"
-        try:
-            spec = _ilu.spec_from_file_location(mod_name, path)
-            if spec is None or spec.loader is None:
-                raise RuntimeError("建不了 import spec")
-            mod = _ilu.module_from_spec(spec)
-            sys.modules[mod_name] = mod
-            spec.loader.exec_module(mod)
-            reg = getattr(mod, "register", None)
-            if not callable(reg):
-                raise RuntimeError("没有 register(api)")
-            before = len(TOOLS)
-            reg(_MiniAPI(stem))
-            n += len(TOOLS) - before
-        except Exception as e:                                  # noqa: BLE001
-            log.warning("toolbox: 工具插件 %s 加载失败 — %s: %s", stem, type(e).__name__, e)
-    if added:
-        try:
-            sys.path.remove(str(d))
-        except ValueError:
-            pass
+    try:
+        for stem in TOOL_PLUGINS:
+            path = d / f"{stem}.py"
+            if not path.exists():
+                log.warning("toolbox: 工具插件缺失 %s", path)
+                continue
+            mod_name = f"klee_toolplugin_{stem}"
+            try:
+                spec = _ilu.spec_from_file_location(mod_name, path)
+                if spec is None or spec.loader is None:
+                    raise RuntimeError("建不了 import spec")
+                mod = _ilu.module_from_spec(spec)
+                sys.modules[mod_name] = mod
+                spec.loader.exec_module(mod)
+                reg = getattr(mod, "register", None)
+                if not callable(reg):
+                    raise RuntimeError("没有 register(api)")
+                before = len(TOOLS)
+                reg(_MiniAPI(stem))
+                n += len(TOOLS) - before
+            except Exception as e:                              # noqa: BLE001
+                log.warning("toolbox: 工具插件 %s 加载失败 — %s: %s", stem, type(e).__name__, e)
+    finally:
+        # sys.path 的恢复放 finally：插件抛 BaseException（Ctrl-C / SystemExit）时
+        # 也要把这条临时路径摘掉，否则它会留在进程里影响后续导入。
+        if added:
+            try:
+                sys.path.remove(str(d))
+            except ValueError:
+                pass
     return n

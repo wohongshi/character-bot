@@ -26,7 +26,6 @@ log = logging.getLogger("klee.bot.llm")
 # 模型返回里的 `usage` 是最准的（网关给什么就是什么）；网关不给时按字符数估一个，
 # 并打上 `est=True` —— 看板上「估算」和「实测」必须能分开，否则数字没法对账。
 _USAGE_HOOK = None
-_USAGE_LOCK = threading.Lock()
 
 
 def set_usage_hook(fn) -> None:
@@ -644,12 +643,18 @@ class ModelStore:
         act = self.active()
         first = {"provider": provider or act["provider"], "model": model or act["model"]}
         fails: list = []
+        t0 = time.monotonic()
         try:
             res = self._complete_once(
                 messages, model=model, provider=provider, timeout=timeout,
                 temperature=temperature, max_tokens=max_tokens, tools=tools,
                 tool_choice=tool_choice, extra_body=extra_body,
                 stream=stream, on_delta=_delta if on_delta else None)
+            # 「HTTP 200 但正文是空的」也算没拿到答案：docstring 一直是这么写的，
+            # 但以前这条路径直接 return 了 —— 空回复被当成成功，降级链根本没走，
+            # 调用方（chat()）才抛「模型返回空内容」，用户白等一轮。
+            if not str(res.get("text") or "").strip() and not res.get("tool_calls"):
+                raise RuntimeError("模型返回空内容（正文和工具调用都是空的）")
             res["fails"] = fails
             res["fallback"] = False
             return res
@@ -667,8 +672,13 @@ class ModelStore:
                 raise
             last = None
             for fb in chain:
-                # 备用模型给短一点的预算：主模型已经耗掉一截，用户等不起第二遍全量超时
-                left = max(15.0, float(timeout or 0) * 0.6)
+                # 备用模型给短一点的预算：主模型已经耗掉一截，用户等不起第二遍全量超时。
+                # 上限必须是「调用方给的 timeout」减去已经花掉的时间 ——
+                # 以前写死 max(15.0, …)，agent 传 timeout=5 时备用反而拿到 15 秒，
+                # 一步 5 秒的预算会被拖成 5+15×N。
+                base = float(timeout or 0) or 90.0
+                spent = time.monotonic() - t0
+                left = max(3.0, min(base * 0.6, base - spent))
                 try:
                     res = self._complete_once(
                         messages, model=fb["model"], provider=fb["provider"], timeout=left,

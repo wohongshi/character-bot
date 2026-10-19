@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import random
 
 NAME = "数独"
@@ -151,7 +152,9 @@ def register(api):
             return
         if raw.isdigit():
             clues = max(17, min(60, int(raw)))
-        puzzle, _sol = generate(clues)
+        # 生成是 81 格回溯（困难难度要做几十次唯一性校验），同步跑会把整个
+        # 事件循环卡住 —— 期间所有会话的回复都停。
+        puzzle, _sol = await asyncio.to_thread(generate, clues)
         await ctx.reply("🧩 数独（. 是空格）\n" + render(puzzle) +
                         "\n\n想要答案：.数独解 <贴上面这 81 个格子>")
 

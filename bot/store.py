@@ -472,10 +472,13 @@ class MessageIndex:
                     hidden += con.execute(sql, [src, session, character, *chunk]).rowcount
                 if ts_list:
                     con.execute("DELETE FROM msg_fts WHERE rowid NOT IN (SELECT id FROM msg)")
+                con.commit()
+                # 游标要等 commit 成功之后再落盘：先写游标的话，
+                # commit 失败（磁盘满/被锁）会回滚删除，但游标已经前进 ——
+                # 那些消息就永远补不回来了。
                 if size is not None:
                     self._offsets[src] = int(size)
                     self._save_offsets()
-                con.commit()
             finally:
                 con.close()
             return max(0, hidden)

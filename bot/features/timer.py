@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 MAX_PENDING = 10
 MAX_SECONDS = 24 * 3600
 
-_REL = re.compile(r"^(\d{1,5})\s*(s|秒|m|分|分钟|h|小时|d|天)?$", re.I)
 _UNIT = {"s": 1, "秒": 1, "m": 60, "分": 60, "分钟": 60, "h": 3600, "小时": 3600,
          "d": 86400, "天": 86400}
 
@@ -97,6 +96,11 @@ def human(sec: int) -> str:
     return f"{h} 小时" + (f" {m} 分" if m else "")
 
 
+RETRY_AFTER_S = 60.0       # 响铃发送失败后多久重投
+MAX_AGE_S = 1800           # 超过半小时就不再追（别在恢复后刷一堆过时闹钟）
+MAX_RETRIES = int(MAX_AGE_S / RETRY_AFTER_S)
+
+
 def _ok(res) -> bool:
     if res is None:
         return True
@@ -112,8 +116,9 @@ async def fire_due(api) -> int:
     if not due:
         return 0
     d["items"] = [it for it in d.get("items", []) if float(it.get("due", 0)) > now]
-    _save(d)
+    _save(d)                                                  # 先弹出再发，防重复
     fired = 0
+    retry: list = []
     for it in due:
         at = f"[CQ:at,qq={it['user_id']}] " if str(it.get("chat_id", "")).startswith("group:") else ""
         text = it.get("text") or "时间到"
@@ -123,7 +128,25 @@ async def fire_due(api) -> int:
                 raise RuntimeError("发送未成功")
             fired += 1
         except Exception as e:                                   # noqa: BLE001
-            logger.warning("计时器响铃失败：%s: %s", type(e).__name__, e)
+            # 发送失败（掉线/风控）不能把计时器丢掉：这是「先删后发」，
+            # 一秒钟的连接抖动就等于闹钟凭空消失。按提醒那套排 60 秒后重投，
+            # 最多追 RETRY_AFTER_S*MAX_RETRIES（≈30 分钟）。
+            tries = int(it.get("retries") or 0)
+            age = time.time() - float(it.get("due", 0))
+            if tries < MAX_RETRIES and age < MAX_AGE_S:
+                again = dict(it)
+                again["due"] = time.time() + RETRY_AFTER_S
+                again["retries"] = tries + 1
+                retry.append(again)
+                logger.warning("计时器响铃失败（第 %d 次，稍后重投）：%s: %s",
+                               tries + 1, type(e).__name__, e)
+            else:
+                logger.warning("计时器放弃：晚了 %.0f 分钟 / 重投 %d 次 —「%s」",
+                               age / 60.0, tries, text)
+    if retry:
+        fresh = _load()                                       # 重读，别覆盖这期间新加的
+        fresh["items"] = list(fresh.get("items") or []) + retry
+        _save(fresh)
     return fired
 
 

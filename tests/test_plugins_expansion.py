@@ -192,7 +192,9 @@ def main() -> int:
     run(mgr, "待办加 写作业")
     run(mgr, "待办完成 1")
     todo_txt = run(mgr, "待办")
-    check("6.4 待办勾掉后仍可见（带 ✅）", "✅ 买菜" in todo_txt and "☐ 写作业" in todo_txt, todo_txt[:120])
+    # 默认只列没做的（编号仍是原编号，.待办完成 N 才对得上）
+    check("6.4 待办默认不列已完成的", "☐ 写作业" in todo_txt and "✅ 买菜" not in todo_txt, todo_txt[:120])
+    check("6.4b .待办 全部 才看得到 ✅", "✅ 买菜" in run(mgr, "待办 全部"), "")
     check("6.5 未完成计数正确", "1 件没做" in todo_txt, todo_txt[:60])
     run(mgr, "待办完成 1")
     check("6.6 再点一次是取消完成", "1 件没做" not in run(mgr, "待办"), "")
@@ -307,14 +309,17 @@ def main() -> int:
     check("9.9 对比度判级", "AA" in run(mgr, "颜色 #fff #333"))
     sub = run(mgr, "子网 192.168.1.10/24")
     check("9.10 子网算对", "192.168.1.0" in sub and "192.168.1.255" in sub and "254" in sub, sub[:120])
-    check("9.11 /31 特殊处理", "0（点对点" in run(mgr, "子网 10.0.0.0/31"), run(mgr, "子网 10.0.0.0/31")[:80])
+    # /31（RFC 3021）两个地址都是主机；/32 只有一个
+    _r31 = run(mgr, "子网 10.0.0.0/31")
+    check("9.11 /31 两个地址都算主机", "可用主机：2" in _r31, _r31[:80])
+    check("9.11b /32 只有一个地址", "可用主机：1" in run(mgr, "子网 10.0.0.7/32"), "")
     ts = run(mgr, "时间戳 1700000000")
     check("9.12 时间戳带本地和 UTC", "UTC" in ts and "2023-11-1" in ts, ts[:100])
     from bot.features import timestamptools as TS
     check("9.13 日期 → 时间戳可逆", int(TS.parse_dt("2026-10-19 12:00").timestamp()) > 0)
     from bot.features import cronexpr as CR
     check("9.14 cron 每个 5 分钟", CR.describe("*/5 * * * *") == "每 5 分钟一次", CR.describe("*/5 * * * *"))
-    runs = CR.next_runs("0 9 * * 1-5", 3)
+    runs, _gave_up = CR.next_runs("0 9 * * 1-5", 3)
     check("9.15 cron 下一次都在工作日 9 点",
           len(runs) == 3 and all(r.hour == 9 and r.minute == 0 and r.weekday() < 5 for r in runs),
           str([str(r) for r in runs]))

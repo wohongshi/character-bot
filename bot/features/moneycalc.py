@@ -96,7 +96,9 @@ def register(api):
             return
         try:
             pay, save = discount(parts[0], parts[1])
-        except ValueError as e:
+        except (ValueError, InvalidOperation) as e:
+            # Decimal(str(x)) 对非数字抛的是 decimal.InvalidOperation，不是 ValueError；
+            # 漏掉它就只有框架的通用 except 接住 —— 用户什么回复都收不到。
             await ctx.reply(str(e))
             return
         await ctx.reply(f"🛒 原价 ¥{money(parts[0])}\n实付 ¥{pay}\n省下 ¥{save}"
@@ -122,12 +124,18 @@ def register(api):
             return
         try:
             people = int(parts[1])
+        except (TypeError, ValueError):
+            await ctx.reply("人数要写个数字，比如 .分摊 200 3")
+            return
+        # 先校验人数再分摊：split() 会先分配 [每人金额] * people，
+        # `.分摊 200 1000000000` 会先吃掉几百 MB 才轮到「人太多」的判断。
+        if not 1 <= people <= 20:
+            await ctx.reply("人数要 1~20 人（自己按计算器吧～）")
+            return
+        try:
             shares = split(parts[0], people)
         except (ValueError, InvalidOperation) as e:
             await ctx.reply(f"算不了：{e}")
-            return
-        if people > 20:
-            await ctx.reply("人太多了（最多 20 人），自己按计算器吧～")
             return
         lines = [f"🧾 总额 ¥{money(parts[0])} · {people} 人"]
         uniq: dict[str, int] = {}

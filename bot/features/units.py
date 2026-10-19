@@ -75,7 +75,13 @@ def _find_unit(tok: str) -> tuple[str, str, float] | None:
         num_part += raw[i]
         i += 1
     unit = raw[i:].strip()
-    value = float(num_part) if num_part not in ("", "+", "-", ".") else 1.0
+    try:
+        value = float(num_part) if num_part not in ("", "+", "-", ".") else 1.0
+    except ValueError:
+        # "1.2.3km" / "5-3km" 也能通过上面的字符集扫描，但不是合法数字。
+        # 这里返回 None 让上层说「看不懂」，别把 ValueError 抛到 handler 外面
+        # （那样用户一个字都收不到）。
+        return None
     key = unit.lower()
     if key in ALIAS:
         return ("温度", ALIAS[key], value)

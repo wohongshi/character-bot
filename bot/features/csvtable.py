@@ -76,6 +76,8 @@ def md_table(rows: list[list[str]], limit_rows: int = MAX_ROWS,
         cells = []
         for j, w in enumerate(width):
             c = r[j] if j < len(r) else ""
+            # 单元格里的 `|` 会把 Markdown 表格多切一列，换行会把一行拆成两行。
+            c = str(c).replace("\r", " ").replace("\n", " ⏎ ").replace("|", "\\|")
             cells.append(c + " " * max(0, w - _w(c)))
         out.append("| " + " | ".join(cells) + " |")
         if i == 0:

@@ -18,7 +18,14 @@ NAME = "猜拳"
 DESCRIPTION = "和她猜拳：.猜拳 石头 / 剪刀 / 布（还记战绩）"
 VERSION = "1.0"
 
-BASE = Path(__file__).resolve().parent / "state"
+def _state_root() -> "Path":
+    """状态目录：`KLEE_STATE_DIR` 可覆盖（干跑测试台/冒烟靠它把状态写到临时目录，
+    别让「跑一遍测试」改到真实战绩和抽卡记录）。"""
+    base = os.environ.get("KLEE_STATE_DIR")
+    return Path(base) if base else Path(__file__).resolve().parent / "state"
+
+
+BASE = _state_root()
 STATE_FILE = BASE / "rps.json"
 
 CHOICES = ("石头", "剪刀", "布")

@@ -55,8 +55,22 @@ def _path(state_dir: Path | str) -> Path:
     return Path(state_dir) / "mood.json"
 
 
-def _clamp(v: float) -> float:
-    return max(0.0, min(100.0, float(v)))
+def _clamp(v, default: float = 50.0) -> float:
+    """钳到 0~100；脏数据（字符串/None/NaN）回落到调用方给的默认值。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    if f != f:                      # NaN
+        return float(default)
+    return max(0.0, min(100.0, f))
+
+
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _blank(now: float) -> dict:
@@ -83,8 +97,8 @@ def get(state_dir: Path | str, cid: str, now: float | None = None) -> dict:
 
 def decay(row: dict, now: float) -> dict:
     """按经过的时间把三个维度往基线拉。只算，不写盘。"""
-    out = {k: _clamp(row.get(k, BASE[k])) for k in BASE}
-    ts = float(row.get("ts") or 0) or now
+    out = {k: _clamp(row.get(k, BASE[k]), BASE[k]) for k in BASE}
+    ts = _num(row.get("ts")) or now
     dt = max(0.0, float(now) - ts)
     # 不活动超过 3 天就别再按秒算了：直接给基线，省得指数算出一堆零
     if dt > 3 * 86400:
@@ -93,9 +107,13 @@ def decay(row: dict, now: float) -> dict:
         for k, hl in HALF_LIFE.items():
             frac = 0.5 ** (dt / hl)
             out[k] = _clamp(BASE[k] + (out[k] - BASE[k]) * frac)
-    out.update(ts=float(now), n=int(row.get("n") or 0),
-               last_user_ts=float(row.get("last_user_ts") or 0),
-               last_touch=float(row.get("last_touch") or 0))
+    try:
+        n = int(row.get("n") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    out.update(ts=float(now), n=n,
+               last_user_ts=_num(row.get("last_user_ts")),
+               last_touch=_num(row.get("last_touch")))
     return out
 
 
@@ -113,7 +131,10 @@ def analyse(user_text: str, reply_text: str = "", now: float | None = None) -> d
     d["closeness"] += 0.6 * pos
 
     stripped = t.strip(" 　\t\n")
-    if stripped in COLD or (len(stripped) <= 2 and not re.search(r"[\u4e00-\u9fff]{2}", stripped)):
+    # 空正文（只发了一张图、或者纯标点）不该按「冷淡」扣分：
+    # 以前 `len("") <= 2` 成立，发图片也被算成敷衍。
+    if stripped and (stripped in COLD or
+                     (len(stripped) <= 2 and not re.search(r"[\u4e00-\u9fff]{2}", stripped))):
         # 一个字、或者干脆一个「？」——她会在意，但只一点点
         d["mood"] -= 1.0
         d["closeness"] -= 0.15
@@ -155,7 +176,7 @@ def apply_turn(state_dir: Path | str, cid: str, user_text: str,
         row = allrows.get(cid)
         row = decay(row if isinstance(row, dict) else _blank(now), now)
         for k in BASE:
-            row[k] = _clamp(row.get(k, BASE[k]) + delta[k])
+            row[k] = _clamp(row.get(k, BASE[k]) + delta[k], BASE[k])
         row["n"] = int(row.get("n") or 0) + 1
         row["last_user_ts"] = now
         row["last_touch"] = now

@@ -1655,7 +1655,10 @@ function applyChrome(){
   if (h2 && V && T["page." + V]) h2.textContent = t("page." + V);
 }
 
-const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// 注意：`'` 也转。`esc()` 的结果既进文本也进属性，而属性里大量是 onclick="...('名字')" ——
+// 不转单引号的话，一个带 ' 的名字（或英文 "it's"）就能跳出 JS 字符串。
+const esc = s => (s ?? "").toString().replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const FACE = {"呲牙":"😁","微笑":"🙂","大哭":"😭","流泪":"😢","捂脸":"🤦","调皮":"😜","doge":"🐶","比心":"🫰","点赞":"👍",
  "睡":"😴","抓狂":"😫","亲亲":"😘","委屈":"🥺","偷笑":"🤭","酷":"😎","可怜":"🥹","生气":"😠","疑问":"🤔","鼓掌":"👏",
  "ok":"👌","爱心":"❤️","玫瑰":"🌹","吃瓜":"🍉","惊讶":"😮","汗":"😅","奋斗":"💪","大兵":"🫡","抱抱":"🤗","庆祝":"🎉"};
@@ -2416,6 +2419,11 @@ async function loadPluginSchema(name){
   const fields = Object.entries(d.schema || {});
   const ss = d.secret_set || {};
   window.__pdSchema = d.schema || {};
+  // 「这个密钥已经存过」的集合：必填校验要用它。
+  // 不记的话，密钥类必填项永远是空框（服务端不回传明文）→ 每次保存都被
+  // 「还差必填：AppSecret」挡回去，配好的插件连开关都改不了。
+  window.__pdSecret = {};
+  Object.entries(ss).forEach(([k, v]) => { if (v && v.set) window.__pdSecret[k] = true; });
   box.className = "pdform";
   box.innerHTML = fields.map(([k, f]) => {
     const v = d.values ? d.values[k] : f.default;
@@ -2532,9 +2540,14 @@ async function plugSaveSettings(name){
   });
   // 必填项漏了就先说清楚，别让服务端存一半、界面看着像成功
   const schema = window.__pdSchema || {};
+  const stored = window.__pdSecret || {};
   const miss = Object.entries(schema)
-    .filter(([k, f]) => f.required && !clear.includes(k)
-            && !String(values[k] ?? "").trim())
+    .filter(([k, f]) => {
+      if (!f.required) return false;
+      if (clear.includes(k)) return true;                  // 明确点了「清除」→ 算缺
+      if (String(values[k] ?? "").trim()) return false;     // 这次填了
+      return !stored[k];                                   // 已经存过、这次留空 = 不改
+    })
     .map(([, f]) => f.label || "");
   if (miss.length && msg){
     msg.style.color = "var(--red)";
@@ -3171,14 +3184,17 @@ function msgTools(btn){
     </div>
     <div class="mres" hidden></div>`;
   const acts = msg.querySelector(".acts");
+  // 文本挂在**这个面板自己**身上：以前是页面级的 window.__msgToolsText，
+  // 同时开两条消息的处理栏时，后开的会覆盖前一条 —— 点老面板上的「翻译」，
+  // 翻的是第二条消息。
+  box.dataset.text = text;
   msg.insertBefore(box, acts ? acts.nextSibling : null);
-  window.__msgToolsText = text;
 }
 async function runMsgTool(btn, action){
   const box = btn.closest(".mtools");
   const out = box.querySelector("[data-out]");
   const res = box.querySelector(".mres");
-  const body = window.__msgToolsText || "";
+  const body = box.dataset.text || "";
   if (out) out.textContent = "处理中…";
   const d = await post("/api/chat/tool", {action, text: body, character: ACTIVE.id});
   if (out) out.textContent = "";
@@ -3191,7 +3207,7 @@ async function runMsgTool(btn, action){
   res.innerHTML = `<div class="mresTop">
       <span class="kv">${esc((MSG_TOOLS.find(x => x[0] === action) || [])[1] || action)}
         · ${Number(d.ms) || 0}ms</span>
-      <button class="btn tiny" onclick='copyPlain(${esc(JSON.stringify(d.text))},this)'>复制</button>
+      <button class="btn tiny" onclick="copyPlain(${esc(JSON.stringify(d.text))},this)">复制</button>
     </div>
     <div class="mresBody">${esc(d.text || "（没有输出）").replace(/\n/g, "<br>")}</div>`;
 }
@@ -3839,7 +3855,7 @@ async function viewPersona(){
       <button class="btn tiny" style="margin-left:auto" onclick="stkPick()">＋ 上传</button></h3>
     <div class="kv" style="margin:6px 0 10px;line-height:1.7">
       一个角色一套，最多 ${40} 张、单张 2MB。上传后<b>文件名</b>就是它的意思（<code>开心.png</code>），
-      回复里写 <code>[表情:开心]</code> 就会发这张；聊天里也能用 <code>.表情 开心</code>。
+      让她发：回复里写 <code>[[sticker:开心]]</code>（<code>[表情:…]</code> 是 QQ 表情，不走这里）；聊天里也能用 <code>.表情 开心</code>。
     </div>
     <input type="file" id="stkFile" accept="image/*" multiple hidden onchange="stkUpload(this)">
     <div id="stkGrid" class="stkgrid"><div class="kv">读取中…</div></div>
@@ -3896,8 +3912,8 @@ async function loadStickers(){
       <img src="/api/chat/image?p=${encodeURIComponent(it.ref)}" alt="${esc(it.name)}" loading="lazy">
       <div class="nm">${esc(it.name)}</div>
       <div class="ops">
-        <button class="btn tiny" onclick="stkSend('${esc(it.name)}')">发到对话</button>
-        <button class="btn tiny" onclick="stkDel('${esc(it.name)}')">删</button>
+        <button class="btn tiny" onclick="stkSend(${esc(JSON.stringify(it.name))})">发到对话</button>
+        <button class="btn tiny" onclick="stkDel(${esc(JSON.stringify(it.name))})">删</button>
       </div>
     </div>`).join("");
 }

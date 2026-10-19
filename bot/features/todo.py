@@ -36,6 +36,7 @@ def items_of(key: str) -> list[dict]:
 
 
 def render(items: list[dict], show_done: bool = False) -> str:
+    """`show_done=False` 只列没做的（编号仍是原编号，`.待办完成 N` 才对得上）。"""
     if not items:
         return "清单是空的～用 .待办加 买菜 这样加一条"
     rows = []
@@ -43,10 +44,13 @@ def render(items: list[dict], show_done: bool = False) -> str:
     for i, it in enumerate(items, 1):
         if it.get("done"):
             done_n += 1
-            rows.append(f"{i}. ✅ {it.get('text')}")
+            if show_done:
+                rows.append(f"{i}. ✅ {it.get('text')}")
             continue
         rows.append(f"{i}. ☐ {it.get('text')}")
     head = f"📋 待办（{len(items) - done_n} 件没做 / 共 {len(items)}）"
+    if not rows:
+        return head + "\n都做完了，厉害～（.待办 全部 看已完成项）"
     return head + "\n" + "\n".join(rows)
 
 
@@ -140,8 +144,11 @@ def register(api):
     api.on_command("待办删", drop, cooldown=2, help=".待办删 <编号> —— 删一条")
     api.on_command("待办清", clear, cooldown=3, help=".待办清 确认 —— 全部清空")
 
-    async def tool_todo(args: dict, ctx=None) -> str:
-        """给 agent 用：op = list / add / done。"""
+    def tool_todo(args: dict, ctx=None) -> str:
+        """给 agent 用：op = list / add / done。
+
+        必须是普通 def（agent.run 同步调用处理器）。
+        """
         op = str(args.get("op") or "list").lower()
         # 和命令用**同一个**会话键，否则 agent 加的事在 `.待办` 里看不到
         chat = getattr(ctx, "chat", None) or {}
@@ -153,11 +160,20 @@ def register(api):
         if op == "add":
             if not text:
                 return "要加什么？text 不能为空"
+            box: dict = {}
+
             def mutate(items):
                 items = list(items or [])
+                # 满了就**别加**：以前 append 完再 items[:MAX] 会把刚加的这条切掉，
+                # 却照样回「已加入」，agent 和用户都以为写进去了。
+                if len(items) >= MAX_ITEMS:
+                    box["full"] = True
+                    return items
                 items.append({"text": text, "done": False})
-                return items[:MAX_ITEMS]
+                return items
             items = db_update(FILE, key, mutate, [])
+            if box.get("full"):
+                return f"待办已经满了（最多 {MAX_ITEMS} 条），先删几条再加"
             return f"已加入待办（共 {len(items)} 条）：{text}"
         if op == "done":
             try:

@@ -21,6 +21,7 @@ _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 import _cardimg  # noqa: E402
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,14 @@ API_TMPL = "https://wttr.in/{city}?format=j1&lang=zh"
 TIMEOUT = 12
 DEFAULT_CITY = "北京"
 
-BASE = Path(__file__).resolve().parent / "state"
+def _state_root() -> "Path":
+    """状态目录：`KLEE_STATE_DIR` 可覆盖（干跑测试台/冒烟靠它把状态写到临时目录，
+    别让「跑一遍测试」改到真实战绩和抽卡记录）。"""
+    base = os.environ.get("KLEE_STATE_DIR")
+    return Path(base) if base else Path(__file__).resolve().parent / "state"
+
+
+BASE = _state_root()
 FONT_CUTE = _cardimg.FONT_CUTE
 FONT_CJK = _cardimg.FONT_CJK
 CJK_SC_INDEX = _cardimg.CJK_SC_INDEX

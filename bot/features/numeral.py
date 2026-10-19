@@ -76,29 +76,38 @@ def cjk_upper(amount: float) -> str:
         head = "零元" if not tail else ""
     if not tail:
         return head + "整"
-    if not jiao:
+    if not jiao and head:
+        # 只有带「元」时才需要「零」隔开（1.05 → 壹元零伍分）；
+        # 0.05 就是「伍分」，补成「零伍分」反而不像钱。
         tail = "零" + tail
     return head + tail
 
 
 def _int_upper(n: int) -> str:
+    """整数 → 中文大写。零只出现在「中间缺位」处，且每处一个。
+
+    以前是「把零挂到高位段的前面，最后 strip('零')」：10001 会先拼成
+    「零壹万壹」再把开头那个零剥掉 → 「壹万壹」（少了必须的零）。
+    现在从高位往低位扫，只在「上一段有数、本段不足四位」时补一个零。
+    """
     if n == 0:
         return "零"
-    sections = []
-    idx = 0
-    zero_between = False
+    groups = []
     while n > 0:
         n, sec = divmod(n, 10000)
-        if sec:
-            part = _section_upper(sec)
-            if zero_between or (sec < 1000 and sections):
-                part = "零" + part if not part.startswith("零") else part
-            sections.append(part + CN_SECTION[idx])
-            zero_between = False
-        else:
-            zero_between = True if sections else zero_between
-        idx += 1
-    return "".join(reversed(sections)).replace("零零", "零").strip("零")
+        groups.append(sec)                    # 低位在前
+    out = ""
+    need_zero = False
+    for idx in range(len(groups) - 1, -1, -1):
+        sec = groups[idx]
+        if sec == 0:
+            need_zero = bool(out)             # 前面有数才记「缺了一段」
+            continue
+        if out and (need_zero or sec < 1000):
+            out += "零"
+        out += _section_upper(sec) + CN_SECTION[idx]
+        need_zero = False
+    return out
 
 
 def _section_upper(sec: int) -> str:

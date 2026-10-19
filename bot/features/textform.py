@@ -43,7 +43,9 @@ def raw_args(ctx) -> str:
 
 def split_op(raw: str) -> tuple[str, str]:
     """'反转 你好' → ('reverse', '你好')。认不出操作时返回 ('', 原文)。"""
-    s = str(raw or "").lstrip()
+    # 中文输入法里很常见是全角空格（U+3000）或制表符，只按 ASCII 空格切会把
+    # 「反转　你好」整句当成操作名，永远认不出。
+    s = str(raw or "").replace("\u3000", " ").replace("\t", " ").lstrip()
     if not s:
         return "", ""
     head, _, rest = s.partition(" ")

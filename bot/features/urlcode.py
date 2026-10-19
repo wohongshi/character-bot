@@ -66,7 +66,12 @@ def register(api):
         if len(text) > MAX_IN:
             await ctx.reply(f"太长了（上限 {MAX_IN} 字）")
             return
-        await ctx.reply("🔗 " + _clip(urllib.parse.quote(text, safe="")))
+        enc = urllib.parse.quote(text, safe="")
+        if len(enc) > MAX_OUT:
+            # 一个汉字编成 9 个字符：截断的百分号编码解不回原文
+            await ctx.reply(f"编出来太长（{len(enc)} 字符，上限 {MAX_OUT}）～分两段来吧")
+            return
+        await ctx.reply("🔗 " + enc)
 
     async def dec(ctx):
         text = raw_args(ctx).strip()
