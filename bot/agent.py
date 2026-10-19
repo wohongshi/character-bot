@@ -695,7 +695,7 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
         temperature: float = 0.7, max_tokens: int = 800,
         kb_url: str = "", state_dir: Path | None = None, scope: str = "global",
         tool_timeout: float = 20.0, complete=None, skills=None, chat: dict | None = None,
-        character: str = "") -> dict:
+        character: str = "", on_delta=None) -> dict:
     """跑一轮 agent。返回 {text, steps, tool_calls, trace, error}。
 
     `complete` 可注入（测试用）：签名同 `ModelStore.complete_raw`。
@@ -710,14 +710,19 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
     max_steps = max(0, min(6, int(max_steps)))
     deadline = time.monotonic() + max(10.0, float(timeout))
 
-    def call_model(tool_choice):
+    def call_model(tool_choice, *, stream_too: bool = True):
         left = deadline - time.monotonic()
         if left <= 1:
             raise AgentError("agent 超时")
+        extra = {}
+        if stream_too and on_delta is not None:
+            # 流式只是「让人早点看到字」：回调坏了不能影响取到完整结果，
+            # 所以模型层保证 on_delta 异常不向上抛（见 llm._read_sse）。
+            extra = {"stream": True, "on_delta": on_delta}
         return caller(msgs, provider=provider or None, model=model or None,
                       tools=specs(allowed) if tool_choice != "none" else None,
                       tool_choice=tool_choice, temperature=temperature,
-                      max_tokens=max_tokens, timeout=min(90.0, left))
+                      max_tokens=max_tokens, timeout=min(90.0, left), **extra)
 
     def final_answer() -> str:
         """兜底收尾：**不带工具**再问一次，只要一句人话。
@@ -745,7 +750,7 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
     for step in range(max_steps + 1):
         force_none = step == max_steps
         try:
-            res = call_model("none" if force_none else "auto")
+            res = call_model("none" if force_none else "auto", stream_too=not force_none)
         except AgentError:
             raise
         except Exception as e:                                   # noqa: BLE001

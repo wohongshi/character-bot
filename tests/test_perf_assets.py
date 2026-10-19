@@ -100,7 +100,12 @@ j = HTML.index("\n}", i)
 body = HTML[i:j]
 check("viewChat 里不再 await /api/chat/sessions 才画壳子",
       "await api(\"/api/chat/sessions" not in body)
-check("会话列表改成异步补下拉", 'api("/api/chat/sessions' in body and "then(" in body)
+# 会话列表仍然是「先画壳子，列表异步补」—— 只是搬进了 refreshSessions()，
+# 不再直接写在 viewChat 里。判据改成：viewChat 里不等它，刷新函数是 async。
+check("会话列表改成异步补下拉（调用在 viewChat 里、实现是 async 函数）",
+      "refreshSessions();" in body
+      and "async function refreshSessions" in HTML
+      and "/api/chat/sessions?character=" in HTML)
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(1 if FAIL else 0)

@@ -802,6 +802,41 @@ body[data-density="wide"] .card{padding:20px 24px}
 /* 对话 */
 #chatWrap{display:flex;flex-direction:column;height:100%;min-height:520px;gap:10px}
 .chatbar{align-items:center}
+/* 流式输出：气泡末尾一个跳动的方块 */
+.bub.streaming::after{content:"▋";margin-left:2px;opacity:.75;animation:blink 1s step-end infinite}
+@keyframes blink{50%{opacity:0}}
+/* 引用块（气泡内） */
+.qb{border-left:3px solid var(--ui-accent);background:color-mix(in srgb,var(--ui-accent) 9%,transparent);
+  border-radius:0 8px 8px 0;padding:4px 8px;margin-bottom:6px;font-size:max(11px,calc(11px*var(--fx)));
+  color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:66px;overflow:hidden}
+.qb b{color:var(--ink);font-weight:600;margin-right:4px}
+/* 输入框上方的「正在引用」 */
+/* 会话工具菜单（⋯）：三个图标挤在手机上会溢出，收进一个菜单 */
+.cmenu{position:fixed;z-index:75;display:none;min-width:132px;padding:6px;
+  background:var(--surface);border:1px solid var(--glass-line);border-radius:14px;
+  box-shadow:0 14px 34px rgba(60,30,20,.22)}
+.cmenu.on{display:block}
+.cmenu button{display:block;width:100%;text-align:left;border:0;background:transparent;
+  color:var(--ink);font-family:var(--font-body);font-size:13px;padding:8px 10px;border-radius:9px;cursor:pointer}
+.cmenu button:hover{background:var(--surface-2)}
+.cmenu button.danger{color:var(--red-deep,var(--red))}
+.cmenu hr{border:0;border-top:1px solid var(--line);margin:4px 2px}
+/* 会话内搜索 */
+#csearch{display:none;align-items:center;gap:6px;margin-bottom:6px}
+#csearch.on{display:flex}
+#csearch input{flex:1;min-width:0;height:34px;font-size:13px}
+#csearch .n{font-size:max(11px,calc(11px*var(--fx)));color:var(--dim);flex:none;min-width:44px;text-align:right}
+#csearch button{flex:none}
+.msg.hit .bub{outline:2px solid var(--ui-accent);outline-offset:2px}
+#qbar{display:none;align-items:flex-start;gap:8px;margin:0 0 6px;padding:6px 10px;
+  border-left:3px solid var(--ui-accent);border-radius:0 10px 10px 0;
+  background:color-mix(in srgb,var(--ui-accent) 8%,var(--surface-2));
+  font-size:max(11px,calc(11px*var(--fx)));color:var(--dim)}
+#qbar.on{display:flex}
+#qbar .qt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#qbar .qt b{color:var(--ink);margin-right:4px}
+#qbar button{border:0;background:transparent;color:var(--dim);cursor:pointer;font-size:14px;
+  line-height:1;padding:0 2px}
 #msgs{gap:14px;padding:6px 2px 2px}
 .msg .bub{
   border-radius:18px;border:1px solid var(--glass-line);
@@ -1451,6 +1486,13 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
     <div class="cmdklist" id="cmdkList"></div>
     <div class="cmdkfoot"><span class="kb">↑↓ 选择 · Enter 打开 · Esc 关闭</span><span class="kb">Ctrl/⌘ + K</span><span class="touch">点一条直接打开</span></div>
   </div>
+</div>
+<div class="cmenu" id="cmenu">
+  <button onclick="renameConv();closeConvMenu()">✏️ 重命名</button>
+  <button onclick="exportConv();closeConvMenu()">⬇️ 导出 Markdown</button>
+  <button onclick="togglePin();closeConvMenu()" id="pinItem">📌 置顶</button>
+  <hr>
+  <button class="danger" onclick="delConv();closeConvMenu()">🗑 删除这个会话</button>
 </div>
 <div class="drawer" id="pdrawer" onclick="if(event.target===this)closePluginDrawer()">
   <div class="drawerbox">
@@ -2240,6 +2282,28 @@ async function strip(){
         cls === "ok" ? tip : tip + "（点开去运维）");
   }catch(e){}
 }
+async function backupNow(btn){
+  const old = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = "打包中…"; }
+  try{
+    const r = await fetch("/api/backup", {headers: {"X-Klee-Studio": "1"}});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = /filename="([^"]+)"/.exec(cd);
+    const name = m ? m[1] : "klee-studio-backup.zip";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+    flash(`已备份 ${(blob.size / 1024).toFixed(0)} KB`);
+  }catch(e){
+    alert("备份失败：" + e.message);
+  }finally{
+    if (btn){ btn.disabled = false; btn.textContent = old || "下载备份"; }
+  }
+}
 async function reloadFeatures(){ const r = await post("/api/action", {action:"reload_features"}); alert(r.msg || r.error || "ok"); }
 
 /* ================= 视图切换 ================= */
@@ -2291,12 +2355,14 @@ function armChatPoll(){
   }, chatPollDelay());
 }
 let sessLabels = {};                  // session → 用户改过的名字（后端 sessions.json）
+let sessPins = [];
 function sessLabel(s){
-  if (sessLabels[s]) return sessLabels[s];
-  if (s === "studio-main") return "主对话";
-  if (s === "studio-smoke") return "工作室试音";
+  const pin = sessPins.includes(s) ? "📌 " : "";
+  if (sessLabels[s]) return pin + sessLabels[s];
+  if (s === "studio-main") return pin + "主对话";
+  if (s === "studio-smoke") return pin + "工作室试音";
   const m = /^studio-(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(s);
-  return m ? `对话 ${m[1]}-${m[2]} ${m[3]}:${m[4]}` : s;
+  return pin + (m ? `对话 ${m[1]}-${m[2]} ${m[3]}:${m[4]}` : s);
 }
 function heroHTML(){
   return `
@@ -2320,9 +2386,9 @@ async function viewChat(){
     <div class="chatbar">
       <select id="sessSel" title="会话">${sessions.map(s=>`<option value="${esc(s)}" ${s===chat.session?"selected":""}>${esc(sessLabel(s))}</option>`).join("")}</select>
       <button class="btn tiny" onclick="newConv()">＋ 新对话</button>
-      <button class="btn tiny icon" onclick="renameConv()" title="重命名会话" aria-label="重命名会话">✏️</button>
-      <button class="btn tiny icon" onclick="exportConv()" title="导出为 Markdown" aria-label="导出为 Markdown">⬇️</button>
-      <button class="btn tiny icon" onclick="delConv()" title="删除当前会话" aria-label="删除当前会话">🗑</button>
+      <button class="btn tiny icon" onclick="toggleSearch()" title="在对话里找" aria-label="搜索对话">🔍</button>
+      <button class="btn tiny icon" id="convMore" onclick="openConvMenu(event)"
+              title="更多（改名 / 导出 / 置顶 / 删除）" aria-label="更多">⋯</button>
       <select id="reasonSel" title="推理强度：让模型多想一会儿再答" onchange="chatOpts.reasoning=this.value;localStorage.setItem('ks_reasoning',this.value)">
         <option value="default" ${chatOpts.reasoning==="default"?"selected":""}>🪶 默认</option>
         <option value="low" ${chatOpts.reasoning==="low"?"selected":""}>⚡ 快</option>
@@ -2331,8 +2397,17 @@ async function viewChat(){
       </select>
       <span class="kv" id="chatStat"></span>
     </div>
+    <div id="csearch">
+      <input type="search" id="csearchInput" placeholder="在这段对话里找…" autocomplete="off"
+             oninput="findInChat(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();searchStep(1)};if(event.key==='Escape')closeSearch()">
+      <span class="n" id="csearchN">0 / 0</span>
+      <button class="btn tiny icon" onclick="searchStep(-1)" title="上一个">↑</button>
+      <button class="btn tiny icon" onclick="searchStep(1)" title="下一个">↓</button>
+      <button class="btn tiny icon" onclick="closeSearch()" title="关闭">✕</button>
+    </div>
     <div id="msgs" onscroll="updateToBottom()"></div>
     <button id="toBottom" onclick="jumpBottom()" aria-label="回到最新">↓</button>
+    <div id="qbar"></div>
     <div id="pend"></div>
     <div id="chatInput">
       <button class="btn tiny icon" id="attachBtn" onclick="pickImg()" title="发图片（也可以直接粘贴/拖进来）"
@@ -2378,17 +2453,10 @@ async function viewChat(){
   if (_draft){ const el = $("chatBox"); el.value = _draft; el.dispatchEvent(new Event("input")); }
   chat.after = 0; $("msgs").innerHTML = "";
   pendingImgs = []; renderPend();
+  chatQuote = null; renderQ();
   await pollChat();
-  // 会话列表（不阻塞首帧）
-  api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id)).then(d => {
-    sessLabels = (d && d.labels) || {};
-    const list = ((d && d.sessions) || []).slice();
-    if (chat.session && !list.includes(chat.session)) list.push(chat.session);
-    const sel = $("sessSel");
-    if (!sel || !list.length) return;
-    sel.innerHTML = list.map(x =>
-      `<option value="${esc(x)}" ${x === chat.session ? "selected" : ""}>${esc(sessLabel(x))}</option>`).join("");
-  }).catch(() => {});
+  // 会话列表（不阻塞首帧；置顶/改名都靠它刷新）
+  refreshSessions();
   chat.idle = 0;
   armChatPoll();
   clearInterval(chat.tick); chat.tick = setInterval(tickTyping, 1000);
@@ -2410,6 +2478,94 @@ function newConv(){
   viewChat();
 }
 function quick(t){ $("chatBox").value = t; sendMsg(); }
+/* 会话下拉：置顶在前、主对话其次、其余按最近。刷新后重建 options。 */
+async function refreshSessions(){
+  try{
+    const d = await api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id));
+    if (!d) return;
+    sessLabels = d.labels || {};
+    sessPins = d.pins || [];
+    const list = (d.sessions || []).slice();
+    if (chat.session && !list.includes(chat.session)) list.push(chat.session);
+    const sel = $("sessSel");
+    if (sel && list.length)
+      sel.innerHTML = list.map(x =>
+        `<option value="${esc(x)}" ${x === chat.session ? "selected" : ""}>${esc(sessLabel(x))}</option>`).join("");
+  }catch(e){}
+}
+function openConvMenu(ev){
+  const m = $("cmenu"), b = $("convMore");
+  if (!m || !b) return;
+  const pinItem = $("pinItem");
+  if (pinItem) pinItem.textContent = sessPins.includes(chat.session) ? "📌 取消置顶" : "📌 置顶这个会话";
+  const r = b.getBoundingClientRect();
+  m.style.right = Math.max(8, innerWidth - r.right) + "px";
+  m.style.top = (r.bottom + 6) + "px";
+  m.style.left = "auto";
+  m.classList.add("on");
+  ev && ev.stopPropagation();
+}
+function closeConvMenu(){ const m = $("cmenu"); if (m) m.classList.remove("on"); }
+document.addEventListener("click", e => {
+  const m = $("cmenu");
+  if (m && m.classList.contains("on") && !m.contains(e.target)) closeConvMenu();
+});
+async function togglePin(){
+  const pinned = !sessPins.includes(chat.session);
+  const r = await post("/api/chat/session/pin", {session: chat.session, pinned});
+  if (!r || !r.ok){ alert((r && r.error) || "置顶失败"); return; }
+  sessPins = r.pins || [];
+  await refreshSessions();
+  flash(pinned ? "已置顶" : "已取消置顶");
+}
+/* ---------- 会话内搜索（纯前端：消息都在 DOM 里，不用再问后端） ---------- */
+let searchHits = [], searchIdx = -1;
+function toggleSearch(){
+  const bar = $("csearch");
+  if (!bar) return;
+  if (bar.classList.contains("on")) { closeSearch(); return; }
+  bar.classList.add("on");
+  const inp = $("csearchInput");
+  if (inp){ inp.value = ""; inp.focus(); }
+  findInChat("");
+}
+function closeSearch(){
+  const bar = $("csearch");
+  if (bar) bar.classList.remove("on");
+  searchHits.forEach(el => el.classList.remove("hit"));
+  searchHits = []; searchIdx = -1;
+  const n = $("csearchN"); if (n) n.textContent = "0 / 0";
+}
+function findInChat(q){
+  const box = $("msgs"); if (!box) return;
+  searchHits.forEach(el => el.classList.remove("hit"));
+  searchHits = []; searchIdx = -1;
+  const needle = String(q || "").trim().toLowerCase();
+  if (needle){
+    Array.from(box.querySelectorAll(".msg")).forEach(m => {
+      const bub = m.querySelector(".bub");
+      if (bub && (bub.innerText || "").toLowerCase().includes(needle)) searchHits.push(m);
+    });
+  }
+  const n = $("csearchN");
+  if (n) n.textContent = searchHits.length ? `1 / ${searchHits.length}` : "0 / 0";
+  if (searchHits.length){ searchIdx = 0; focusHit(); }
+}
+function searchStep(delta){
+  if (!searchHits.length) return;
+  searchIdx = (searchIdx + delta + searchHits.length) % searchHits.length;
+  focusHit();
+}
+function focusHit(){
+  const el = searchHits[searchIdx];
+  const n = $("csearchN");
+  if (n) n.textContent = `${searchIdx + 1} / ${searchHits.length}`;
+  if (!el) return;
+  searchHits.forEach(x => x.classList.remove("hit"));
+  el.classList.add("hit");
+  el.scrollIntoView({block: "center", behavior: "smooth"});
+}
+
 async function renameConv(){
   const cur = sessLabels[chat.session] || sessLabel(chat.session);
   const name = prompt("给这个会话起个名字（留空 = 恢复默认）", cur === sessLabel(chat.session) ? "" : cur);
@@ -2469,6 +2625,28 @@ async function maybeDuplicate(text){
   }catch(e){}
 }
 
+/* ---------- 引用 ---------- */
+let chatQuote = null;                 // {ts, who, text}
+function renderQ(){
+  const bar = $("qbar");
+  if (!bar) return;
+  if (!chatQuote){ bar.classList.remove("on"); bar.innerHTML = ""; return; }
+  bar.classList.add("on");
+  bar.innerHTML = `<div class="qt"><b>${esc(chatQuote.who)}</b>${esc(chatQuote.text.slice(0, 120))}</div>` +
+                  `<button onclick="dropQuote()" aria-label="取消引用">✕</button>`;
+}
+function quoteMsg(el){
+  const box = el.closest(".msg"); if (!box) return;
+  const bub = box.querySelector(".bub");
+  const who = box.classList.contains("me") ? "我" : (ACTIVE.name || "对方");
+  const text = (bub ? bub.innerText : "").trim().slice(0, 300);
+  if (!text) return;
+  chatQuote = {ts: Number(box.dataset.ts) || 0, who, text};
+  renderQ();
+  const cb = $("chatBox"); if (cb) cb.focus();
+}
+function dropQuote(){ chatQuote = null; renderQ(); }
+
 /* ---------- 发图 ---------- */
 let pendingImgs = [];                 // 已上传、还没发出去的图片 ref
 function pickImg(){ const el = $("imgFile"); if (el) el.click(); }
@@ -2506,16 +2684,19 @@ async function sendMsg(){
   const box = $("chatBox"); const text = box.value.trim();
   if (!text && !pendingImgs.length) return;
   const imgs = pendingImgs.slice();
+  const quote = chatQuote;
   box.value = ""; box.style.height = "auto";
   localStorage.removeItem("ks_draft_" + ACTIVE.id);
   pendingImgs = []; renderPend();
+  chatQuote = null; renderQ();
   if (text) maybeDuplicate(text);             // 不 await：提示慢一点无所谓，别拖慢发送
-  const r = await post("/api/chat", {session: chat.session, text, images: imgs,
+  const r = await post("/api/chat", {session: chat.session, text, images: imgs, quote,
                                      character: ACTIVE.id, reasoning: chatOpts.reasoning});
   if (!r || !r.ok){
-    // 发失败就把图和文字还给用户，别让人重打一遍
+    // 发失败就把图、引用和文字还给用户，别让人重打一遍
     flash((r && r.error) || "没发出去");
     pendingImgs = imgs; renderPend();
+    chatQuote = quote; renderQ();
     if (!box.value) { box.value = text; box.dispatchEvent(new Event("input")); }
     return;
   }
@@ -2523,9 +2704,14 @@ async function sendMsg(){
 }
 function actsHTML(role){
   const copy = `<button onclick="copyMsg(this)" title="复制这条">复制</button>`;
+  const quote = `<button onclick="quoteMsg(this)" title="引用这条再问">引用</button>`;
   const regen = role === "assistant" ? `<button onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
   const del = `<button onclick="delMsg(this)" title="删掉这一条">删除</button>`;
-  return `<div class="acts">${copy}${regen}${del}</div>`;
+  return `<div class="acts">${copy}${quote}${regen}${del}</div>`;
+}
+function quoteHTML(q){
+  if (!q || !q.text) return "";
+  return `<div class="qb"><b>${esc(q.who || "引用")}</b>${fmt(String(q.text).slice(0, 300))}</div>`;
 }
 function attsHTML(m){
   return (m.images || []).map(r =>
@@ -2542,10 +2728,10 @@ function bubble(m){
       `</div><div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}</div>` +
       `${actsHTML("assistant")}</div></div>`;
   if (m.role === "user")
-    return `<div class="msg me" data-ts="${ts}"><div class="ava">我</div><div><div class="bub">${attsHTML(m)}${fmt(m.text)}</div>
+    return `<div class="msg me" data-ts="${ts}"><div class="ava">我</div><div><div class="bub">${quoteHTML(m.quote)}${attsHTML(m)}${fmt(m.text)}</div>
       <div class="meta">${hhmm(m.ts)}</div>${actsHTML("user")}</div></div>`;
   const err = m.error ? `<div class="meta">⚠ ${esc(m.error)}</div>` : "";
-  return `<div class="msg klee" data-ts="${ts}">${charAva()}<div><div class="bub">${fmt(m.text || "(没接上话……再试一次？)")}</div>
+  return `<div class="msg klee" data-ts="${ts}">${charAva()}<div><div class="bub">${quoteHTML(m.quote)}${fmt(m.text || "(没接上话……再试一次？)")}</div>
     <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 用时 ${m.elapsed} 秒` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}${m.via === "vision" ? " · 👁 看图" : ""}</div>${err}${actsHTML("assistant")}</div></div>`;
 }
 let lastRunning = null;
@@ -2574,8 +2760,28 @@ async function pollChat(){
   const t = $("typingB");
   if (j.running && !t){
     box.insertAdjacentHTML("beforeend", `<div class="msg klee typing" id="typingB">${charAva()}
-      <div><div class="bub">${esc(ACTIVE.name)}正在想呀想<span class="dots"></span></div><div class="meta" id="tmeta">她正在赶过来（约 35 秒）</div></div></div>`);
+      <div><div class="bub" id="tBub">${esc(ACTIVE.name)}正在想呀想<span class="dots"></span></div><div class="meta" id="tmeta">她正在赶过来（约 35 秒）</div></div></div>`);
   } else if (!j.running && t){ t.remove(); }
+  /* 流式：后端把已生成的正文放在 running.partial 里，这里原地替换。
+     用 textContent 而不是 fmt()：流到一半的 ** 或 ` 还没闭合，按富文本渲染会闪。 */
+  const tb = $("tBub");
+  if (tb && j.running){
+    const partial = String(j.running.partial || "");
+    if (partial){
+      tb.classList.add("streaming");
+      if (tb.textContent !== partial) tb.textContent = partial;
+      const tm = $("tmeta");
+      if (tm) tm.textContent = `${ACTIVE.name}正在说…`;
+      if (stick) box.scrollTop = box.scrollHeight;
+      requestAnimationFrame(() => { if (stick) box.scrollTop = box.scrollHeight; });
+    } else {
+      tb.classList.remove("streaming");
+      if (tb.dataset.blank !== "1"){
+        tb.innerHTML = `${esc(ACTIVE.name)}正在想呀想<span class="dots"></span>`;
+        tb.dataset.blank = "1";
+      }
+    }
+  }
   const hero = $("emptyHero");
   if (hero && (j.total > 0 || j.running)) hero.remove();
   else if (!hero && j.total === 0 && !j.running)
@@ -4146,6 +4352,12 @@ async function viewOps(target){
     </div>
   </div>
   <div id="modelSlot"><div class="kv">正在读取模型…</div></div>
+  <div class="card" style="margin-top:14px"><h3>💾 备份
+    <span class="kv" style="font-family:var(--font-body)">聊天记录 / 角色 / 配置，一个 zip</span>
+    <button class="btn tiny" style="float:right" onclick="backupNow(this)">下载备份</button></h3>
+    <div class="kv" style="line-height:1.7">包含：聊天记录、会话名与置顶、六个角色的 SOUL、模型与常用配置、插件设置与状态。<br>
+      不含：密钥、运行日志、消息索引（可重建）、卡片与图片缓存 —— 所以体积很小。</div>
+  </div>
   <div class="card" style="margin-top:14px"><h3>${t("ops.config")} <span class="kv" style="font-family:var(--font-body)">保存后立即生效</span></h3>
     ${cfg.ok ? `<div class="row" style="margin-bottom:10px;flex-wrap:nowrap">
         <input type="text" id="cfgSearch" placeholder="搜索配置项…" style="flex:1;min-width:120px;height:34px" oninput="cfgFilter(this.value)">

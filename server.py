@@ -216,21 +216,57 @@ def _read_jsonl(path: Path) -> list:
     return out
 
 
-def _session_labels() -> dict:
+def _session_meta() -> dict:
+    """{"labels": {session: 名字}, "pins": [置顶的 session]}
+
+    旧文件是「session → 名字」的平铺 dict，这里顺手兼容 —— 升级后第一次写
+    才会变成新结构，读的时候两种都认。
+    """
     try:
         d = json.loads(SESSION_META.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
-        return {}
+        d = {}
+    if not isinstance(d, dict):
+        return {"labels": {}, "pins": []}
+    if isinstance(d.get("labels"), dict) or isinstance(d.get("pins"), list):
+        labels = d.get("labels") if isinstance(d.get("labels"), dict) else {}
+        pins = [str(x) for x in (d.get("pins") or []) if str(x)]
+        return {"labels": {str(k): str(v) for k, v in labels.items()}, "pins": pins}
+    return {"labels": {str(k): str(v) for k, v in d.items()}, "pins": []}
 
 
-def _save_session_labels(labels: dict) -> None:
+def _session_labels() -> dict:
+    return _session_meta()["labels"]
+
+
+def _save_session_meta(meta: dict) -> None:
     try:
         tmp = SESSION_META.with_suffix(".tmp")
-        tmp.write_text(json.dumps(labels, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(SESSION_META)
     except OSError as e:
         logger.warning("会话名写不进去：%s", e)
+
+
+def _save_session_labels(labels: dict) -> None:
+    meta = _session_meta()
+    meta["labels"] = dict(labels)
+    _save_session_meta(meta)
+
+
+def _session_order(sessions: list, meta: dict) -> list:
+    """排序：置顶 → 主对话 → 其余按最近使用。
+
+    置顶优先于「主对话永远第一」：用户手动钉上去的会话，就是想让它老在眼前。
+    """
+    pins = [s for s in meta.get("pins", []) if s in sessions]
+    rest = [s for s in sessions if s not in pins]
+    if "studio-main" in rest:
+        rest.remove("studio-main")
+        head = ["studio-main"]
+    else:
+        head = []
+    return pins + head + rest
 
 
 def _chat_rewrite(session: str, cid: str, keep) -> tuple[int, int]:
@@ -734,7 +770,8 @@ def _web_system_text(rt, cid: str, text: str) -> str:
     return sys_text
 
 
-def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dict:
+def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
+                    on_delta=None) -> dict:
     """网页端的 agent 工具循环：直接用 bot 的 agent 配置（工具白名单/步数/超时）。"""
     import asyncio as _aio
     from bot import agent as agent_mod
@@ -765,6 +802,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
         state_dir=rt.state_dir,
         scope="web:panel",
         character=cid,
+        on_delta=on_delta,
         **kw,
     )
 
@@ -1066,6 +1104,115 @@ def _append_images(job: dict, cid: str) -> None:
                                    "caption": str(img.get("caption") or "")[:80]})
 
 
+def _apply_quote(text: str, quote) -> str:
+    """把「引用的是哪一句」拼到这一轮文本前面。
+
+    没有它，模型只看到孤立的一问（「这句是什么意思？」），只能瞎猜。
+    """
+    q = quote if isinstance(quote, dict) else None
+    qtext = str((q or {}).get("text") or "").strip()[:300]
+    if not qtext:
+        return text
+    who = str((q or {}).get("who") or "对方")[:20]
+    return f"（引用 {who}：「{qtext}」）\n" + text
+
+
+def _delta_sink(job: dict):
+    """把流式增量写进 _chat_state['running']['partial']，前端轮询就能边生成边看。
+
+    节流 80ms：轮询本身 500ms 一次，写太勤只是白白抢锁。
+    """
+    last = [0.0]
+
+    def cb(text: str) -> None:
+        now = time.monotonic()
+        if now - last[0] < 0.08:
+            return
+        last[0] = now
+        with _lock:
+            run = _chat_state.get("running")
+            if isinstance(run, dict) and run.get("session") == job.get("session"):
+                run["partial"] = str(text or "")[-2000:]
+
+    return cb
+
+
+# ---------- 一键备份 ----------
+# 用户没有 shell 访问（只能通过面板），所以「把数据拿出来」必须是一个按钮。
+# 只收**人写的/要带走的东西**：聊天记录、会话名、角色包、配置、插件状态。
+# 明确排除：sqlite（可重建）、日志、卡片/图片缓存、NapCat token、.env。
+BACKUP_FILES = (
+    "state/chat.jsonl", "state/messages.jsonl", "state/sessions.json",
+    "state/characters.json", "state/bot_config.json", "state/models.json",
+    "state/ui_prefs.json", "state/SOUL.md", "state/agent_notes.json",
+    "bot/features/config.json",
+)
+BACKUP_DIRS = ("state/characters", "state/characters.d", "bot/features/state")
+
+
+def _build_backup() -> bytes:
+    """内存里打一个 zip（全量也就几百 KB）。返回字节。"""
+    import zipfile
+    buf = io.BytesIO()
+    files: list[str] = []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for rel in BACKUP_FILES:
+            fp = STUDIO_HOME / rel
+            if not fp.is_file():
+                continue
+            z.write(fp, rel)
+            files.append(rel)
+        for rel in BACKUP_DIRS:
+            base = STUDIO_HOME / rel
+            if not base.is_dir():
+                continue
+            for fp in sorted(base.rglob("*")):
+                if not fp.is_file():
+                    continue
+                sub = fp.relative_to(base)
+                # 插件状态目录只收一层 json（cards / images / *.db 之类的缓存不要）
+                if rel == "bot/features/state" and (len(sub.parts) > 1 or fp.suffix != ".json"):
+                    continue
+                if fp.name.endswith((".db", ".db-wal", ".db-shm", ".log", ".lock")):
+                    continue
+                try:
+                    if fp.stat().st_size > 8 * 1024 * 1024:
+                        continue
+                except OSError:
+                    continue
+                z.write(fp, f"{rel}/{sub.as_posix()}")
+                files.append(f"{rel}/{sub.as_posix()}")
+        # 计数（恢复时用来核对，也让人一眼看出里面有什么）
+        chats = 0
+        try:
+            with open(STUDIO_HOME / "state" / "chat.jsonl", "rb") as f:
+                chats = sum(1 for line in f if line.strip())
+        except OSError:
+            pass
+        # 角色清单：characters.json 里可能只有 active，真正的角色在 characters/ 目录下
+        chars: list[str] = []
+        try:
+            raw = json.loads((STUDIO_HOME / "state" / "characters.json").read_text(encoding="utf-8"))
+            items = raw.get("characters") if isinstance(raw, dict) else raw
+            chars = [str((c or {}).get("id") or "") for c in (items or []) if isinstance(c, dict)]
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+        cdir = STUDIO_HOME / "state" / "characters"
+        if cdir.is_dir():
+            chars += [d.name for d in cdir.iterdir() if d.is_dir()]
+        seen: set[str] = set()
+        chars = [c for c in chars if c and not (c in seen or seen.add(c))]
+        manifest = {
+            "app": "klee-studio", "format": 1,
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "created_ts": time.time(),
+            "chat_rows": chats, "characters": [c for c in chars if c],
+            "files": files,
+        }
+        z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
+    return buf.getvalue()
+
+
 # ---------- 对话：队列 + worker ----------
 def _chat_worker() -> None:
     while True:
@@ -1074,7 +1221,7 @@ def _chat_worker() -> None:
             return
         with _lock:
             _chat_state["running"] = {"session": job["session"], "text": job["text"],
-                                      "started": time.time()}
+                                      "started": time.time(), "partial": ""}
         t0 = time.time()
         ok, text, err = True, "", None
         cid = str(job.get("character") or _active_cid())
@@ -1121,6 +1268,7 @@ def _chat_worker() -> None:
 
             reasoning = str(job.get("reasoning") or "default")
             dtxt = job.get("dispatch_text") or job["text"]   # 入站钩子可能改写过的文本
+            dtxt = _apply_quote(dtxt, job.get("quote"))
             # ---- 用户发来的图：先看图，再把描述并进这一轮的文本 ----
             # QQ 侧一直是这么做的（runtime._prepare_images），面板以前只能打字。
             in_imgs = [r for r in (job.get("in_imgs") or []) if r][:3]
@@ -1162,6 +1310,7 @@ def _chat_worker() -> None:
             # 面板本身就是半个 agent：网页聊天默认就走工具循环，
             # 不再读 job["agent"]（前端也已经没有那个开关了）。
             use_agent = rt is not None
+            on_delta = _delta_sink(job)     # 流式增量（前端轮询里显示）
             try:
                 sys_text = _web_system_text(rt, cid, dtxt)
             except Exception as e:                               # noqa: BLE001
@@ -1193,7 +1342,7 @@ def _chat_worker() -> None:
             # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
             if use_agent:
                 try:
-                    res = _web_agent_call(rt, msgs, cid, reasoning)
+                    res = _web_agent_call(rt, msgs, cid, reasoning, on_delta=on_delta)
                     # 技能生成的图片（ctx.images_out）在这里统一转成 URL 引用
                     job["images"] = [{"ref": _img_ref(i.get("path")),
                                       "caption": str(i.get("caption") or "")}
@@ -1232,10 +1381,15 @@ def _chat_worker() -> None:
                 # 推理强度：映射到常见参数；不认识的原样透传
                 kw["reasoning_effort"] = reasoning
             try:
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, **kw)
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
+                                       stream=True, on_delta=on_delta, **kw)
             except TypeError:
-                # 模型层不认 reasoning_effort 就不带它
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
+                # 模型层不认 reasoning_effort（或者不认 stream）就别带它们
+                try:
+                    text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
+                                           stream=True, on_delta=on_delta)
+                except TypeError:
+                    text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT)
             _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + job["session"],
                                       "role": "assistant", "text": text[:800]})
         except Exception as e:                                 # noqa: BLE001
@@ -2828,7 +2982,7 @@ def _gz(body: bytes, tag: str) -> bytes:
 _SENSITIVE_GET = frozenset({
     "/api/napcat/qr", "/api/requests", "/api/feed", "/api/feed/sources",
     "/api/logs", "/api/logs/meta", "/api/persona", "/api/chat",
-    "/api/chat/sessions", "/api/chat/export", "/qr.png", "/qr",
+    "/api/chat/sessions", "/api/chat/export", "/api/backup", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
     "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
@@ -3018,6 +3172,18 @@ class Handler(BaseHTTPRequestHandler):
                         "queue": _chat_q.qsize(),
                         "running": running if running and running["session"] == session else None})
             return
+        if u.path == "/api/backup":
+            try:
+                blob = _build_backup()
+            except Exception as e:                               # noqa: BLE001
+                logger.exception("备份打包失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            fname = "klee-studio-%s.zip" % time.strftime("%Y%m%d-%H%M")
+            self._send_bytes(blob, "application/zip", cache="no-store",
+                             extra=[("Content-Disposition",
+                                     f'attachment; filename="{fname}"')])
+            return
         if u.path == "/api/chat/export":
             session = (q.get("session") or ["studio-main"])[0]
             cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
@@ -3068,12 +3234,14 @@ class Handler(BaseHTTPRequestHandler):
                     sessions.append(s)
             if "studio-main" not in sessions:
                 sessions.insert(0, "studio-main")
-            # 最近的排前面（主对话永远第一）
+            # 最近的排前面（置顶 > 主对话 > 其余最近）
             rest = sorted([s for s in sessions if s != "studio-main"],
                           key=lambda x: -meta.get(x, {}).get("last", 0.0))
-            ordered = ["studio-main"] + rest
+            smeta = _session_meta()
+            ordered = _session_order(["studio-main"] + rest, smeta)
             self._json({"sessions": ordered,
                         "labels": {s: labels.get(s, "") for s in ordered},
+                        "pins": [s for s in ordered if s in smeta["pins"]],
                         "meta": {s: meta.get(s, {"count": 0, "last": 0}) for s in ordered}})
             return
         if u.path == "/api/docs":
@@ -3556,6 +3724,13 @@ class Handler(BaseHTTPRequestHandler):
             for ref in (body.get("images") or [])[:3]:
                 if _upload_file(str(ref)) is not None:
                     in_imgs.append(str(ref).strip())
+            # 引用：只留「谁说的 + 说了什么」，长度掐死（防灌上下文）
+            quote = None
+            qraw = body.get("quote")
+            if isinstance(qraw, dict):
+                qtext = str(qraw.get("text") or "").strip()[:300]
+                if qtext:
+                    quote = {"who": str(qraw.get("who") or "")[:20], "text": qtext}
             if not text and not in_imgs:
                 self._json({"ok": False, "error": "空消息"}, 400)
                 return
@@ -3566,13 +3741,14 @@ class Handler(BaseHTTPRequestHandler):
             _append_jsonl(CHAT_JSONL, {"id": eid, "ts": time.time(),
                                        "session": session or "studio-main",
                                        "character": cid, "role": "user", "text": text[:4000],
-                                       **({"images": in_imgs} if in_imgs else {})})
+                                       **({"images": in_imgs} if in_imgs else {}),
+                                       **({"quote": quote} if quote else {})})
             _append_jsonl(MSG_JSONL, {"ts": time.time(),
                                       "chat_id": "web:" + (session or "studio-main"),
                                       "role": "user", "text": text[:800]})
             _chat_q.put({"session": session or "studio-main", "text": text[:4000],
                          "character": cid, "eid": eid,
-                         "in_imgs": in_imgs,
+                         "in_imgs": in_imgs, "quote": quote,
                          "agent": bool(body.get("agent")),
                          "reasoning": str(body.get("reasoning") or "default")[:16]})
             self._json({"ok": True, "queued": True,
@@ -3621,6 +3797,21 @@ class Handler(BaseHTTPRequestHandler):
             removed, left = _chat_rewrite(
                 session, cid, lambda e: abs(float(e.get("ts") or 0) - ts) > 1e-6)
             self._json({"ok": bool(removed), "removed": removed, "left": left})
+            return
+
+        if u.path == "/api/chat/session/pin":
+            session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48]
+            if not session:
+                self._json({"ok": False, "error": "缺 session"}, 400)
+                return
+            want = bool(body.get("pinned", True))
+            meta = _session_meta()
+            pins = [x for x in meta["pins"] if x != session]
+            if want:
+                pins.insert(0, session)          # 新钉的排最前
+            meta["pins"] = pins
+            _save_session_meta(meta)
+            self._json({"ok": True, "pins": pins, "pinned": want})
             return
 
         if u.path == "/api/chat/session/rename":

@@ -160,6 +160,83 @@ def discover_models(api: str, key: str = "", timeout: float = 15) -> dict:
     return {"ok": False, "models": [], "error": useful or "拉不到模型清单"}
 
 
+def _read_sse(resp, on_delta=None) -> dict | None:
+    """读 OpenAI 兼容的 SSE 流，返回和 complete_raw 一样的结果。
+
+    解析不了就返回 None，让调用方退回非流式（宁可慢，也不能把话弄丢）。
+    """
+    content: list[str] = []
+    reason: list[str] = []
+    calls: dict[int, dict] = {}
+    finish = ""
+    saw_any = False
+    try:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line or line.startswith(":"):
+                continue                     # 心跳注释
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload in ("[DONE]", "DONE"):
+                break
+            try:
+                obj = json.loads(payload)
+            except ValueError:
+                continue
+            saw_any = True
+            choices = obj.get("choices") or []
+            if not isinstance(choices, list) or not choices:
+                continue
+            ch = choices[0] or {}
+            if ch.get("finish_reason"):
+                finish = str(ch["finish_reason"])
+            delta = ch.get("delta") or {}
+            if not isinstance(delta, dict):
+                delta = {}
+            piece = delta.get("content")
+            if isinstance(piece, str) and piece:
+                content.append(piece)
+            think = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(think, str) and think:
+                reason.append(think)
+            for tc in (delta.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                idx = int(tc.get("index") or 0)
+                slot = calls.setdefault(idx, {"id": "", "name": "", "args": ""})
+                if tc.get("id"):
+                    slot["id"] = str(tc["id"])
+                fn = tc.get("function") or {}
+                if isinstance(fn, dict):
+                    if fn.get("name"):
+                        slot["name"] = str(fn["name"])
+                    arg = fn.get("arguments")
+                    if isinstance(arg, str):
+                        slot["args"] += arg
+            if on_delta and content:
+                try:
+                    on_delta("".join(content))
+                except Exception:            # noqa: BLE001  回调坏了不能影响取字
+                    pass
+    except Exception as e:                   # noqa: BLE001
+        if not saw_any:
+            log.info("SSE 流读取失败，退回非流式：%s", e)
+            return None
+        log.warning("SSE 流中途断了（已收到 %d 字）：%s", sum(len(x) for x in content), e)
+    text = "".join(content).strip() or "".join(reason).strip()
+    if not text and not calls:
+        return None if not saw_any else {"text": "", "tool_calls": [], "finish_reason": finish}
+    out = []
+    for idx in sorted(calls):
+        slot = calls[idx]
+        if not slot["name"]:
+            continue
+        out.append({"id": slot["id"] or f"call_{len(out)}", "name": slot["name"],
+                    "arguments": slot["args"] or "{}"})
+    return {"text": text, "tool_calls": out, "finish_reason": finish}
+
+
 class ModelStore:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -359,10 +436,15 @@ class ModelStore:
                      provider: str | None = None, timeout: float = 90,
                      temperature: float = 0.85, max_tokens: int = 800,
                      tools: list | None = None, tool_choice: str | None = None,
-                     extra_body: dict | None = None) -> dict:
+                     extra_body: dict | None = None,
+                     stream: bool = False, on_delta=None) -> dict:
         """调一次 chat/completions，返回 {text, tool_calls, finish_reason}。
 
         `tool_calls` 已归一化成 [{id, name, arguments}]；没有工具调用就是 []。
+
+        `stream=True` 时走 SSE：每收到一段增量就回调 `on_delta(已累积的正文)`，
+        返回值结构不变 —— 调用方不用区分流式/非流式。
+        任何流式解析异常都退回「未流式」的结果（宁可慢一点，也别把话弄丢）。
         """
         act = self.active()
         prov = self.get_provider(provider) if provider else self.get_provider(act["provider"])
@@ -382,7 +464,7 @@ class ModelStore:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "stream": False,
+            "stream": bool(stream),
         }
         if tools:
             payload["tools"] = tools
@@ -403,6 +485,17 @@ class ModelStore:
             # 之前这里用全局 urlopen —— 环境里一有 http_proxy，127.0.0.1:7863 就被
             # 送去代理，报 "via 127.0.0.1" 或干脆超时。
             with _open_url(req, timeout) as r:                           # noqa: S310
+                if stream:
+                    got = _read_sse(r, on_delta)
+                    if got is not None:
+                        return got                # 流式成功：结构与非流式完全一致
+                    # 服务端没按 SSE 回（直接吐了整段 JSON / 或者干脆不支持）：
+                    # 这一份响应已经被读掉了，重开一次非流式请求。
+                    log.info("服务端不支持流式，改走非流式")
+                    return self.complete_raw(
+                        messages, model=model, provider=provider, timeout=timeout,
+                        temperature=temperature, max_tokens=max_tokens, tools=tools,
+                        tool_choice=tool_choice, extra_body=extra_body, stream=False)
                 raw = r.read().decode("utf-8", "replace") or "{}"
         except urllib.error.HTTPError as e:
             body = ""
@@ -449,11 +542,12 @@ class ModelStore:
     def chat(self, messages: list, *, model: str | None = None, provider: str | None = None,
              timeout: float = 90,
              temperature: float = 0.85, max_tokens: int = 800,
-             reasoning_effort: str | None = None) -> str:
+             reasoning_effort: str | None = None,
+             stream: bool = False, on_delta=None) -> str:
         extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else None
         res = self.complete_raw(messages, model=model, provider=provider, timeout=timeout,
                                 temperature=temperature, max_tokens=max_tokens,
-                                extra_body=extra)
+                                extra_body=extra, stream=stream, on_delta=on_delta)
         text = str(res.get("text") or "").strip()
         if not text:
             raise RuntimeError("模型返回空内容")
