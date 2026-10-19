@@ -174,7 +174,7 @@ python3 server.py           # 打开 http://127.0.0.1:8796
 「插件 20 · 知识 274 块」，而不是一个总数。
 
 <p align="center">
-  <img src="docs/img/characters.webp" width="820" alt="角色页：每个角色有自己的主题、知识库与专属插件">
+  <img src="docs/img/characters.webp" width="300" alt="角色页：每个角色有自己的主题、知识库与专属插件">
 </p>
 
 新增角色有两条路：面板「📦 导入角色包」（zip：`character.json` + `SOUL.md` + 可选知识库），

@@ -269,10 +269,11 @@ button.btn.tabon{background:var(--red-soft);border-color:#f0a99e;color:var(--red
 #msgs{flex:1;overflow:auto;padding:6px 2px;display:flex;flex-direction:column;gap:14px}
 .msg{display:flex;gap:10px;max-width:min(86%,640px);align-items:flex-start}
 .msg.me{align-self:flex-end;flex-direction:row-reverse}
-.ava{flex:none;width:38px;height:38px;border-radius:50%;overflow:hidden;border:2.5px solid #fff;
+.ava{position:relative;flex:none;width:38px;height:38px;border-radius:50%;overflow:hidden;border:2.5px solid #fff;
   box-shadow:0 3px 8px rgba(200,120,80,.28);background:var(--red-soft);
   display:flex;align-items:center;justify-content:center}
-.ava img{width:100%;height:100%;display:block;object-fit:cover}
+.ava img{position:relative;z-index:1;width:100%;height:100%;display:block;object-fit:cover}
+.ava .avafb{position:absolute;inset:0;display:grid;place-items:center;font-size:19px;line-height:1}
 .msg.me .ava{background:linear-gradient(135deg,#f09a7a,#d96a55);color:#fff;font-size:12px;font-weight:700}
 .msg > div{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
 .msg.me > div{align-items:flex-end}
@@ -856,10 +857,9 @@ body[data-bubble="comic"] .msg.me .bub::after{display:none}
 .charitem .artbody .en{color:rgba(255,255,255,.88);font-size:max(11px, calc(10.5px * var(--fx)));letter-spacing:2px}
 .charitem .artbody .tagline{color:rgba(255,255,255,.86);min-height:0;margin-top:3px}
 .charitem .artbody .meta2{color:rgba(255,255,255,.88);font-size:max(11px, calc(10.5px * var(--fx)));gap:8px}
-.charitem .bigemoji{position:absolute;left:14px;top:12px;z-index:1;font-size:40px;filter:drop-shadow(0 6px 14px rgba(0,0,0,.28))}
-.charitem .stars{position:absolute;right:13px;top:14px;z-index:1;color:#ffe9a8;letter-spacing:2px;font-size:12px;text-shadow:0 1px 6px rgba(0,0,0,.35)}
+.charitem .artacts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px}
 .charitem.active{box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-accent) 55%,white), 0 18px 38px rgba(120,70,50,.2)}
-.charitem .charbadge{position:absolute;z-index:2;left:12px;top:54px;background:linear-gradient(135deg,var(--ui-accent),var(--ui-accent2));color:#fff;
+.charitem .charbadge{position:absolute;z-index:2;left:12px;right:auto;top:12px;background:linear-gradient(135deg,var(--ui-accent),var(--ui-accent2));color:#fff;
   border-radius:999px;padding:2px 9px;font-size:max(11px, calc(10px * var(--fx)));box-shadow:0 4px 12px rgba(0,0,0,.2)}
 
 /* 插件商店 */
@@ -867,8 +867,21 @@ body[data-bubble="comic"] .msg.me .bub::after{display:none}
 .plugkpi .k{background:var(--glass);border:1px solid var(--glass-line);border-radius:calc(var(--ui-radius) - 2px);padding:11px 13px;box-shadow:var(--comic-shadow)}
 .plugkpi .k b{display:block;font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:26px;line-height:1.1;color:var(--ui-accent)}
 .plugkpi .k span{font-size:11px;color:var(--ink-soft)}
-.plugbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-.plugbar input{flex:1;min-width:180px;border-radius:999px;border:1px solid var(--glass-line);background:var(--surface-2);padding:8px 14px;font-size:13px}
+/* 标题与页面级动作同一行（动作不该混在筛选 chip 里，看着像筛选项） */
+.pagehead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.pagehead h2.page{margin-bottom:0}
+.plugbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.plugbar input{flex:1;min-width:180px;border-radius:999px;border:1px solid var(--glass-line);
+  background:var(--surface-2);padding:0 14px;height:38px;font-size:13px}
+/* 筛选单行横滚：换行会排出「第二行只有两个 chip + 右侧一大片空」 */
+.filterbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;overflow-x:auto;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px;
+  -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 22px),transparent 100%);
+          mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 22px),transparent 100%)}
+.filterbar::-webkit-scrollbar{display:none}
+.filterbar .fbtn{flex:none;min-height:32px;border-radius:999px;padding:0 13px;font-size:12px;
+  border:1px solid var(--glass-line);background:var(--surface-3);cursor:pointer}
+.filterbar .fbtn.on{background:var(--ui-accent);color:#fff;border-color:transparent;font-weight:700}
 .plugbar .fbtn{border-radius:999px;padding:6px 12px;font-size:12px;border:1px solid var(--glass-line);background:var(--surface-3);cursor:pointer}
 .plugbar .fbtn.on{background:var(--ui-accent);color:#fff;border-color:transparent;font-weight:700}
 .pluggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:12px;margin-bottom:16px}
@@ -884,9 +897,11 @@ body[data-bubble="comic"] .msg.me .bub::after{display:none}
 .plugcard .top{display:flex;align-items:center;gap:8px}
 .plugcard .ico{width:34px;height:34px;border-radius:12px;display:grid;place-items:center;font-size:18px;
   background:linear-gradient(135deg,color-mix(in srgb,var(--ui-accent) 18%,white),color-mix(in srgb,var(--ui-accent2) 26%,white))}
-.plugcard .nm{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:16px;line-height:1.15}
+.plugcard .nm{font-family:var(--font-body);font-weight:650;font-size:14.5px;line-height:1.25;
+  letter-spacing:.1px}
 .plugcard .sub{font-size:max(11px, calc(10px * var(--fx)));color:var(--ink-soft);letter-spacing:.5px}
-.plugcard .desc{font-size:11.5px;color:var(--ink-soft);line-height:1.55;flex:1}
+.plugcard .desc{font-size:11.5px;color:var(--ink-soft);line-height:1.55;flex:1;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .plugcard .foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:max(11px, calc(10px * var(--fx)));color:var(--ink-soft)}
 .plugcard .st{position:absolute;right:11px;top:11px;width:9px;height:9px;border-radius:99px;background:#d9c9b8;box-shadow:0 0 0 3px rgba(255,255,255,.8)}
 .plugcard .st.on{background:#59b36b;box-shadow:0 0 0 3px rgba(89,179,107,.18)}
@@ -1200,6 +1215,8 @@ html[data-theme="dark"] .msg.me .bub{background:linear-gradient(135deg,#c9412f,#
 html[data-theme="dark"] #msgs{padding-right:5px}
 html[data-theme="dark"] .chips button{color:#ecdccb}
 html[data-theme="dark"] .kv,html[data-theme="dark"] .tip{color:#bda48f}
+/* 注：深色下 .tag 实测 6.91:1（#ff9a86 叠 10% 白再叠卡片底），本来就合格，
+   不要再给它换色 —— 换了反而跟角色卡徽章不是同一个色了。 */
 html[data-theme="dark"] h2.page{color:#f7ecdf}
 
 /* ============ 骨架屏与空状态 ============
@@ -1266,6 +1283,52 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
   .content{padding-bottom:calc(18px + env(safe-area-inset-bottom))}
   #toBottom{bottom:20px}
 }
+
+/* 横向滚动的两处（快捷话题 / 插件筛选栏）：右侧渐隐，暗示「还能往右滑」 */
+.chips{
+  -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
+          mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
+}
+/* ============ 控件规范（最后一层） ============
+   历史原因，按钮/分段/下拉有 6 种内边距、4 种圆角、2 种高度 —— 面板上到处是
+   「差不多但不完全一样」的按钮，看着就像没做完。这里定一套刻度，全部指过去。 */
+:root{
+  --ctl-h:34px;      /* 常规控件高 */
+  --ctl-h-sm:28px;   /* 紧凑控件高 */
+  --ctl-r:calc(var(--ui-radius) * .55);
+}
+.btn.btn{
+  font-family:var(--font-body);          /* 手写体只给标题和名字，按钮用正文字体 */
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  height:auto;min-height:var(--ctl-h);padding:0 15px;
+  border-radius:var(--ctl-r);font-size:13px;font-weight:600;line-height:1.2;
+  white-space:nowrap;
+}
+.btn.btn.tiny{
+  min-height:var(--ctl-h-sm);padding:0 11px;font-size:12px;
+  border-radius:calc(var(--ui-radius) * .45);
+}
+.btn.btn.icon{
+  width:var(--ctl-h-sm);min-width:var(--ctl-h-sm);padding:0;font-size:14px;
+}
+/* 触摸设备上小按钮抬到 32px（手指点得中），但仍是一套刻度 */
+html[data-touch="1"] .btn.btn.tiny,
+html[data-touch="1"] .chatbar > select{min-height:32px;height:32px}
+html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
+/* 分段选择：等分铺满。以前按文字长度自适应，一页里三行三種宽度，右边缘参差不齐 */
+.seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;flex-wrap:nowrap}
+.seg button{
+  font-family:var(--font-body);
+  width:100%;height:var(--ctl-h-sm);padding:0 6px;font-size:12px;
+  border-radius:999px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* 色块：8 列等分，左右边缘跟输入框对齐（原来固定 34px，右端差 30px） */
+.swatches{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px}
+.swatch{width:100%;height:auto;aspect-ratio:1;border-radius:calc(var(--ui-radius) * .5)}
+/* 对话工具条：下拉与按钮同一高度，不再一个 26 一个 32 */
+.chatbar > select,.chatbar > .btn.btn{height:var(--ctl-h-sm);min-height:var(--ctl-h-sm)}
+.chatbar > select{padding:0 10px;border-radius:calc(var(--ui-radius) * .45);font-size:12px;
+  font-family:var(--font-body)}
 </style>
 
 </head>
@@ -1427,7 +1490,8 @@ function applyChrome(){
   document.querySelectorAll("#view .fbtn[data-pf]").forEach(b => {
     b.textContent = t("filter." + b.dataset.pf);
   });
-  const inst = document.querySelector('#view .fbtn[onclick*="pickPluginZip"]');
+  // 「安装插件包」已经从筛选 chip 挪到标题行，选择器要跟着改
+  const inst = document.querySelector('#view [onclick*="pickPluginZip"]');
   if (inst) inst.textContent = t("plug.install");
   const ps = $("plugSearch"); if (ps) ps.placeholder = t("plug.search");
   const h2 = document.querySelector("#view h2.page");
@@ -1502,7 +1566,12 @@ const CHIPS = {
   atri: ["你在算什么","心是什么","今天开心吗","陪我聊会儿"],
 };
 function charAva(extra=""){
-  return `<div class="ava charava ${extra}" style="background:linear-gradient(135deg,${ACTIVE.color},${ACTIVE.color2})">${ACTIVE.emoji}</div>`;
+  // 头像用角色立绘（和角色卡一致），图没加载出来时露出下面的 emoji 兜底。
+  // 以前只有 emoji + 渐变底，跟角色卡里的插画完全是两套视觉。
+  const src = charSrc(ACTIVE.id, "thumb");
+  return `<div class="ava charava ${extra}" style="background:linear-gradient(135deg,${ACTIVE.color},${ACTIVE.color2})">` +
+    `<img src="${src}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` +
+    `<span class="avafb">${ACTIVE.emoji}</span></div>`;
 }
 function setActiveChar(c){
   if (!c) return;
@@ -2092,7 +2161,7 @@ async function viewChat(){
     <div class="chatbar">
       <select id="sessSel" title="会话">${sessions.map(s=>`<option value="${esc(s)}" ${s===chat.session?"selected":""}>${esc(sessLabel(s))}</option>`).join("")}</select>
       <button class="btn tiny" onclick="newConv()">＋ 新对话</button>
-      <button class="btn tiny" onclick="delConv()" title="删除当前会话" aria-label="删除当前会话">删</button>
+      <button class="btn tiny icon" onclick="delConv()" title="删除当前会话" aria-label="删除当前会话">🗑</button>
       <select id="reasonSel" title="推理强度：让模型多想一会儿再答" onchange="chatOpts.reasoning=this.value;localStorage.setItem('ks_reasoning',this.value)">
         <option value="default" ${chatOpts.reasoning==="default"?"selected":""}>🪶 默认</option>
         <option value="low" ${chatOpts.reasoning==="low"?"selected":""}>⚡ 快</option>
@@ -2501,9 +2570,14 @@ async function viewPlugins(readonly){
   const d = await api("/api/plugins");
   plFiles = d.files || []; plCfg = d.config || {}; plMeta = d.meta || {};
   $("view").innerHTML = `
-  <h2 class="page">🧩 插件</h2>
+  <div class="pagehead">
+    <h2 class="page">🧩 插件</h2>
+    <button class="btn tiny" onclick="pickPluginZip()">📦 安装插件包</button>
+  </div>
   <div class="plugbar">
     <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
+  </div>
+  <div class="filterbar">
     <button class="fbtn on" data-pf="all" onclick="plugFilter('all')">全部</button>
     <button class="fbtn" data-pf="limited" onclick="plugFilter('limited')">限定</button>
     <button class="fbtn" data-pf="general" onclick="plugFilter('general')">通用</button>
@@ -2511,7 +2585,6 @@ async function viewPlugins(readonly){
     <button class="fbtn" data-pf="on" onclick="plugFilter('on')">已启用</button>
     <button class="fbtn" data-pf="off" onclick="plugFilter('off')">已禁用</button>
     <button class="fbtn" data-pf="err" onclick="plugFilter('err')">报错</button>
-    <button class="fbtn" style="margin-left:auto" onclick="pickPluginZip()">📦 安装插件包</button>
   </div>
   <div class="pluggrid" id="plugGrid"></div>
   <div id="agentCardSlot"></div>`;
@@ -3070,8 +3143,9 @@ async function viewChars(){
   const cur = items.find(c => c.id === charSel) || items[0];
   $("view").innerHTML = `
   <h2 class="page">🎭 角色</h2>
-  <div class="row" style="margin-bottom:10px">
-    <button class="btn primary" onclick="toggleImport()">📦 导入角色包</button>
+  <div class="row" style="margin-bottom:12px;align-items:center;gap:10px">
+    <button class="btn" onclick="toggleImport()" style="flex:1">📦 导入角色包</button>
+    <span class="kv" style="flex:none">${items.length} 个角色</span>
   </div>
   <div class="card" id="importBox" style="display:none;margin-bottom:14px">
     <h3>📦 导入角色包</h3>
@@ -3096,8 +3170,6 @@ async function viewChars(){
            style="--c1:${esc(c.color)};--c2:${esc(c.color2)}" onclick="pickChar('${esc(c.id)}')">
         <div class="artbg"><img src="${charSrc(c.id, "card")}" alt="" loading="lazy" decoding="async" onerror="artFallback(this)"></div>
         <div class="artveil"></div>
-        <span class="bigemoji">${esc(c.emoji)}</span>
-        <span class="stars">${"★".repeat(5)}</span>
         ${c.active ? `<span class="charbadge">✦ 当前角色</span>` : ""}
         <div class="artbody">
           <div class="nm">${esc(c.name)}</div>
@@ -3107,13 +3179,13 @@ async function viewChars(){
             <span>🧩 插件 ${c.plugins.length}</span>
             <span>📚 知识 ${c.kb && c.kb.chunks != null ? c.kb.chunks : "—"} 块</span>
           </div>
-          ${c.active ? `<div class="row" style="margin-top:9px;gap:6px">
-              <button class="btn tiny" onclick="event.stopPropagation();go('custom')">✨ 自定义</button>
-              <button class="btn tiny" onclick="event.stopPropagation();go('persona')">🌸 人格 / 知识库</button>
-            </div>` : `<div class="row" style="margin-top:9px;gap:6px">
-              <button class="btn primary tiny" onclick="event.stopPropagation();switchChar('${esc(c.id)}')">切换角色</button>
-              <button class="btn tiny" onclick="event.stopPropagation();pickChar('${esc(c.id)}')">看详情</button>
-            </div>`}
+          <div class="artacts">
+            ${c.active
+              ? `<button class="btn tiny" onclick="event.stopPropagation();go('custom')">✨ 自定义</button>
+                 <button class="btn tiny" onclick="event.stopPropagation();go('persona')">🌸 人格 / 知识库</button>`
+              : `<button class="btn primary tiny" onclick="event.stopPropagation();switchChar('${esc(c.id)}')">切换角色</button>
+                 <button class="btn tiny" onclick="event.stopPropagation();pickChar('${esc(c.id)}')">看详情</button>`}
+          </div>
         </div>
       </div>`).join("")}
   </div>
