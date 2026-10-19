@@ -2073,16 +2073,28 @@ def _usage_summary(days: int = 7) -> dict:
 # 见 bot/selfcheck.py：那边只认「传进来的事实」，不 import server，
 # 所以单测能直接喂临时目录；这里负责把运行时事实凑齐。
 def _known_chat_sessions() -> set:
-    """索引里出现过的会话名（SQL 全量，不读 JSONL 尾部 —— 老会话不能算丢失）。"""
+    """「确实有记录」的会话名：索引全量 ∪ 聊天记录尾部。
+
+    为什么两个都要：
+    - 索引是**增量**同步的（后台 worker 每 20 秒一次），刚建几秒的会话还查不到；
+    - 只读 JSONL 尾部又会让很久以前的老会话被误判成「没有记录」。
+    所以索引给全量、JSONL 尾部补上「刚刚发生的」那一批。
+    """
+    known: set = set()
     try:
         con = _index()._connect()                     # noqa: SLF001（同包内部工具）
         try:
             rows = con.execute("SELECT DISTINCT session FROM msg WHERE src='chat'").fetchall()
         finally:
             con.close()
-        return {str(r[0]) for r in rows if r[0]}
+        known |= {str(r[0]) for r in rows if r[0]}
     except Exception:                                 # noqa: BLE001
-        return set()
+        pass
+    for e in _read_jsonl(CHAT_JSONL):                 # 尾部 4MB，够覆盖还没同步的那一段
+        sid = e.get("session")
+        if sid:
+            known.add(str(sid))
+    return known
 
 
 def _selfcheck_env(bot=None) -> dict:
@@ -5782,8 +5794,15 @@ class Handler(BaseHTTPRequestHandler):
             action = str(body.get("id") or "").strip()[:32]
             if action == "all":
                 env = _selfcheck_env_cached()
+                snap = _selfcheck()
+                if not snap.get("ok"):
+                    # 自检本身跑挂时 items 是空的 —— 空列表不能当成「没事可修」，
+                    # 否则前端会 flash 一句「修好了」，实际什么都没检查过。
+                    self._json({"ok": False, "error": snap.get("error") or "自检跑不起来"},
+                               500)
+                    return
                 out = []
-                for it in _selfcheck().get("items", []):
+                for it in snap.get("items", []):
                     if it.get("fix"):
                         out.append(_selfcheck_fix(it["fix"], env))
                 # 空列表 = 点下去那一刻已经没东西可修（索引自己追上了、缓存也回落了），

@@ -208,6 +208,20 @@ def main():
         # 一次性线程（cache-warm）跑完就退，不能算成「后台任务已停止」——
         # 第一版就误报过它，所以这里既看等级也看数字
         check("8.6 后台任务全绿（含一次性线程不误报）", wk["level"] == "ok", wk["detail"])
+        # 刚建几秒的会话还没进索引（worker 20 秒一轮）：只靠 SQL 会把标签当孤儿删掉
+        import server as S2
+        tmp2 = Path(tempfile.mkdtemp(prefix="klee-known-"))
+        real_chat = S2.CHAT_JSONL
+        try:
+            p2 = tmp2 / "chat.jsonl"
+            p2.write_text(json.dumps({"session": "brand-new", "character": "klee",
+                                      "role": "user", "text": "hi", "ts": time.time()},
+                                     ensure_ascii=False) + "\n", encoding="utf-8")
+            S2.CHAT_JSONL = p2
+            check("8.7b 没进索引的新会话也算「有记录」",
+                  "brand-new" in S2._known_chat_sessions(), str(S2._known_chat_sessions()))
+        finally:
+            S2.CHAT_JSONL = real_chat
         n_workers = int("".join(ch for ch in wk["detail"] if ch.isdigit()) or 0)
         check("8.7 长驻线程都被数到（≥4）", n_workers >= 4, wk["detail"])
     except (urllib.error.URLError, OSError) as e:
