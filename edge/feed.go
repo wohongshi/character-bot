@@ -286,8 +286,13 @@ func (a *sourceAgg) update() bool {
 		}
 		a.counts[cid]++
 	}
+	// off 是「读到文件的哪个字节了」，**不是** 「最后一行从哪开始」。
+	// 末尾那半行已经存进 a.partial，下次会和新增字节拼起来再解析；
+	// 如果把 off 回退到 size-len(rest)，下次就会把这半行再读一遍，
+	// 拼成 `par` + `partial…` 这种变形的行 —— JSON 解析失败被丢掉，
+	// 或者被算两次，来源统计于是慢慢漂移（实测差 3 条私聊 / 多 2 条网页）。
 	a.partial = rest
-	a.off = size - int64(len(rest))
+	a.off = size
 	return true
 }
 

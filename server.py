@@ -4364,25 +4364,70 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(body, "application/json; charset=utf-8", code=code, cache=cache)
 
     def _body(self, max_bytes: int = MAX_BODY) -> dict:
-        """读 JSON 请求体。负数/超限直接拒绝：`read(-1)` 会一直读到 EOF 把连接挂住。"""
+        """POST 的 JSON 体（Content-Length 与 chunked 都认）。"""
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except (TypeError, ValueError):
-            return {}
-        if n <= 0:
-            return {}
-        if n > max_bytes:
-            self._body_too_big = True
-            return {}
-        try:
-            raw = self.rfile.read(n)
-            data = json.loads(raw.decode("utf-8"))
+            raw = self._raw_body(max_bytes)
+            data = json.loads(raw.decode("utf-8") or "{}")
         except (ValueError, OSError):
+            return {}
+        if getattr(self, "_body_too_big", False):
             return {}
         return data if isinstance(data, dict) else {}
 
+    def _read_chunked(self, max_bytes: int) -> bytes:
+        """读 `Transfer-Encoding: chunked` 的请求体。
+
+        **为什么必须有**：NapCat 推事件用的就是 chunked（没有 Content-Length）。
+        以前这里只认 Content-Length，于是 body 永远读成空、而且 chunk 数据留在
+        socket 里 —— 下一条请求会从半个 chunk 头开始解析，日志里刷出一堆
+        `Bad request syntax ('21e')`，事件也永远进不来。
+        超限时照样把剩余分块读完，否则连接会错位。
+        """
+        out = bytearray()
+        total = 0
+        while True:
+            line = self.rfile.readline(64)
+            if not line:
+                break
+            try:
+                size = int((line.split(b";")[0].strip() or b"0"), 16)
+            except ValueError:
+                self._body_malformed = True
+                self.close_connection = True
+                break
+            if size == 0:                       # 正常结尾：后面可能有 trailer
+                for _ in range(8):
+                    t = self.rfile.readline(256)
+                    if not t or t in (b"\r\n", b"\n"):
+                        break
+                break
+            total += size
+            if total > max_bytes:
+                self._body_too_big = True
+                left = size
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                self.rfile.read(2)
+                continue
+            try:
+                data = self.rfile.read(size)
+            except OSError:
+                self.close_connection = True
+                break
+            out.extend(data)
+            self.rfile.read(2)                  # 每块后面的 CRLF
+        return bytes(out)
+
     def _raw_body(self, max_bytes: int = MAX_BODY) -> bytes:
         """读原始请求体（适配器自己解析 JSON / XML / 表单）。"""
+        self._body_too_big = False              # 每个请求重置一次（读的时候可能置位）
+        self._body_malformed = False
+        enc = str(self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in enc:
+            return self._read_chunked(max_bytes)
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
@@ -4391,10 +4436,12 @@ class Handler(BaseHTTPRequestHandler):
             return b""
         if n > max_bytes:
             self._body_too_big = True
+            self.close_connection = True        # 没读完就别让这条连接复用
             return b""
         try:
             return self.rfile.read(n)
         except OSError:
+            self.close_connection = True
             return b""
 
     def _guard(self) -> bool:
@@ -5005,6 +5052,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_bytes(payload, ctype, code=res.status or 200)
                 return
             if res.status >= 400:
+                # 计数：**接口返回 403 但面板显示「已登录」** 是这次「QQ 发什么都不回」
+                # 最难查的地方 —— 事件其实一直在被拒。先把数字记下来，插件页会亮出来。
+                try:
+                    st = getattr(rt, "stats", None)
+                    if isinstance(st, dict):
+                        key = "auth_reject" if res.status in (401, 403) else "ingress_reject"
+                        st[key] = int(st.get(key) or 0) + 1
+                except Exception:                              # noqa: BLE001
+                    pass
                 self._json({"ok": False, "error": res.error or "bad request"}, res.status)
                 return
             self._json({"ok": True})

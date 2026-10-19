@@ -16,7 +16,10 @@ from typing import Any, Optional
 
 from bot.onebot import OneBotError, OneBotHTTP
 
+import hashlib
+import hmac
 import json
+import logging
 
 from .base import AdapterError, BaseAdapter, Inbound, register
 from .http import header_lookup, safe_equal
@@ -53,6 +56,62 @@ class OneBotAdapter(BaseAdapter):
         self.raw = OneBotHTTP(self.base, self.token)
 
     # ---------- 入站 ----------
+    def _signature_hex(self, body: bytes, algo: str) -> str:
+        return hmac.new(self.token.encode("utf-8"), body or b"", algo).hexdigest()
+
+    def _authorized(self, headers: dict, body: bytes, query=None) -> bool:
+        """三种鉴权方式都认（OneBot 11 的两种 + query 传参）。
+
+        为什么必须支持 `X-Signature`：**NapCat 的 HTTP 上报根本不发 Authorization**，
+        它只发 `x-self-id` 和 `x-signature: sha1=<HMAC_SHA1(body, token)>`
+        （见 napcat.mjs 的 emitEventAsync）。以前这里只认 `Authorization: Bearer`，
+        于是 NapCat 推来的每一条事件都被 403 挡掉 —— 面板显示「已登录」，
+        但 QQ 里发什么都不回。2026-10-20 就是这样整整三天一条都没进来。
+
+        `query` 里的 `access_token` 是 OneBot 标准里的另一种传法（服务器端配置用）。
+        """
+        if not self.token:
+            return False
+        auth = str(header_lookup(headers, "Authorization") or "").strip()
+        if auth and (safe_equal(auth, f"Bearer {self.token}") or safe_equal(auth, self.token)):
+            return True
+
+        raw_sig = str(header_lookup(headers, "X-Signature") or "").strip()
+        if raw_sig:
+            algo, _, sig = raw_sig.partition("=")
+            algo = (algo or "sha1").strip().lower()
+            sig = sig.strip().lower()
+            if algo in ("sha1", "sha256") and sig:
+                if safe_equal(sig, self._signature_hex(body, algo)):
+                    return True
+
+        if query:
+            got = (query.get("access_token") or [""])[0] if isinstance(query, dict) else ""
+            if got and safe_equal(str(got), self.token):
+                return True
+
+        # 只记「它带了什么」+ 几个候选密钥算出来的签名前缀（不记任何密钥本身），
+        # 用来区分「没带」「带了但用的不是这个 token」。
+        log = logging.getLogger("klee.bot.adapters.onebot")
+        cands = []
+        if raw_sig:
+            algo = (raw_sig.partition("=")[0] or "sha1").strip().lower()
+            algo = algo if algo in ("sha1", "sha256") else "sha1"
+            got = raw_sig.partition("=")[2].strip().lower()
+            for name, key in (("面板token", self.token),):
+                try:
+                    want = hmac.new(key.encode(), body or b"", algo).hexdigest()
+                except Exception:                                  # noqa: BLE001
+                    want = ""
+                cands.append(f"{name}={'匹配' if want and want == got else '不匹配'}")
+        log.warning(
+            "OneBot 事件鉴权失败：authorization=%s x-signature=%s access_token=%s "
+            "body=%dB 面板配置 %d 位 token %s",
+            "有" if auth else "无", ("有" + (raw_sig[:5] + "…" if raw_sig else "")) if raw_sig else "无",
+            "有" if (query or {}).get("access_token") else "无",
+            len(body or b""), len(self.token), " ".join(cands))
+        return False
+
     def parse_inbound(self, method: str, path: str, query: dict,
                       headers: dict, body: bytes) -> Inbound:
         """NapCat 主动 push 过来的事件：校验 token 后原样交给运行时。
@@ -64,8 +123,7 @@ class OneBotAdapter(BaseAdapter):
             return Inbound(status=405, error="只接受 POST")
         if not self.token:
             return Inbound(status=503, error="napcat_token 未配置，拒绝事件")
-        auth = header_lookup(headers, "Authorization")
-        if not (safe_equal(auth, f"Bearer {self.token}") or safe_equal(auth, self.token)):
+        if not self._authorized(headers, body, query):
             return Inbound(status=403, error="bad token")
         try:
             ev = json.loads(body.decode("utf-8") or "{}")
@@ -218,7 +276,12 @@ async function loadStatus(){
     "<br>登录：<b>" + (n.is_login ? "已登录" : "未登录") + "</b>" +
     (n.uin ? " · " + esc(n.uin) + (n.nick ? " " + esc(n.nick) : "") : "") +
     (n.phase ? " · 阶段 <code>" + esc(n.phase) + "</code>" : "") +
-    (d && d.last_event_age_s != null ? "<br>上次消息：" + d.last_event_age_s + " 秒前" : "");
+    (d && d.last_event_age_s != null ? "<br>上次消息：" + d.last_event_age_s + " 秒前" : "") +
+    // 被拒的入站：面板显示「已登录」但 QQ 里不回消息，最常见的就是这个
+    ((d && d.stats && d.stats.auth_reject > 0)
+      ? '<br><b class="bad">有 ' + d.stats.auth_reject + ' 条事件被拒（鉴权失败）</b>'
+        + ' · <span class="kv">NapCat 和面板的 token 不一致：重启一次 NapCat 让它重读配置</span>'
+      : '');
   const w = document.getElementById("webui");
   if (w) w.href = "http://" + (location.hostname || "127.0.0.1") + ":6099/webui";
 }

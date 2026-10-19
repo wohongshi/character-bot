@@ -8,6 +8,7 @@ Go 只做加速，不许改变语义。这里逐字段比对：
   - 未带 X-Klee-Studio 头必须 403（由 Python 兜底）
 """
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -89,8 +90,24 @@ check("sources 条数一致", gs is not None and ps is not None and len(gs) == l
 if gs and ps:
     check("sources 顺序一致", [x["value"] for x in gs] == [x["value"] for x in ps],
           f"{[x['value'] for x in gs][:5]} vs {[x['value'] for x in ps][:5]}")
-    check("sources 文案一致", [x["label"] for x in gs] == [x["label"] for x in ps],
-          f"{[x['label'] for x in gs][:3]} vs {[x['label'] for x in ps][:3]}")
+
+    def no_count(x):
+        # 标签里带条数（「QQ 私聊 · 2100950993（30 条）」）。两次请求之间只要来一条
+        # 新消息，条数就会不同 —— 那不是两边算错，是取了两个瞬间。所以文案比对
+        # 先把条数剥掉，条数单独再取一次比。
+        return re.sub(r"（\d+ 条）", "", str(x.get("label") or ""))
+
+    check("sources 文案一致（忽略实时条数）",
+          [no_count(x) for x in gs] == [no_count(x) for x in ps],
+          f"{[no_count(x) for x in gs][:3]} vs {[no_count(x) for x in ps][:3]}")
+
+    if [x.get("label") for x in gs] != [x.get("label") for x in ps]:
+        # 条数对不上：再取一次（中间没有新消息时两边必须一致）
+        _, sg3, _ = get(GO, "/api/feed/sources")
+        _, sp3, _ = get(PY, "/api/feed/sources")
+        g3 = [x.get("label") for x in (sg3 or {}).get("sources") or []]
+        p3 = [x.get("label") for x in (sp3 or {}).get("sources") or []]
+        check("sources 条数一致（重取一次）", g3 == p3, f"{g3[:3]} vs {p3[:3]}")
 
 print("\n== 4. 鉴权 ==")
 sg, _, _ = get(GO, "/api/feed?limit=10", headers={})
