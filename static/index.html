@@ -3452,11 +3452,16 @@ function moodBar(v, kind){
   const n = Math.max(0, Math.min(20, Math.round(v / 5)));
   return `<span class="mbar"><i class="mb-${esc(kind)}" style="width:${n * 5}%"></i></span>`;
 }
-function showMood(){
+async function showMood(){
   const box = document.getElementById("moodBox");
   if (box){ box.remove(); return; }
+  // 刚进页面时心跳还没跑，lastMood 是空的 —— 以前这里只 flash 一句「还在读…」，
+  // 用户点两下都打不开，看着像坏了。现在直接拉一次。
+  if (!lastMood.data){
+    await paintMood(true);
+    if (!lastMood.data){ flash("读不到状态，稍后再试"); return; }
+  }
   const d = lastMood.data;
-  if (!d){ flash("还在读…"); return; }
   const el = document.createElement("div");
   el.id = "moodBox"; el.className = "card";
   el.style.cssText = "margin:8px 0 0;padding:12px;font-size:13px";
@@ -3511,7 +3516,7 @@ function paintCtx(c){
 /* 「前情提要」是模型自己压的，用户有权看它到底记住了什么 ——
    而且要能一键清掉（压歪了就重新开始）。 */
 function showCtx(){
-  if (!lastCtx.text) return;
+  if (!lastCtx.text){ flash("这段对话还没压缩过（历史超过预算才会压）"); return; }
   const box = document.getElementById("ctxBox");
   if (box){ box.remove(); return; }
   const d = document.createElement("div");
@@ -4027,8 +4032,12 @@ async function kbAdd(){
 async function kbDel(id){
   if (!confirm("删掉这条？检索就再也找不到它了。")) return;
   const d = await post("/api/kb/delete", {character: ACTIVE.id, id});
-  if (d && d.ok){ flash(`删掉了（剩 ${d.chunks} 块）`); loadKbManual(); }
-  else flash((d && d.error) || "删不掉");
+  if (d && d.ok){
+    flash(`删掉了（剩 ${d.chunks} 块）`);
+    const n = document.querySelector("#paneKb .statgrid b");
+    if (n) n.textContent = String(d.chunks);      // 卡片上的块数也要跟着减
+    loadKbManual();
+  } else flash((d && d.error) || "删不掉");
 }
 async function loadKbRecent(){
   loadKbManual();
@@ -5132,7 +5141,7 @@ async function ruleDel(id){
 }
 async function ruleTest(){
   const text = $("ruTest").value;
-  if (!text.trim()) return;
+  if (!text.trim()){ flash("先打一句要试的话"); return; }   // 静默 return 看着像按钮坏了
   const d = await post("/api/rules/test", {text, is_group: true});
   const out = document.getElementById("ruOut");
   if (!out) return;

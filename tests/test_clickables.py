@@ -73,6 +73,16 @@ def main():
     check("4.1 不再引用 #agTools", 'document.getElementById("agTools")' not in html)
     check("4.2 不传 tools（空数组会把 agent 弄瞎）", "{tools: [...box.querySelectorAll" not in html)
 
+    section("4.5 点击审计发现的「静默无响应」")
+    # 三个按钮以前点了什么都不发生、也什么都不说 —— 用户会以为坏了
+    check("4.3 心情 chip 数据没到时会先拉一次（不是只说「还在读」）",
+          "await paintMood(true)" in html and "读不到状态" in html)
+    check("4.4 「前情」没压缩过时给提示（不是静默 return）",
+          '这段对话还没压缩过' in html)
+    check("4.5 规则试跑空输入给提示", "先打一句要试的话" in html)
+    check("4.6 知识库删除后同步「知识块」数字",
+          '删掉了（剩' in html and html.count('n.textContent = String(d.chunks)') >= 2)
+
     section("5. 活服务抽查（起不来就跳过）")
     base = "http://127.0.0.1:8798"
     hdr = {"X-Klee-Studio": "1"}
