@@ -402,13 +402,52 @@ class SkillHub:
                 box["error"] = f"{type(e).__name__}: {e}"
 
         def _invoke_thread():
+            # 不用 asyncio.run()：它在退出时会**取消**所有没跑完的任务，
+            # 而插件常见写法是 `create_task(worker())` 然后立刻返回（draw.py 就是）。
+            # 需要等后台任务时（面板「试跑」）自己建 loop，跑完再 drain 一下。
+            loop = asyncio.new_event_loop()
             try:
-                asyncio.run(_invoke_async())
+                loop.run_until_complete(_invoke_async())
+                if drain > 0:
+                    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                    if pending:
+                        loop.run_until_complete(asyncio.wait(pending, timeout=drain))
+                        left = [t for t in pending if not t.done()]
+                        for t in left:
+                            t.cancel()
+                        if left:
+                            loop.run_until_complete(asyncio.wait(left, timeout=5))
+                        for t in pending:
+                            if t.done() and not t.cancelled():
+                                try:
+                                    exc = t.exception()
+                                except BaseException:             # noqa: BLE001
+                                    continue
+                                if exc is not None:
+                                    log.warning("技能 %s 的后台任务出错：%s: %s",
+                                                s["name"], type(exc).__name__, exc)
             except BaseException as e:                            # noqa: BLE001
                 box["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                # 不等后台任务时（drain=0）也要显式取消：直接 close() 会留一堆
+                # 「Task was destroyed but it is pending」的噪音，还可能吞掉真异常。
+                try:
+                    left = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                    for t in left:
+                        t.cancel()
+                    if left:
+                        loop.run_until_complete(asyncio.wait(left, timeout=5))
+                except Exception:                                 # noqa: BLE001
+                    pass
+                try:
+                    loop.close()
+                except Exception:                                 # noqa: BLE001
+                    pass
 
         loop = chat.get("loop") if isinstance(chat, dict) else None
         loop_thread = chat.get("loop_thread") if isinstance(chat, dict) else None
+        # drain：跑完主逻辑后再等多久后台任务（秒）。面板「试跑」用它等异步出图。
+        drain = float(chat.get("drain") or 0) if isinstance(chat, dict) else 0.0
         on_bot_loop = (loop is not None and loop.is_running()
                        and threading.current_thread() is not loop_thread)
         if on_bot_loop:

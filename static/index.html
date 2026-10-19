@@ -2647,10 +2647,25 @@ async function renameConv(){
   if (sel) Array.from(sel.options).forEach(o => { o.textContent = sessLabel(o.value); });
   flash("改好了");
 }
-function exportConv(){
+async function exportConv(){
+  // 不能 window.open：这个接口在「要登录」名单里，导航请求带不了 X-Klee-Studio，
+  // 只会拿到 403。和备份一样 fetch → blob → a[download]。
   const u = `/api/chat/export?session=${encodeURIComponent(chat.session)}` +
             `&character=${encodeURIComponent(ACTIVE.id)}`;
-  window.open(u, "_blank");            // 服务端带 Content-Disposition，浏览器直接下载
+  try{
+    const r = await fetch(u, {headers: {"X-Klee-Studio": "1"}});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = /filename="([^"]+)"/.exec(cd);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = m ? m[1] : `${ACTIVE.id}-${chat.session}.md`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+    flash(`导出好了（${(blob.size / 1024).toFixed(0)} KB）`);
+  }catch(e){ flash("导出失败：" + (e.message || e)); }
 }
 /* ---------- 朗读 ---------- */
 /* 一次只念一条：点第二条会先停掉前一条。分段返回的音频按顺序播，播完自动收尾。
@@ -2676,8 +2691,13 @@ async function speakMsg(el){
   stopSpeak();
   const bub = box.querySelector(".bub");
   if (!bub) return;
+  // 念**原文**：页面上的 textContent 已经把 ``` 变成 <pre>、把 ** 变成 <b>，
+  // 后端那套清洗规则一条都匹配不上，代码块会被整段念出来。
+  const raw = bub.dataset.raw;
   const qb = bub.querySelector(".qb");                 // 引用块不念，只念这一轮的正文
-  const text = (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
+  const text = (raw != null && raw !== "")
+    ? String(raw).trim()
+    : (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
   if (!text){ flash("这条没有可念的文字"); return; }
 
   const token = ++speakState.token;
@@ -2732,8 +2752,9 @@ async function keepMsg(el){
   const qb = bub.querySelector(".qb");
   const text = (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
   if (!text){ flash("这条没有可记的内容"); return; }
+  const mine = box.classList.contains("me");        // 我发的 vs 她说的
   const r = await post("/api/memories", {character: ACTIVE.id, text: text.slice(0, 300),
-                                         source: "panel", who: ACTIVE.name});
+                                         source: "panel", who: mine ? "主人" : ACTIVE.name});
   if (!r || !r.ok){ alert((r && r.error) || "记不下来"); return; }
   flash(r.item && r.item.hits ? "这条已经记过了" : "记住了（下一条消息就会带上）");
 }
@@ -2763,6 +2784,9 @@ async function delMsg(el){
   if (!confirm("删掉这一条？")) return;
   const r = await post("/api/chat/msg/delete", {session: chat.session, character: ACTIVE.id, ts});
   if (!r || !r.ok){ alert((r && r.error) || "删除失败"); return; }
+  // chat.after 是服务端「这个会话里的第几条」，删掉一条它就得退一格，
+  // 否则下一次轮询从旧游标切，新发的消息会被跳过（要刷新页面才看得见）。
+  chat.after = Math.max(0, chat.after - Number(r.removed || 0));
   box.remove();
   flash("删掉了");
 }
@@ -2863,9 +2887,17 @@ function actsHTML(role){
   const quote = `<button onclick="quoteMsg(this)" title="引用这条再问">引用</button>`;
   const speak = role === "assistant" ? `<button onclick="speakMsg(this)" title="用她的声音念出来">🔊 朗读</button>` : "";
   const keep = `<button onclick="keepMsg(this)" title="存进她的长期记忆">🧠 记住</button>`;
-  const regen = role === "assistant" ? `<button onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
+  const regen = role === "assistant"
+    ? `<button data-regen="1" onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
   const del = `<button onclick="delMsg(this)" title="删掉这一条">删除</button>`;
   return `<div class="acts">${copy}${quote}${speak}${keep}${regen}${del}</div>`;
+}
+/* 只有**最后一条**回复能重新生成：接口永远重跑「最后那一问」，
+   挂在一堆旧回复上，点第三条其实替换的是最新那条 —— 会让人以为删错了。 */
+function onlyLastRegen(){
+  const box = $("msgs"); if (!box) return;
+  const btns = Array.from(box.querySelectorAll('.acts button[data-regen]'));
+  btns.forEach((b, i) => { if (i < btns.length - 1) b.remove(); });
 }
 function quoteHTML(q){
   if (!q || !q.text) return "";
@@ -2886,10 +2918,10 @@ function bubble(m){
       `</div><div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}</div>` +
       `${actsHTML("assistant")}</div></div>`;
   if (m.role === "user")
-    return `<div class="msg me" data-ts="${ts}"><div class="ava">我</div><div><div class="bub">${quoteHTML(m.quote)}${attsHTML(m)}${fmt(m.text)}</div>
+    return `<div class="msg me" data-ts="${ts}"><div class="ava">我</div><div><div class="bub" data-raw="${esc(m.text || "")}">${quoteHTML(m.quote)}${attsHTML(m)}${fmt(m.text)}</div>
       <div class="meta">${hhmm(m.ts)}</div>${actsHTML("user")}</div></div>`;
   const err = m.error ? `<div class="meta">⚠ ${esc(m.error)}</div>` : "";
-  return `<div class="msg klee" data-ts="${ts}">${charAva()}<div><div class="bub">${quoteHTML(m.quote)}${fmt(m.text || "(没接上话……再试一次？)")}</div>
+  return `<div class="msg klee" data-ts="${ts}">${charAva()}<div><div class="bub" data-raw="${esc(m.text || "")}">${quoteHTML(m.quote)}${fmt(m.text || "(没接上话……再试一次？)")}</div>
     <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 用时 ${m.elapsed} 秒` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}${m.via === "vision" ? " · 👁 看图" : ""}</div>${err}${actsHTML("assistant")}</div></div>`;
 }
 let lastRunning = null;
@@ -2910,6 +2942,7 @@ async function pollChat(){
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 60;
   const fresh = (j.messages || []);
   fresh.forEach(m => box.insertAdjacentHTML("beforeend", bubble(m)));
+  if (fresh.length) onlyLastRegen();
   chat.after = j.total;
   if (fresh.length || j.running){ chat.idle = 0; } else { chat.idle += 1; }
   // 间隔由 armChatPoll 每轮自己算，这里不再手动重排
@@ -2925,7 +2958,9 @@ async function pollChat(){
   const tb = $("tBub");
   if (tb && j.running){
     const partial = String(j.running.partial || "");
+    const jobKey = String(j.running.started || "");
     if (partial){
+      tb.dataset.blank = "0";          // 有正文了：旧占位标记作废
       tb.classList.add("streaming");
       if (tb.textContent !== partial) tb.textContent = partial;
       const tm = $("tmeta");
@@ -2934,10 +2969,13 @@ async function pollChat(){
       requestAnimationFrame(() => { if (stick) box.scrollTop = box.scrollHeight; });
     } else {
       tb.classList.remove("streaming");
-      if (tb.dataset.blank !== "1"){
+      // 队列连着跑两个任务时 running 从没机会变 null，气泡是同一个：
+      // 只认 blank 会留着上一个任务的流式正文，所以还要认「这是不是新任务」。
+      if (tb.dataset.blank !== "1" || tb.dataset.job !== jobKey){
         tb.innerHTML = `${esc(ACTIVE.name)}正在想呀想<span class="dots"></span>`;
         tb.dataset.blank = "1";
       }
+      tb.dataset.job = jobKey;
     }
   }
   const hero = $("emptyHero");
@@ -3222,8 +3260,11 @@ async function loadMemories(){
     const when = e.ts ? new Date(e.ts * 1000).toLocaleString("zh-CN",
       {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
     const from = e.source === "agent" ? "她自己记的" : "我记的";
+    // scope：空 = 全局（面板里点的「记住」）；group:/private: = 只在那个会话算数
+    const sc = !e.scope ? "全局" : (String(e.scope).startsWith("group") ? "群里" :
+                                    String(e.scope).startsWith("web:") ? "网页" : "私聊");
     return `<div class="opsline" style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line)">
-      <span class="kv" style="flex:none;width:86px">${esc(when)}<br>${esc(from)}</span>
+      <span class="kv" style="flex:none;width:86px">${esc(when)}<br>${esc(from)} · ${esc(sc)}</span>
       <span style="flex:1;min-width:0;word-break:break-word">${esc(e.text)}</span>
       <button class="btn tiny icon" style="flex:none" title="忘掉这条"
               onclick="delMemory(${Number(e.ts) || 0})">✕</button>

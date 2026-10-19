@@ -941,7 +941,9 @@ class BotRuntime(RuntimeFeatures):
         try:
             from . import memory as mem_mod
             if self.state_dir:
-                mem = mem_mod.render(self.state_dir, self.active_character, text)
+                # scope 必须是这个会话：群里记的事不该出现在私聊的提示里
+                mem = mem_mod.render(self.state_dir, self.active_character, text,
+                                     scope=str(ctx.chat_id))
                 if mem:
                     sys_rules += "\n" + mem
         except Exception as e:                                     # noqa: BLE001

@@ -306,6 +306,29 @@ def _chat_rewrite(session: str, cid: str, keep) -> tuple[int, int]:
     return removed, total - removed
 
 
+def _read_jsonl_all(path: Path) -> list:
+    """全量读 jsonl（导出 / 整体重写用）。
+
+    `_read_jsonl()` 只读尾部 4MB，是给「轮询最近消息」用的；
+    拿着它做导出，长会话会**悄悄只导出最后一截**，而表头还写着「共 N 条」。
+    """
+    out = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    out.append(row)
+    except OSError:
+        pass
+    return out
+
+
 def _append_jsonl(path: Path, entry: dict) -> None:
     with _lock:
         with open(path, "a", encoding="utf-8") as f:
@@ -754,17 +777,20 @@ def _state_dir() -> Path:
     return Path(d) if d else STATE_DIR
 
 
-def _memories_text(cid: str, query: str = "", limit: int = 8) -> str:
-    """当前角色的长期记忆（面板「记住」+ agent 的 remember 共用一份）。"""
+def _memories_text(cid: str, query: str = "", limit: int = 8, scope: str = "") -> str:
+    """当前角色的长期记忆（面板「记住」+ agent 的 remember 共用一份）。
+
+    `scope` 是当前会话（`web:<会话名>`）：只放行「全局 + 这个会话」的条目。
+    """
     from bot import memory as mem_mod
     try:
-        return mem_mod.render(_state_dir(), cid, query, limit)
+        return mem_mod.render(_state_dir(), cid, query, limit, scope=str(scope or ""))
     except Exception as e:                                        # noqa: BLE001
         logger.info("读记忆失败：%s", e)
         return ""
 
 
-def _web_system_text(rt, cid: str, text: str) -> str:
+def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
     """网页聊天的系统提示：人格 + 场景 + **技能目录**。
 
     以前这里没有技能目录，模型根本不知道自己有 40 个插件能用，
@@ -775,7 +801,7 @@ def _web_system_text(rt, cid: str, text: str) -> str:
     sys_text = persona + (f"\n\n【对话场景】你现在在网页面板里和主人聊天，你就是{cname}。"
                           "像手机聊天一样说短句，别用 Markdown。")
     # 长期记忆和「有没有技能目录」无关：插件框架没起来也必须记得住。
-    memories = _memories_text(cid, text)
+    memories = _memories_text(cid, text, scope=("web:" + session) if session else "")
     if memories:
         sys_text += "\n" + memories
     if rt is None or getattr(rt, "skills", None) is None:
@@ -791,7 +817,7 @@ def _web_system_text(rt, cid: str, text: str) -> str:
 
 
 def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
-                    on_delta=None) -> dict:
+                    on_delta=None, session: str = "") -> dict:
     """网页端的 agent 工具循环：直接用 bot 的 agent 配置（工具白名单/步数/超时）。"""
     import asyncio as _aio
     from bot import agent as agent_mod
@@ -814,13 +840,18 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
         # 面板里等于所有插件技能都不可用（截图那轮模型就是这么白跑一趟的）。
         chat={"adapter": _WebAdapter(rt, cid), "is_group": False, "group_id": "",
               "user_id": "panel", "user_name": "主人", "role": "owner",
-              "is_owner": True, "loop": None, "loop_thread": None},
+              "is_owner": True,
+              # 交给 bot 自己那条 loop：插件的 `create_task(worker())`（.画画）
+              # 才不会被临时 loop 关掉。
+              "loop": getattr(rt, "loop", None),
+              "loop_thread": getattr(rt, "loop_thread", None)},
         max_steps=int(cfg.get("agent_max_steps") or 3),
         timeout=float(cfg.get("agent_timeout") or 120),
         max_tokens=int(cfg.get("max_tokens") or 800),
         kb_url=str(cfg.get("kb_url") or ""),
         state_dir=rt.state_dir,
-        scope="web:panel",
+        # 必须是这个会话：面板里她「记住」的东西，下一条消息就得出现在提示里
+        scope=("web:" + session) if session else "web:panel",
         character=cid,
         on_delta=on_delta,
         **kw,
@@ -902,7 +933,10 @@ def _tts_clean(text: str) -> str:
 
 def _tts_chunks(text: str, limit: int = TTS_CHUNK) -> list[str]:
     """按句切段，每段 ≤ limit 字。标点优先，实在没有就硬切。"""
-    t = _tts_clean(text)[:TTS_MAX_CHARS]
+    # 先截一刀再清洗：清洗只会让文本变短（丢掉代码块/链接），
+    # 而 `_tts_clean` 是几条正则全文扫 —— 一条几 MB 的正文不该被白扫。
+    # 20 000 字够任何真实回复用；再长本来也只能念前 4 段。
+    t = _tts_clean(str(text or "")[:20_000])[:TTS_MAX_CHARS]
     if not t:
         return []
     parts = re.split(r"(?<=[。！？!?…；;\n])", t)
@@ -948,6 +982,10 @@ def _save_upload(data_url: str) -> dict:
     raw = str(data_url or "")
     if "," in raw and raw.split(",", 1)[0].startswith("data:"):
         raw = raw.split(",", 1)[1]
+    # 先按编码后的长度挡一道：64MB 的 base64 解码出来是 45MB 的 bytes，
+    # 在 4GB 的机器上不值得为了「告诉用户太大」先吃一口内存。
+    if len(raw) > vision_max_bytes() * 4 // 3 + 16:
+        raise ValueError(f"图片太大（>{vision_max_bytes() // 1024} KB）")
     try:
         blob = base64.b64decode(raw, validate=True)
     except (binascii.Error, ValueError):
@@ -959,8 +997,13 @@ def _save_upload(data_url: str) -> dict:
         raise ValueError("认不出图片格式（支持 PNG / JPEG / GIF / WebP）")
     if len(blob) > vision_max_bytes():
         raise ValueError(f"图片太大（>{vision_max_bytes() // 1024} KB）")
-    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
-           "image/webp": ".webp"}[mime]
+    exts = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+            "image/webp": ".webp"}
+    ext = exts.get(mime)
+    if ext is None:
+        # sniff_mime 还认 BMP，但看图模型基本不收；以前这里直接 KeyError →
+        # 500，前端只看到一句「失败」。认得出但不支持，要说人话。
+        raise ValueError(f"这种图片（{mime}）还不支持，转成 PNG / JPG 再发")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     fp = UPLOAD_DIR / (hashlib.sha1(blob).hexdigest()[:16] + ext)
     if not fp.is_file():
@@ -1216,7 +1259,8 @@ def _delta_sink(job: dict):
         last[0] = now
         with _lock:
             run = _chat_state.get("running")
-            if isinstance(run, dict) and run.get("session") == job.get("session"):
+            if (isinstance(run, dict) and run.get("session") == job.get("session")
+                    and run.get("character") == job.get("character")):
                 run["partial"] = str(text or "")[-2000:]
 
     return cb
@@ -1232,7 +1276,28 @@ BACKUP_FILES = (
     "state/ui_prefs.json", "state/SOUL.md", "state/agent_notes.json",
     "bot/features/config.json",
 )
-BACKUP_DIRS = ("state/characters", "state/characters.d", "bot/features/state")
+BACKUP_DIRS = ("state/characters", "state/characters.d", "bot/features/state",
+               "state/memories")
+
+# 备份里**不能**出现的东西：`state/bot_config.json` 里有 napcat_token、
+# webhook_token、feishu/wechat/qq 的 secret —— 面板上写着「不含密钥」，
+# 那就得真的不含。键名以 token/secret/password 结尾的一律抹掉。
+_SECRET_KEY_RE = re.compile(r"(?:^|_)(?:token|secret|password|passwd|api_key|apikey)$", re.I)
+
+
+def _scrub_secrets(obj):
+    """递归把密钥字段换成 "***"（保留键，恢复时知道这里本来有东西）。"""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and _SECRET_KEY_RE.search(k):
+                out[k] = "***" if v not in (None, "") else v
+            else:
+                out[k] = _scrub_secrets(v)
+        return out
+    if isinstance(obj, list):
+        return [_scrub_secrets(x) for x in obj]
+    return obj
 
 
 def _build_backup() -> bytes:
@@ -1245,7 +1310,16 @@ def _build_backup() -> bytes:
             fp = STUDIO_HOME / rel
             if not fp.is_file():
                 continue
-            z.write(fp, rel)
+            if rel == "state/bot_config.json":
+                # 配置文件逐字节拷 = 把 NapCat / 飞书 / 微信的 token 一起送出去
+                try:
+                    cfg = json.loads(fp.read_text(encoding="utf-8"))
+                    z.writestr(rel, json.dumps(_scrub_secrets(cfg), ensure_ascii=False,
+                                               indent=1))
+                except (OSError, ValueError):
+                    continue                  # 读不出来就不放，别裸拷
+            else:
+                z.write(fp, rel)
             files.append(rel)
         for rel in BACKUP_DIRS:
             base = STUDIO_HOME / rel
@@ -1304,12 +1378,16 @@ def _chat_worker() -> None:
         job = _chat_q.get()
         if job is None:
             return
+        cid = str(job.get("character") or _active_cid())
+        job["character"] = cid              # 下面 _delta_sink 要拿它比对
         with _lock:
-            _chat_state["running"] = {"session": job["session"], "text": job["text"],
+            # character 必须带上：`studio-main` 这个会话名是所有角色共用的，
+            # 只按 session 过滤会让 A 角色生成时 B 角色的窗口也冒出流式气泡。
+            _chat_state["running"] = {"session": job["session"], "character": cid,
+                                      "text": job["text"],
                                       "started": time.time(), "partial": ""}
         t0 = time.time()
         ok, text, err = True, "", None
-        cid = str(job.get("character") or _active_cid())
         try:
             if BOT is None:
                 raise RuntimeError(_BOT_IMPORT_ERR or "面板 Bot 没跑起来")
@@ -1397,7 +1475,7 @@ def _chat_worker() -> None:
             use_agent = rt is not None
             on_delta = _delta_sink(job)     # 流式增量（前端轮询里显示）
             try:
-                sys_text = _web_system_text(rt, cid, dtxt)
+                sys_text = _web_system_text(rt, cid, dtxt, str(job.get("session") or ""))
             except Exception as e:                               # noqa: BLE001
                 # 技能目录只是锦上添花：拼不出来也要能聊天
                 logger.warning("系统提示拼装失败，退回只有人格：%s", e)
@@ -1427,7 +1505,8 @@ def _chat_worker() -> None:
             # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
             if use_agent:
                 try:
-                    res = _web_agent_call(rt, msgs, cid, reasoning, on_delta=on_delta)
+                    res = _web_agent_call(rt, msgs, cid, reasoning, on_delta=on_delta,
+                                          session=str(job.get("session") or ""))
                     # 技能生成的图片（ctx.images_out）在这里统一转成 URL 引用
                     job["images"] = [{"ref": _img_ref(i.get("path")),
                                       "caption": str(i.get("caption") or "")}
@@ -3072,6 +3151,8 @@ _SENSITIVE_GET = frozenset({
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
     "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
+    # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
+    "/api/memories",
 })
 
 
@@ -3255,7 +3336,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"session": session, "character": cid, "after": after,
                         "total": len(entries), "messages": entries[after:],
                         "queue": _chat_q.qsize(),
-                        "running": running if running and running["session"] == session else None})
+                        # 旧版本写进去的 running 没有 character 字段，缺省当 klee
+                        # （不然升级那一刻正在跑的任务会突然从面板上消失）
+                        "running": running if (running and running["session"] == session
+                                               and str(running.get("character")
+                                                       or _active_cid()) == cid) else None})
             return
         if u.path == "/api/backup":
             try:
@@ -3270,11 +3355,16 @@ class Handler(BaseHTTPRequestHandler):
                                      f'attachment; filename="{fname}"')])
             return
         if u.path == "/api/chat/export":
-            session = (q.get("session") or ["studio-main"])[0]
-            cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
+            # 这里的两个值会进 Content-Disposition 的文件名：必须和别的聊天接口
+            # 一样先洗一遍。不洗的话 `"` 或 CRLF 会把响应头撕开，
+            # 中文则会在 send_header 的 latin-1 编码上直接抛 UnicodeEncodeError。
+            session = re.sub(r"[^A-Za-z0-9_\-]", "",
+                             str((q.get("session") or ["studio-main"])[0]))[:48] or "studio-main"
+            cid = re.sub(r"[^a-z0-9_\-]", "",
+                         str((q.get("character") or [""])[0]).strip().lower())[:32] or _active_cid()
             info = _char_store().get(cid) or {}
             cname = info.get("name") or cid
-            rows = [e for e in _read_jsonl(CHAT_JSONL)
+            rows = [e for e in _read_jsonl_all(CHAT_JSONL)
                     if e.get("session") == session
                     and str(e.get("character") or "klee") == cid]
             labels = _session_labels()
@@ -3289,11 +3379,13 @@ class Handler(BaseHTTPRequestHandler):
                     lines.append(f"**{who}**（{when}）：![图片]({e.get('img')})")
                     continue
                 txt = str(e.get("text") or "").strip()
-                if not txt:
+                refs = [str(r) for r in (e.get("images") or []) if str(r).strip()]
+                if not txt and not refs:
                     continue
-                for ref in (e.get("images") or []):
+                for ref in refs:
                     lines.append(f"**{who}**（{when}）：![图片]({ref})")
-                lines.append(f"**{who}**（{when}）：{txt}")
+                if txt:
+                    lines.append(f"**{who}**（{when}）：{txt}")
                 lines.append("")
             body = "\n".join(lines).encode("utf-8")
             fname = f"{cid}-{session}.md"
@@ -3827,9 +3919,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 res = hub.run(cmd, f"{cmd} {args}".strip(), adapter=adapter,
                               is_group=False, group_id="", user_id="panel",
-                              user_name="主人", role="owner", timeout=40,
+                              user_name="主人", role="owner", timeout=90,
                               chat={"adapter": adapter, "is_owner": True, "is_group": False,
-                                    "user_id": "panel", "user_name": "主人", "role": "owner"})
+                                    "user_id": "panel", "user_name": "主人", "role": "owner",
+                                    # 等异步插件把活干完：`.画画` 是 create_task 之后
+                                    # 立刻返回的，不等的话试跑只有「在画啦」没有图。
+                                    "drain": 60})
             except Exception as e:                               # noqa: BLE001
                 logger.exception("试跑命令失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
@@ -3869,11 +3964,16 @@ class Handler(BaseHTTPRequestHandler):
                             "items": mem_mod.all_items(_state_dir(), cid)})
                 return
             text = str(body.get("text") or "")
+            if not str(text).strip():
+                self._json({"ok": False, "error": "没有可记的内容"}, 400)
+                return
             ent = mem_mod.add(_state_dir(), cid, text,
                               source=str(body.get("source") or "panel"),
-                              who=str(body.get("who") or ""))
+                              who=str(body.get("who") or ""),
+                              scope=str(body.get("scope") or ""))
             if ent is None:
-                self._json({"ok": False, "error": "没有可记的内容"}, 400)
+                # 内容有、但没写进盘（目录只读/磁盘满）——不能回 ok
+                self._json({"ok": False, "error": "记忆写不进磁盘（看运行日志）"}, 500)
                 return
             self._json({"ok": True, "item": ent, "count": len(mem_mod.all_items(_state_dir(), cid))})
             return
@@ -3998,6 +4098,14 @@ class Handler(BaseHTTPRequestHandler):
             if last_user is None:
                 self._json({"ok": False, "error": "这个会话里还没有你说过的话"}, 400)
                 return
+            # 正在生成时不许重跑：否则「最后那条用户消息」可能正是在跑的那条，
+            # 会再排一个同样的任务，界面上一条提问配两条回复。
+            with _lock:
+                run = _chat_state["running"]
+            if run and run.get("session") == session and \
+                    str(run.get("character") or _active_cid()) == cid:
+                self._json({"ok": False, "error": "这条还在生成，等它说完再重新生成"}, 409)
+                return
             cut = float(last_user.get("ts") or 0)
             removed, _left = _chat_rewrite(
                 session, cid,
@@ -4007,8 +4115,10 @@ class Handler(BaseHTTPRequestHandler):
             # **不新写一条用户消息**：原那条还在，重跑时按它的 id 从历史里剔掉
             # （worker 里那段 eid 过滤就是干这个的）。否则界面上会出现两条一样的提问。
             eid = str(last_user.get("id") or "")
+            _quote = last_user.get("quote") if isinstance(last_user.get("quote"), dict) else None
             _chat_q.put({"session": session, "text": text, "character": cid, "eid": eid,
                          "in_imgs": imgs, "agent": False,
+                         "quote": _quote,
                          "reasoning": str(body.get("reasoning") or "default")[:16]})
             self._json({"ok": True, "queued": True, "removed": removed})
             return

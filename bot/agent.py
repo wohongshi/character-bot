@@ -499,10 +499,13 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
     try:
         from . import memory as mem_mod
         if ctx.character:
+            # scope 跟着会话走：群成员让记的事只在这个群里算数
             mem_mod.add(ctx.state_dir, ctx.character, text, source="agent",
-                        who=str((ctx.chat or {}).get("user_name") or ""))
-    except Exception:                                        # noqa: BLE001
-        pass
+                        who=str((ctx.chat or {}).get("user_name") or ""),
+                        scope=ctx.scope)
+    except Exception as e:                                   # noqa: BLE001
+        # 写失败不能悄悄咽掉：记住了但没落盘，下一条消息就不见了
+        log.warning("长期记忆写入失败：%s", e)
     with _notes_lock(path):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))

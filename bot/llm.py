@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -185,6 +186,13 @@ def _read_sse(resp, on_delta=None) -> dict | None:
             except ValueError:
                 continue
             saw_any = True
+            # 有的网关不在 HTTP 层报错，而是在流里塞一条 {"error": {...}}（配额/超长/过载）。
+            # 当成普通 chunk 跳过的话，最后只剩「模型返回空内容」，真正的原因全丢了。
+            if obj.get("error"):
+                err = obj.get("error")
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+                log.warning("SSE 流里报错：%s", msg)
+                return None                  # 退回非流式，让 HTTP 层把原因抛出来
             choices = obj.get("choices") or []
             if not isinstance(choices, list) or not choices:
                 continue
@@ -220,10 +228,12 @@ def _read_sse(resp, on_delta=None) -> dict | None:
                 except Exception:            # noqa: BLE001  回调坏了不能影响取字
                     pass
     except Exception as e:                   # noqa: BLE001
-        if not saw_any:
-            log.info("SSE 流读取失败，退回非流式：%s", e)
-            return None
-        log.warning("SSE 流中途断了（已收到 %d 字）：%s", sum(len(x) for x in content), e)
+        # 中途断流一律退回非流式。以前这里把「已经收到的半截」当成功返回：
+        # 用户会看到一句被截断的回复，而 agent 那边半截的 tool_call 参数
+        # 会被 _parse_args 兜成 {} —— 工具拿着空参数照样跑，错得更隐蔽。
+        log.warning("SSE 流读取失败（已收到 %d 字），退回非流式：%s",
+                    sum(len(x) for x in content), e)
+        return None
     text = "".join(content).strip() or "".join(reason).strip()
     if not text and not calls:
         return None if not saw_any else {"text": "", "tool_calls": [], "finish_reason": finish}
@@ -480,6 +490,11 @@ class ModelStore:
                      **({"Authorization": f"Bearer {key}"} if key else {})},
             method="POST",
         )
+        # 一次调用只有一份超时预算：流式先花掉一部分，退回非流式时只能用剩下的。
+        # 以前是在 `with` 里直接再发一次、又给满额 timeout —— 等于把 agent 的
+        # 整步预算翻倍，最后变成「agent 超时」，明明是能救回来的。
+        deadline = time.monotonic() + max(5.0, float(timeout or 0))
+        fallback = False
         try:
             # 和 discover_models 用同一个 opener：本机/内网 provider 绕开 HTTP(S)_PROXY。
             # 之前这里用全局 urlopen —— 环境里一有 http_proxy，127.0.0.1:7863 就被
@@ -490,13 +505,11 @@ class ModelStore:
                     if got is not None:
                         return got                # 流式成功：结构与非流式完全一致
                     # 服务端没按 SSE 回（直接吐了整段 JSON / 或者干脆不支持）：
-                    # 这一份响应已经被读掉了，重开一次非流式请求。
+                    # 这一份响应已经被读掉了，**先退出 with** 再重发。
                     log.info("服务端不支持流式，改走非流式")
-                    return self.complete_raw(
-                        messages, model=model, provider=provider, timeout=timeout,
-                        temperature=temperature, max_tokens=max_tokens, tools=tools,
-                        tool_choice=tool_choice, extra_body=extra_body, stream=False)
-                raw = r.read().decode("utf-8", "replace") or "{}"
+                    fallback = True
+                else:
+                    raw = r.read().decode("utf-8", "replace") or "{}"
         except urllib.error.HTTPError as e:
             body = ""
             try:
@@ -506,6 +519,12 @@ class ModelStore:
             raise RuntimeError(f"模型接口 HTTP {e.code}: {body}") from e
         except (OSError, urllib.error.URLError) as e:
             raise RuntimeError(f"模型接口请求失败：{type(e).__name__}: {e}") from e
+        if fallback:
+            left = max(5.0, deadline - time.monotonic())
+            return self.complete_raw(
+                messages, model=model, provider=provider, timeout=left,
+                temperature=temperature, max_tokens=max_tokens, tools=tools,
+                tool_choice=tool_choice, extra_body=extra_body, stream=False)
         try:
             data = json.loads(raw)
         except ValueError as e:
