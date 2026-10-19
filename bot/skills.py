@@ -78,6 +78,9 @@ class _Capture:
         return SimpleNamespace(success=True)
 
 
+_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
 class SkillHub:
     def __init__(self, manager):
         self.mgr = manager
@@ -235,6 +238,11 @@ class SkillHub:
                 # 「运势」一个 2-gram（1/6=0.17），按 0.25 截会把它丢掉 ——
                 # 而那正是用户的原话。命中 ≥2 个直接过，只命中 1 个才看比例。
                 if hit < 2 and score < min_score:
+                    continue
+                # 纯英文查询更严：英文词长，撞上一个二元组纯属巧合
+                # （`zzqxvbnm` 和 `subnet` 共享 "bn"，1/7=0.14 就过线了）。
+                # 英文要么整词命中（≥2 个 2-gram），要么比例够高。
+                if hit < 2 and score < 0.5 and not _CJK.search(q):
                     continue
             scored.append((score, s, cmds))
         scored.sort(key=lambda x: (-x[0], -len(x[2]), x[1]["name"]))

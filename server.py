@@ -3241,6 +3241,7 @@ _TOOL_LABELS = {
     "web_search": "搜网页", "web_fetch": "读网页", "kb_search": "查知识库",
     "now": "看时间", "calc": "算数", "list_skills": "列技能",
     "read_skill": "读技能", "use_skill": "用技能", "remember": "记事情", "recall": "想起来",
+    "convert_unit": "换算单位", "days_until": "算倒数日", "todo": "记待办",
 }
 
 

@@ -28,10 +28,14 @@ log = logging.getLogger("klee.bot.toolbox")
 DEFAULT_TOOLS: List[str] = [
     "web_search", "web_fetch", "kb_search", "now", "calc",
     "list_skills", "read_skill", "use_skill", "remember", "recall",
+    # 日常小工具：换算 / 倒数日 / 待办 —— 装上就能用，不必先去面板勾选
+    "convert_unit", "days_until", "todo",
 ]
 
 # 带工具的插件（相对 bot/features）。bootstrap 用；也是「工具插件」的权威清单。
-TOOL_PLUGINS: List[str] = ["web_tools", "utility", "notes", "knowledge", "skillbox"]
+# 这份清单同时决定「新装插件默认开」——漏一个，那次升级就会静默瞎掉一个工具。
+TOOL_PLUGINS: List[str] = ["web_tools", "utility", "notes", "knowledge", "skillbox",
+                          "units", "countdowns", "todo"]
 
 TOOLS: Dict[str, dict] = {}
 _LOCK = threading.RLock()
@@ -191,6 +195,11 @@ def bootstrap(features_dir: str | Path | None = None, *, force: bool = False) ->
             return len(TOOLS)
         _BOOTED = True
     d = Path(features_dir) if features_dir else Path(__file__).with_name("features")
+    # 和 FeatureManager 一样把插件目录放进 sys.path：插件之间会 `from _plugstore import …`，
+    # 少了这一步，bootstrap 出来的工具会以 ImportError 静默消失。
+    added = str(d) not in sys.path
+    if added:
+        sys.path.append(str(d))
     n = 0
     for stem in TOOL_PLUGINS:
         path = d / f"{stem}.py"
@@ -213,4 +222,9 @@ def bootstrap(features_dir: str | Path | None = None, *, force: bool = False) ->
             n += len(TOOLS) - before
         except Exception as e:                                  # noqa: BLE001
             log.warning("toolbox: 工具插件 %s 加载失败 — %s: %s", stem, type(e).__name__, e)
+    if added:
+        try:
+            sys.path.remove(str(d))
+        except ValueError:
+            pass
     return n
