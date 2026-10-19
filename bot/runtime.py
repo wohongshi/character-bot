@@ -995,7 +995,8 @@ class BotRuntime(RuntimeFeatures):
 
         def _summarize(m, **kw):
             return self.models.chat(m, provider=str(mm.get("provider") or ""),
-                                    model=str(mm.get("model") or ""), **kw)
+                                    model=str(mm.get("model") or ""),
+                                    character=self.active_character, **kw)
 
         try:
             pl = ctx_mod.build(
@@ -1117,7 +1118,8 @@ class BotRuntime(RuntimeFeatures):
             try:
                 reply = await asyncio.to_thread(
                     self.models.chat, msgs,
-                    max_tokens=int(self.config.get("max_tokens") or 800), **mkw)
+                    max_tokens=int(self.config.get("max_tokens") or 800),
+                    character=self.active_character, **mkw)
             except Exception as e:                                 # noqa: BLE001
                 self.stats["errors"] += 1
                 logger.warning("聊天失败: %s", e)

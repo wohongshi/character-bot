@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -59,6 +60,25 @@ CREATE INDEX IF NOT EXISTS idx_msg_char    ON msg(character, ts);
 CREATE INDEX IF NOT EXISTS idx_msg_chat    ON msg(chat_id, role, ts);
 CREATE INDEX IF NOT EXISTS idx_msg_day     ON msg(day, role);
 """
+
+
+# 数「常用字」时要忽略的字：虚词、代词、标点。不是要做分词，
+# 只是想让人一眼看出「她平时都在聊什么」。
+_STOP_CHARS = set("的了是我你他她它们在有不这那就都也还很又和吗呢吧啊呀哦嗯"
+                  "着过把被让给对从到说个一上下进出要会能可就才再没么什怎"
+                  "0 1 2 3 4 5 6 7 8 9 \n\t")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _top_chars(texts: list[str], limit: int = 16) -> list[dict]:
+    """统计常用汉字（只留汉字，按出现次数）。"""
+    from collections import Counter
+    c = Counter()
+    for t in texts:
+        for ch in _CJK_RE.findall(str(t or "")):
+            if ch not in _STOP_CHARS:
+                c[ch] += 1
+    return [{"ch": k, "n": v} for k, v in c.most_common(limit)]
 
 
 class MessageIndex:
@@ -439,6 +459,75 @@ class MessageIndex:
                     "from": span[0] or 0, "to": span[1] or 0}
         finally:
             con.close()
+
+    def insights(self, days: int = 30, src: str = "messages") -> dict:
+        """看板的「数据洞察」：活跃热力图、角色分布、常用字、高频短句。
+
+        全部下推到 SQL 聚合（20 万行也只扫一遍），只在算「常用字」时
+        取最近 1500 条用户发言到 Python 里数 —— 中文没法用 FTS 的分词做词频。
+        """
+        days = max(1, min(int(days or 30), 120))
+        since = time.time() - days * 86400
+        out = {"days": days, "heat": [], "by_character": [], "by_day": [],
+               "top_chars": [], "top_phrases": [], "avg_user_len": 0,
+               "busiest": {"hour": -1, "weekday": -1, "n": 0}, "from_sql": True,
+               "total": 0}
+        try:
+            con = self._connect()
+        except sqlite3.Error as e:
+            return {**out, "from_sql": False, "error": str(e)}
+        try:
+            where = "role IN ('user','assistant') AND src = ? AND ts > ?"
+            out["total"] = int(con.execute(
+                f"SELECT COUNT(*) FROM msg WHERE {where}", (src, since)).fetchone()[0])
+            # 热力图：星期 × 小时。strftime 的 %w 是 0=周日，这里换成 0=周一
+            for w, h, n in con.execute(
+                    "SELECT CAST(strftime('%w', ts, 'unixepoch', 'localtime') AS INTEGER),"
+                    " CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER),"
+                    f" COUNT(*) FROM msg WHERE {where} GROUP BY 1, 2", (src, since)):
+                out["heat"].append({"w": (int(w) + 6) % 7, "h": int(h), "n": int(n)})
+            # 角色分布（含收发拆分）
+            for cid, u, a in con.execute(
+                    "SELECT character, SUM(role='user'), SUM(role='assistant')"
+                    f" FROM msg WHERE {where} GROUP BY 1 ORDER BY 2 DESC", (src, since)):
+                out["by_character"].append({"id": cid or "", "user": int(u or 0),
+                                            "assistant": int(a or 0),
+                                            "n": int(u or 0) + int(a or 0)})
+            # 逐日
+            for day, n in con.execute(
+                    "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, COUNT(*)"
+                    f" FROM msg WHERE {where} GROUP BY 1 ORDER BY 1", (src, since)):
+                out["by_day"].append({"date": day, "n": int(n)})
+            # 用户发言长度
+            row = con.execute(
+                "SELECT AVG(LENGTH(text)), MAX(LENGTH(text)) FROM msg"
+                f" WHERE role='user' AND text <> '' AND src = ? AND ts > ?",
+                (src, since)).fetchone()
+            out["avg_user_len"] = round(float(row[0] or 0), 1) if row else 0
+            out["max_user_len"] = int(row[1] or 0) if row else 0
+            # 最忙的那一格
+            heat = sorted(out["heat"], key=lambda x: -x["n"])
+            if heat:
+                out["busiest"] = {"weekday": heat[0]["w"], "hour": heat[0]["h"],
+                                  "n": heat[0]["n"]}
+            # 高频短句（整句完全一样的，只取短句）
+            for text, n in con.execute(
+                    "SELECT text, COUNT(*) c FROM msg"
+                    " WHERE role='user' AND src = ? AND ts > ?"
+                    " AND LENGTH(text) BETWEEN 2 AND 12"
+                    " GROUP BY text HAVING c >= 2 ORDER BY c DESC, MAX(ts) DESC LIMIT 12",
+                    (src, since)):
+                out["top_phrases"].append({"text": str(text or ""), "n": int(n)})
+            # 常用字：取最近 1500 条用户发言在 Python 里数（中文没法靠 SQL 分词）
+            texts = con.execute(
+                "SELECT text FROM msg WHERE role='user' AND src = ? AND ts > ?"
+                " AND text <> '' ORDER BY ts DESC LIMIT 1500", (src, since)).fetchall()
+        except sqlite3.Error as e:
+            return {**out, "from_sql": False, "error": str(e)}
+        finally:
+            con.close()
+        out["top_chars"] = _top_chars([str(t[0] or "") for t in texts])
+        return out
 
     def recent(self, session: str, limit: int = 50) -> list[dict]:
         con = self._connect()

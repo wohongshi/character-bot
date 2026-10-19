@@ -2024,6 +2024,7 @@ def _usage_summary(days: int = 7) -> dict:
            "est": 0, "fallback": 0, "fails": 0}
     by_model: dict[str, dict] = {}
     by_day: dict[str, dict] = {}
+    by_char: dict[str, dict] = {}
     for r in rows:
         p_tok = int(r.get("prompt_tokens") or 0)
         c_tok = int(r.get("completion_tokens") or 0)
@@ -2052,12 +2053,124 @@ def _usage_summary(days: int = 7) -> dict:
         d = by_day.setdefault(day, {"date": day, "requests": 0, "total": 0})
         d["requests"] += 1
         d["total"] += t_tok
+        # 按角色归账（旧记录没有这个字段 → 单独一组，别硬塞给当前角色）
+        cid = str(r.get("character") or "")
+        c = by_char.setdefault(cid, {"id": cid, "requests": 0, "total": 0, "ms": 0.0})
+        c["requests"] += 1
+        c["total"] += t_tok
+        c["ms"] += ms
     models = sorted(by_model.values(), key=lambda x: -x["total"])[:8]
+    chars = sorted(by_char.values(), key=lambda x: -x["total"])[:8]
     series = sorted(by_day.values(), key=lambda x: x["date"])
     return {"ok": True, "days": days, "rows": len(rows),
             "totals": {**tot, "avg_ms": round(tot["ms"] / tot["requests"], 1) if tot["requests"] else 0},
-            "models": models, "daily": series,
+            "models": models, "characters": chars, "daily": series,
             "hint": "数字来自模型返回的 usage；网关不返回时按字符估算（标 est）"}
+
+
+# ---------- 系统自检 ----------
+# 见 bot/selfcheck.py：那边只认「传进来的事实」，不 import server，
+# 所以单测能直接喂临时目录；这里负责把运行时事实凑齐。
+def _known_chat_sessions() -> set:
+    """索引里出现过的会话名（SQL 全量，不读 JSONL 尾部 —— 老会话不能算丢失）。"""
+    try:
+        con = _index()._connect()                     # noqa: SLF001（同包内部工具）
+        try:
+            rows = con.execute("SELECT DISTINCT session FROM msg WHERE src='chat'").fetchall()
+        finally:
+            con.close()
+        return {str(r[0]) for r in rows if r[0]}
+    except Exception:                                 # noqa: BLE001
+        return set()
+
+
+def _selfcheck_env() -> dict:
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    cfg = {}
+    try:
+        cfg = dict(BOT.config) if BOT else {}
+    except Exception:                                 # noqa: BLE001
+        cfg = {}
+    # 模型
+    model: dict = {}
+    try:
+        act = BOT.models.active()
+        prov = BOT.models.get_provider(act.get("provider")) or {}
+        api = str(prov.get("api") or "")
+        model = {"provider": act.get("provider"), "model": act.get("model"),
+                 "has_key": bool(str(prov.get("key") or "").strip()),
+                 # 本地网关（127.0.0.1 / localhost）不要求 key
+                 "local": api.startswith(("http://127.", "http://localhost", "http://192.168."))}
+    except Exception as e:                            # noqa: BLE001
+        model = {"error": str(e)[:120]}
+    # 适配器
+    adapters: dict = {}
+    try:
+        adapters = dict(getattr(rt, "adapters", {}) or {})
+    except Exception:                                 # noqa: BLE001
+        adapters = {}
+    platforms = []
+    for name, ad in adapters.items():
+        if name == "web":
+            continue                                  # 面板自己就是 web，不算外部平台
+        try:
+            h = ad.health() if hasattr(ad, "health") else {}
+        except Exception as e:                        # noqa: BLE001
+            h = {"ok": False, "detail": str(e)[:120]}
+        platforms.append({"name": name,
+                          "connected": bool(h.get("ok") or h.get("online")),
+                          "detail": str(h.get("detail") or "")[:120]})
+    stats = dict(getattr(rt, "stats", {}) or {})
+    streak = max([int(v or 0) for k, v in stats.items()
+                  if str(k).startswith("auth_streak:")] or [0])
+    # 会话孤儿：有显示名/置顶，但索引里一条都不剩
+    labels = _session_labels()
+    known = _known_chat_sessions()
+    orphan = sorted(k for k in labels if known and k not in known)
+    return {"state_dir": STATE_DIR,
+            "features_dir": Path(__file__).with_name("bot") / "features",
+            "index": (_index().health() if BOT else {"ok": False, "error": "bot 未启动"}),
+            "model": model,
+            "adapter": {"platforms": platforms, "auth_streak": streak,
+                        "name": (platforms[0]["name"] if platforms else "")},
+            "workers": {k: bool(th.is_alive()) for k, th in _WORKERS.items()},
+            "orphan_sessions": orphan,
+            "cards_dir": STATE_DIR / "images"}
+
+
+def _selfcheck() -> dict:
+    from bot import selfcheck as sc
+    env = _selfcheck_env()
+    try:
+        items = sc.run(env)
+    except Exception as e:                            # noqa: BLE001
+        logger.exception("自检跑失败")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "items": []}
+    return {"ok": True, "level": sc.overall(items), "items": items, "ts": time.time(),
+            "counts": {"bad": sum(1 for i in items if i["level"] == "bad"),
+                       "warn": sum(1 for i in items if i["level"] == "warn"),
+                       "ok": sum(1 for i in items if i["level"] == "ok")}}
+
+
+def _selfcheck_fix(action: str) -> dict:
+    from bot import selfcheck as sc
+    env = _selfcheck_env()
+
+    def _rebuild_index():
+        return _index().sync(force=True)
+
+    def _drop_orphans():
+        orphan = set(env.get("orphan_sessions") or [])
+        if not orphan:
+            return 0
+        meta = _session_meta()
+        meta["labels"] = {k: v for k, v in meta["labels"].items() if k not in orphan}
+        meta["pins"] = [p for p in meta["pins"] if p not in orphan]
+        _save_session_meta(meta)
+        return len(orphan)
+
+    return sc.fix(env, action, {"index_rebuild": _rebuild_index,
+                                "drop_orphan_sessions": _drop_orphans})
 
 
 # ---------- 定时任务（到点让她自己去做一件事） ----------
@@ -2436,15 +2549,15 @@ def _run_job_body(job: dict, cid: str) -> None:
         if not mkw["model"]:
             mkw = {}
         try:
-            text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
+            text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid,
                                    stream=True, on_delta=on_delta, **mkw, **kw)
         except TypeError:
             # 模型层不认 reasoning_effort（或者不认 stream）就别带它们
             try:
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT,
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid,
                                        stream=True, on_delta=on_delta, **mkw)
             except TypeError:
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, **mkw)
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid, **mkw)
         # 表情标记在这里洗：正文写进历史的是「洗干净的那句」，
         # 图上单独一条气泡 —— 否则搜索/复制里会带上 [表情:开心] 这种标记。
         text = _apply_stickers(text, job, cid)
@@ -2480,13 +2593,25 @@ def _chat_worker(name: str = "chat-worker") -> None:
             _chat_q.done(job)          # 让这个会话重新可调度
 
 
+# 后台线程登记：自检要能回答「worker 还活着吗」。
+# 起线程的地方只有两处（这里和 main() 的调度循环），都登记进这张表。
+_WORKERS: "dict[str, threading.Thread]" = {}
+
+
+def _spawn_worker(name: str, target) -> threading.Thread:
+    th = threading.Thread(target=target, daemon=True, name=name)
+    th.start()
+    _WORKERS[name] = th
+    return th
+
+
 def _start_workers() -> None:
     """起 worker 池。**放在 main() 里**：import server 不该顺手开 3 个线程 ——
     测试里 import 一下就把队列抽干，看起来像「任务凭空消失」。
     """
     for i in range(CHAT_WORKERS):
-        threading.Thread(target=_chat_worker, kwargs={"name": f"chat-worker-{i + 1}"},
-                         daemon=True, name=f"chat-worker-{i + 1}").start()
+        _spawn_worker(f"chat-worker-{i + 1}",
+                      lambda n=f"chat-worker-{i + 1}": _chat_worker(name=n))
 
 
 
@@ -4382,7 +4507,7 @@ _SENSITIVE_GET = frozenset({
     "/api/runtime", "/api/market", "/api/similar", "/api/characters/palette",
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
-    "/api/mood",
+    "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
 })
 
 
@@ -4927,6 +5052,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "lock": _lock.info(), "queue": _chat_q.qsize(),
                         "busy": _chat_q.busy(), "runs": _run_all()})
             return
+        if u.path == "/api/insights":
+            days = _int_param(q, "days", 30, lo=1, hi=120)
+            src = "chat" if str((q.get("src") or ["messages"])[0]) == "chat" else "messages"
+            try:
+                data = _index().insights(days=days, src=src)
+            except Exception as e:                                # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json({"ok": True, "src": src, **data})
+            return
+        if u.path == "/api/selfcheck":
+            self._json(_selfcheck())
+            return
         if u.path == "/api/usage":
             self._json(_usage_summary(_int_param(q, "days", 7, lo=0, hi=365)))
             return
@@ -4944,6 +5082,23 @@ class Handler(BaseHTTPRequestHandler):
             from bot import mood as mood_mod
             cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
             self._json(mood_mod.summary(_state_dir(), cid))
+            return
+        if u.path == "/api/plugins/export":
+            from bot import pluginpack as _pp
+            want = str((q.get("name") or [""])[0]).strip()
+            try:
+                if want:
+                    blob, fname = _pp.pack(FEATURES_DIR, want)
+                else:
+                    # 不给名字 = 所有插件源码的**备份包**（导入入口一次只收 20 个 .py，
+                    # 所以 150 个插件装不回去 —— 这个包只做存档，README 里写清楚了）
+                    blob, fname = _pp.pack_backup(FEATURES_DIR)
+            except Exception as e:                                # noqa: BLE001
+                self._json({"ok": False, "error": str(e)[:200]}, 400)
+                return
+            self._send_bytes(blob, "application/zip", cache="no-store",
+                             extra=[("Content-Disposition",
+                                     f'attachment; filename="{fname}"')])
             return
         if u.path == "/api/plugins/audit":
             self._json(_plugin_audit())
@@ -5572,6 +5727,53 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": str(e)}, 400)
                     return
             self._json({"ok": True, "session": session, "queued": True})
+            return
+
+        if u.path == "/api/selfcheck/fix":
+            action = str(body.get("id") or "").strip()[:32]
+            if action == "all":
+                out = []
+                for it in _selfcheck().get("items", []):
+                    if it.get("fix"):
+                        out.append(_selfcheck_fix(it["fix"]))
+                self._json({"ok": True, "fixed": out, "after": _selfcheck()})
+                return
+            if not action:
+                self._json({"ok": False, "error": "缺 id"}, 400)
+                return
+            res = _selfcheck_fix(action)
+            self._json({**res, "after": _selfcheck()} if res.get("ok") else res,
+                       code=200 if res.get("ok") else 400)
+            return
+
+        if u.path == "/api/plugins/uninstall":
+            from bot import pluginpack as _pp
+            name = str(body.get("name") or "").strip()
+            try:
+                res = _pp.uninstall(FEATURES_DIR, name, STATE_DIR / "trash")
+            except _pp.PackError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            except OSError as e:                        # 跨设备/只读/权限：别 500
+                self._json({"ok": False, "error": f"移不动：{e}"}, 400)
+                return
+            # 从「已启用」里也摘掉，否则重载后体检会报「启用了但没加载」
+            try:
+                cfg_path = FEATURES_DIR / "config.json"
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8") or "{}")
+                if isinstance(cfg.get("enabled"), list):
+                    cfg["enabled"] = [x for x in cfg["enabled"] if str(x) != name]
+                if isinstance(cfg.get("settings"), dict):
+                    cfg["settings"].pop(name, None)
+                tmp = cfg_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
+                               encoding="utf-8")
+                tmp.replace(cfg_path)
+            except (OSError, ValueError) as e:
+                logger.info("卸载时清配置失败（不影响卸载）：%s", e)
+            if BOT:
+                BOT.reload()
+            self._json({**res, "note": "已移到回收站（state/trash），插件已重载"})
             return
 
         if u.path in ("/api/rules", "/api/rules/test"):
@@ -6213,7 +6415,7 @@ def main():
     _warm_caches()         # 预热面板首屏那几个接口，别让第一次打开撞冷计算
     threading.Thread(target=_log_janitor, daemon=True, name="log-janitor").start()
     _start_workers()
-    threading.Thread(target=_sched_loop, daemon=True, name="sched-loop").start()
+    _spawn_worker("sched-loop", _sched_loop)
     try:
         from bot import llm as _llm
         _llm.set_usage_hook(_usage_record)      # 每次模型调用都记一笔（失败不影响对话）

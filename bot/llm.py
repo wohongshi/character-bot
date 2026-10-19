@@ -41,12 +41,14 @@ def set_usage_hook(fn) -> None:
 
 
 def _emit_usage(provider: str, model: str, usage: dict, ms: float, kind: str,
-                fails: int = 0) -> None:
+                fails: int = 0, character: str = "") -> None:
     hook = _USAGE_HOOK
     if hook is None:
         return
     try:
         hook({"ts": time.time(), "provider": provider, "model": model,
+              # 哪个角色花的钱：看板要能按角色拆开（以前只有模型维度）
+              "character": str(character or ""),
               "prompt_tokens": int(usage.get("prompt_tokens") or 0),
               "completion_tokens": int(usage.get("completion_tokens") or 0),
               "total_tokens": int(usage.get("total_tokens") or 0),
@@ -624,7 +626,7 @@ class ModelStore:
                      tools: list | None = None, tool_choice: str | None = None,
                      extra_body: dict | None = None,
                      stream: bool = False, on_delta=None,
-                     allow_fallback: bool = True) -> dict:
+                     allow_fallback: bool = True, character: str = "") -> dict:
         """调一次 chat/completions；主模型没拿到答案时按 `fallbacks` 顺序换一个。
 
         什么时候降级：连接失败 / HTTP 错误 / 返回里没有正文。
@@ -655,7 +657,8 @@ class ModelStore:
                 messages, model=model, provider=provider, timeout=timeout,
                 temperature=temperature, max_tokens=max_tokens, tools=tools,
                 tool_choice=tool_choice, extra_body=extra_body,
-                stream=stream, on_delta=_delta if on_delta else None)
+                stream=stream, on_delta=_delta if on_delta else None,
+                _character=character)
             # 「HTTP 200 但正文是空的」也算没拿到答案：docstring 一直是这么写的，
             # 但以前这条路径直接 return 了 —— 空回复被当成成功，降级链根本没走，
             # 调用方（chat()）才抛「模型返回空内容」，用户白等一轮。
@@ -694,7 +697,7 @@ class ModelStore:
                         temperature=temperature, max_tokens=max_tokens, tools=tools,
                         tool_choice=tool_choice, extra_body=extra_body,
                         stream=stream, on_delta=_delta if on_delta else None,
-                        _fails=len(fails))
+                        _fails=len(fails), _character=character)
                     # 备用模型也要判空：否则空回复被当成成功，链上剩下的不再尝试，
                     # 最终还是 chat() 抛「模型返回空内容」—— 白等一轮。
                     _require_text(res)
@@ -716,7 +719,8 @@ class ModelStore:
                        temperature: float = 0.85, max_tokens: int = 800,
                        tools: list | None = None, tool_choice: str | None = None,
                        extra_body: dict | None = None,
-                       stream: bool = False, on_delta=None, _fails: int = 0) -> dict:
+                       stream: bool = False, on_delta=None, _fails: int = 0,
+                       _character: str = "") -> dict:
         """真正的单次调用（不含降级）。
 
         返回 {text, tool_calls, finish_reason, usage}。
@@ -787,7 +791,8 @@ class ModelStore:
                         got["provider"] = str(prov.get("id") or provider or "")
                         got["model"] = str(model or "")
                         _emit_usage(str(prov.get("id") or provider or ""), str(model or ""), gu,
-                                    (time.monotonic() - _t0) * 1000.0, "stream", _fails)
+                                    (time.monotonic() - _t0) * 1000.0, "stream", _fails,
+                                    _character)
                         return got                # 流式成功：结构与非流式完全一致
                     # 服务端没按 SSE 回（直接吐了整段 JSON / 或者干脆不支持）：
                     # 这一份响应已经被读掉了，**先退出 with** 再重发。
@@ -847,7 +852,7 @@ class ModelStore:
                   "total_tokens": int(u.get("total_tokens") or 0)} if u
                  else _estimate(messages, text))
         _emit_usage(str(prov.get("id") or provider or ""), str(model or ""), usage,
-                    (time.monotonic() - _t0) * 1000.0, "chat", _fails)
+                    (time.monotonic() - _t0) * 1000.0, "chat", _fails, _character)
         # 带上实际用了哪个：降级之后调用方（和看板）要能看出「这句是备用模型答的」
         return {"text": text, "tool_calls": calls,
                 "finish_reason": str(choice.get("finish_reason") or ""),
@@ -858,11 +863,14 @@ class ModelStore:
              timeout: float = 90,
              temperature: float = 0.85, max_tokens: int = 800,
              reasoning_effort: str | None = None,
-             stream: bool = False, on_delta=None) -> str:
+             stream: bool = False, on_delta=None,
+             character: str = "") -> str:
+        """`character` 只用于用量归账（哪个角色花的钱），不影响生成。"""
         extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else None
         res = self.complete_raw(messages, model=model, provider=provider, timeout=timeout,
                                 temperature=temperature, max_tokens=max_tokens,
-                                extra_body=extra, stream=stream, on_delta=on_delta)
+                                extra_body=extra, stream=stream, on_delta=on_delta,
+                                character=character)
         text = str(res.get("text") or "").strip()
         if not text:
             raise RuntimeError("模型返回空内容")

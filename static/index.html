@@ -590,6 +590,16 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
     overflow:hidden;text-overflow:ellipsis}
 }
 
+/* ============ 自检 ============ */
+.chk{display:flex;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line);
+  font-size:13px;flex-wrap:wrap}
+.chk:last-child{border-bottom:0}
+.chk .dot{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px)}
+.chk .dot.ok{background:var(--green)} .chk .dot.warn{background:#d99a2b} .chk .dot.bad{background:var(--red)}
+.chk .nm{flex:none;min-width:74px;font-weight:600}
+.chk .dt{flex:1;min-width:120px;color:var(--dim);word-break:break-word}
+.chk .hint{flex-basis:100%;font-size:max(11px, calc(11px * var(--fx)));color:var(--dim);opacity:.85}
+.chk .fx{flex:none}
 /* ============ 运维页 ============ */
 .opsgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
 .opsline{font-size:12.5px;color:var(--ink-soft);line-height:1.95}
@@ -811,6 +821,29 @@ h2.page::after{content:"";display:block;width:54px;height:4px;border-radius:99px
   backdrop-filter:blur(16px) saturate(120%);
 }
 body[data-card_style="solid"] .card{background:var(--paper);backdrop-filter:none}
+/* ============ 对话洞察 ============ */
+.ins-heat{display:block;max-width:100%;height:auto;margin:6px 0 2px}
+.ins-heat rect{fill:var(--surface-3);rx:2}
+.ins-heat rect.h1{fill:color-mix(in srgb,var(--ui-accent) 22%,var(--surface-3))}
+.ins-heat rect.h2{fill:color-mix(in srgb,var(--ui-accent) 42%,var(--surface-3))}
+.ins-heat rect.h3{fill:color-mix(in srgb,var(--ui-accent) 66%,var(--surface-3))}
+.ins-heat rect.h4{fill:var(--ui-accent)}
+.ins-heat text{fill:var(--dim);font-size:8px;font-family:var(--font-body)}
+.ins-seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.ins-seg button{border:0;background:transparent;color:var(--dim);padding:3px 9px;font-size:12px}
+.ins-seg button.on{background:var(--surface-3);color:var(--ink);font-weight:600}
+.ins-bars{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.ins-bar{display:flex;align-items:center;gap:8px;font-size:12.5px}
+.ins-bar .nm{flex:none;min-width:72px}
+.ins-bar .tr{flex:1;height:8px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.ins-bar .tr i{display:block;height:100%;background:var(--ui-accent);border-radius:99px}
+.ins-bar .vv{flex:none;min-width:46px;text-align:right;color:var(--dim)}
+.ins-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.ins-chips .chip{background:var(--surface-3);border-radius:999px;padding:2px 9px;font-size:12.5px}
+.ins-chips .chip b{font-weight:600}
+.ins-phr{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px;font-size:12.5px}
+.ins-phr span{color:var(--dim)}
+.ins-phr b{color:var(--ink);font-weight:600}
 body[data-card_style="outline"] .card{background:transparent;box-shadow:none;border:2px dashed color-mix(in srgb, var(--ink) 22%, transparent)}
 .card h3{font-family:"ZCOOL KuaiLe",var(--font-cute);font-size:17px;letter-spacing:.5px}
 body[data-density="compact"] .card{padding:10px 12px}
@@ -2206,6 +2239,11 @@ async function openPluginDrawer(name, meta){
              ${m.enabled ? t("plug.disable") : t("plug.enable")}</button>`}
       <span class="kv" id="pdMsg"></span>
     </div>
+    ${(!m.system && !m.external) ? `<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">
+      <button class="btn tiny" onclick="plugExportOne(${jsq(name)}, this)">⬇ 导出成插件包</button>
+      <button class="btn tiny" onclick="plugUninstall(${jsq(name)}, this)">🗑 卸载</button>
+      <span class="kv">导出的是能直接发给别人安装的 zip；卸载只是移到回收站</span>
+    </div>` : ""}
     ${Object.keys(m.schema || {}).length ? `<h4>设置</h4>
       <div id="pdForm" class="kv">正在读取当前值…</div>
       <div class="row" style="margin-top:8px"><button class="btn primary tiny" onclick="plugSaveSettings(${esc(JSON.stringify(name))})">保存设置</button>
@@ -2577,6 +2615,54 @@ function closePluginDrawer(){
   const b = $("pdBody"); if (b) b.classList.remove("paged"); const el = $("pdrawer"); if (el) el.classList.remove("on"); }
 
 /* ================= 插件包安装 ================= */
+async function _blobDownload(url, fallbackName){
+  const r = await fetch(url, {headers: {"X-Klee-Studio": "1"}});
+  if (!r.ok){
+    let msg = "下载失败";
+    try { msg = (await r.json()).error || msg; } catch(e){}
+    return {ok: false, error: msg};
+  }
+  const cd = r.headers.get("Content-Disposition") || "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  const name = m ? m[1] : fallbackName;
+  const blob = await r.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return {ok: true, name, bytes: blob.size};
+}
+async function plugExportOne(name, btn){
+  if (btn){ btn.disabled = true; btn.textContent = "打包中…"; }
+  const d = await _blobDownload("/api/plugins/export?name=" + encodeURIComponent(name), name + ".zip");
+  if (btn){ btn.disabled = false; btn.textContent = "⬇ 导出成插件包"; }
+  if (!d.ok){ flash("导出失败：" + d.error); return; }
+  flash("已导出 " + d.name + "（" + Math.round(d.bytes / 1024) + " KB）");
+}
+async function plugExportAll(btn){
+  if (btn){ btn.disabled = true; btn.textContent = "打包中…"; }
+  const d = await _blobDownload("/api/plugins/export", "klee-plugins.zip");
+  if (btn){ btn.disabled = false; btn.textContent = "⬇ 备份全部"; }
+  if (!d.ok){ flash("备份失败：" + d.error); return; }
+  flash("已导出插件源码备份（" + Math.round(d.bytes / 1024) + " KB）");
+}
+async function plugUninstall(name, btn){
+  if (!confirm("卸载「" + name + "」？\n\n文件会被移到 state/trash（不是删除），但它的命令会立刻失效。")) return;
+  if (btn){ btn.disabled = true; btn.textContent = "卸载中…"; }
+  const d = await post("/api/plugins/uninstall", {name});
+  if (!d || !d.ok){
+    if (btn){ btn.disabled = false; btn.textContent = "🗑 卸载"; }
+    flash("卸载失败：" + ((d && d.error) || "未知"));
+    return;
+  }
+  flash("已卸载并重载插件");
+  closePluginDrawer();
+  setTimeout(() => { if (V === "plugins") viewPlugins(); }, 900);
+}
+
 function pickPluginZip(){ const el = $("pluginZip"); if (el){ el.value = ""; el.click(); } }
 async function installPluginPack(inp){
   const f = inp && inp.files && inp.files[0]; if (!f) return;
@@ -4139,6 +4225,7 @@ async function viewPlugins(readonly){
     <h2 class="page">🧩 插件</h2>
     <button class="btn tiny" onclick="plugAudit()">🩺 体检</button>
     <button class="btn tiny" onclick="pickPluginZip()">📦 安装插件包</button>
+    <button class="btn tiny" onclick="plugExportAll(this)">⬇ 备份全部</button>
   </div>
   <div class="plugbar">
     <input id="plugSearch" placeholder="搜索插件名 / 命令 / 说明…" oninput="plugSearchSoon()">
@@ -5398,6 +5485,16 @@ async function viewBoard(target){
       <span class="bd-tag" style="min-width:104px;text-align:right">${m.requests} 次 · ${fmtK(m.total)} tokens</span>
       <span class="bd-tag" style="min-width:90px;text-align:right">平均 ${(m.ms / Math.max(1, m.requests) / 1000).toFixed(1)}s</span>
     </div>`).join("");
+  const uChar = ((U && U.characters) || []).filter(c => c.requests > 0).slice(0, 5);
+  const uCharMax = Math.max(1, ...uChar.map(c => c.total));
+  const cname = {};
+  ((ch && ch.items) || []).forEach(x => { cname[x.id] = (x.emoji ? x.emoji + " " : "") + (x.name || x.id); });
+  const uCharRows = uChar.map(c => {
+    const nm = c.id ? (cname[c.id] || c.id) : "未记角色";
+    return `<div class="ins-bar"><span class="nm">${esc(nm)}</span>
+      <span class="tr"><i style="width:${Math.round(c.total / uCharMax * 100)}%"></i></span>
+      <span class="vv">${fmtK(c.total)}</span></div>`;
+  }).join("");
   const uDaily = ((U && U.daily) || []);
   const uMax = Math.max(1, ...uDaily.map(x => Number(x.total) || 0));
   const uBars = uDaily.map(x => {
@@ -5422,6 +5519,8 @@ async function viewBoard(target){
     </div>
     ${uBars ? `<div class="bd-chart" style="height:80px">${uBars}</div>` : ""}
     ${uModels || '<div class="kv">还没有模型调用记录～聊一句就有了</div>'}
+    ${uCharRows ? `<div class="kv" style="margin-top:10px">按角色（tokens）</div>
+      <div class="ins-bars">${uCharRows}</div>` : ""}
   </div>`;
   $(T).innerHTML = `
   <h2 class="page">📊 看板</h2>
@@ -5449,6 +5548,23 @@ async function viewBoard(target){
     <div class="kv" style="margin:0 0 6px">💛 好感度 Top5</div>
     ${affs || '<div class="kv">还没有人说过话</div>'}
   </div>
+  <div class="card" style="margin-top:14px" id="insCard">
+    <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <span class="kv" style="margin:0">📈 对话洞察 <span id="insMeta" class="kv" style="margin:0"></span></span>
+      <span class="row" style="gap:6px">
+        <span class="ins-seg" id="insDays">
+          <button data-d="7" onclick="insSet(7)">7 天</button>
+          <button data-d="30" class="on" onclick="insSet(30)">30 天</button>
+          <button data-d="90" onclick="insSet(90)">90 天</button>
+        </span>
+        <span class="ins-seg" id="insSrc">
+          <button data-s="messages" class="on" onclick="insSet(0,'messages')">QQ</button>
+          <button data-s="chat" onclick="insSet(0,'chat')">网页</button>
+        </span>
+      </span>
+    </div>
+    <div id="insBox" class="kv" style="margin-top:6px">读取中…</div>
+  </div>
   ${(d.errors && d.errors.length) ? `<div class="card" style="margin-top:14px"><div class="kv" style="color:#c0392b">⚠️ 部分数据读取失败：${esc(d.errors.join("；"))}</div></div>` : ""}
   <div class="card" style="margin-top:14px" id="qCard">
     <div class="kv" style="margin:0 0 6px">🔍 历史搜索 <span id="qMeta" class="kv" style="margin:0"></span></div>
@@ -5463,12 +5579,76 @@ async function viewBoard(target){
   <div id="feedSlot" style="padding-bottom:12px"></div>`;
   $(T).scrollTop = st;                    // 重绘也保住滚动位置
   loadIndexInfo();                        // 索引规模（顺手验证 /api/search/stats 可用）
+  renderInsights();                       // 洞察卡片（热力图/角色/常用字）
   await viewFeed("feedSlot");
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
   boardTimer = setInterval(() => {
     if (V === "board") viewBoard();
     else { clearInterval(boardTimer); boardTimer = null; }
   }, 60000);
+}
+
+let insDays = 30, insSrc = "messages";
+function insSet(days, src){
+  if (days) insDays = days;
+  if (src) insSrc = src;
+  document.querySelectorAll("#insDays button").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.d) === insDays));
+  document.querySelectorAll("#insSrc button").forEach(b =>
+    b.classList.toggle("on", b.dataset.s === insSrc));
+  renderInsights();
+}
+async function renderInsights(){
+  const box = $("insBox"); if (!box) return;
+  const [d, cj] = await Promise.all([api(`/api/insights?days=${insDays}&src=${insSrc}`),
+                                     api("/api/characters")]);
+  const CNAME = {};
+  ((cj && cj.items) || []).forEach(c => { CNAME[c.id] = (c.emoji ? c.emoji + " " : "") + (c.name || c.id); });
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  const meta = $("insMeta");
+  const wd = ["一", "二", "三", "四", "五", "六", "日"];
+  // 热力图：7 行 × 24 列。颜色靠 class，不内联写颜色变量。
+  const grid = {};
+  (d.heat || []).forEach(x => { grid[x.w + "," + x.h] = x.n; });
+  const mx = Math.max(1, ...(d.heat || []).map(x => x.n));
+  const CW = 13, CH = 11, LEFT = 18, TOP = 10;
+  let cells = "", labels = "";
+  for (let h = 0; h < 24; h += 3){
+    labels += `<text x="${LEFT + h * CW + 1}" y="${TOP - 3}">${h}</text>`;
+  }
+  for (let w = 0; w < 7; w++){
+    labels += `<text x="2" y="${TOP + w * CH + 8}">${wd[w]}</text>`;
+    for (let h = 0; h < 24; h++){
+      const n = grid[w + "," + h] || 0;
+      const lv = n === 0 ? 0 : Math.min(4, 1 + Math.floor(n / mx * 3.999));
+      cells += `<rect class="${lv ? "h" + lv : ""}" x="${LEFT + h * CW}" y="${TOP + w * CH}"
+        width="${CW - 1.5}" height="${CH - 1.5}"><title>周${wd[w]} ${String(h).padStart(2, "0")}:00 · ${n} 条</title></rect>`;
+    }
+  }
+  const svg = `<svg class="ins-heat" viewBox="0 0 ${LEFT + 24 * CW + 4} ${TOP + 7 * CH + 4}"
+    width="${LEFT + 24 * CW + 4}" height="${TOP + 7 * CH + 4}" role="img"
+    aria-label="按星期与小时的消息分布">${labels}${cells}</svg>`;
+  const bt = d.busiest || {};
+  const busy = (bt.n > 0) ? `最热闹：周${wd[bt.weekday]} ${String(bt.hour).padStart(2, "0")}:00 前后（${bt.n} 条）` : "";
+  const total = Number(d.total) || 0;
+  const cmax = Math.max(1, ...(d.by_character || []).map(x => x.n));
+  const charRows = (d.by_character || []).slice(0, 6).map(c => {
+    const nm = c.id ? (CNAME[c.id] || c.id) : "未记角色";
+    return `<div class="ins-bar"><span class="nm">${esc(nm)}</span>
+      <span class="tr"><i style="width:${Math.round(c.n / cmax * 100)}%"></i></span>
+      <span class="vv">${c.n}</span></div>`;
+  }).join("");
+  const chars = (d.top_chars || []).map(c =>
+    `<span class="chip"><b>${esc(c.ch)}</b> ${c.n}</span>`).join("");
+  const phr = (d.top_phrases || []).map(p =>
+    `<span><b>${esc(p.text)}</b> ×${p.n}</span>`).join("");
+  if (meta) meta.textContent = `${total} 条 · 平均每句 ${d.avg_user_len || 0} 字`;
+  box.innerHTML = `
+    ${total ? svg : '<div class="kv">这段时间还没有消息</div>'}
+    ${busy ? `<div class="kv" style="margin-top:2px">${esc(busy)}</div>` : ""}
+    <div class="ins-bars">${charRows}</div>
+    ${chars ? `<div class="kv" style="margin-top:10px">常用字</div><div class="ins-chips">${chars}</div>` : ""}
+    ${phr ? `<div class="kv" style="margin-top:10px">高频短句</div><div class="ins-phr">${phr}</div>` : ""}`;
 }
 
 async function loadIndexInfo(){
@@ -5689,6 +5869,44 @@ function readyText(note){
   return s.length > 44 ? s.slice(0, 44) + "…" : s;
 }
 
+let chkLast = null;
+async function selfCheck(force){
+  const box = $("chkBox"), sum = $("chkSum"), btn = $("chkFixAll");
+  if (!box) return;
+  if (!force && chkLast && Date.now() - chkLast.ts < 3000) return;
+  const d = await api("/api/selfcheck");
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">自检跑不起来：${esc((d && d.error) || "未知")}</span>`; return; }
+  chkLast = {ts: Date.now(), d};
+  const items = d.items || [];
+  const cn = {ok: "正常", warn: "注意", bad: "有问题"};
+  if (sum) sum.innerHTML = d.level === "ok"
+    ? `<span class="tag" style="color:var(--green)">全部正常</span>`
+    : `<span class="tag bad">${d.counts.bad ? d.counts.bad + " 项有问题" : ""}${d.counts.bad && d.counts.warn ? " · " : ""}${d.counts.warn ? d.counts.warn + " 项要注意" : ""}</span>`;
+  if (btn) btn.style.display = items.some(i => i.fix) ? "" : "none";
+  box.innerHTML = items.map(i => `<div class="chk">
+      <i class="dot ${i.level}"></i>
+      <span class="nm">${esc(i.name)}</span>
+      <span class="dt">${esc(i.detail)}</span>
+      ${i.fix ? `<button class="btn tiny fx" onclick="selfFix(${jsq(i.id)},this)">${esc(i.fix_label || "修复")}</button>` : ""}
+      ${i.hint ? `<span class="hint">${esc(i.hint)}</span>` : ""}
+    </div>`).join("");
+}
+async function selfFix(id, btn){
+  const b = btn || null;
+  if (b){ b.disabled = true; b.textContent = "处理中…"; }
+  const d = await post("/api/selfcheck/fix", {id});
+  if (b){ b.disabled = false; }
+  if (!d || !d.ok){
+    if (b) b.textContent = "失败";
+    flash("修复失败：" + ((d && d.error) || "未知"));
+    return;
+  }
+  const done = (d.done || []).join("，") || "已处理";
+  flash(id === "all" ? "修好了" : done);
+  chkLast = null;
+  selfCheck(true);
+}
+
 async function viewOps(target){
   const T = target || "view";
   $(T).innerHTML = `${T === "view" ? '<h2 class="page">⚙️ 运维</h2>' : ''}
@@ -5707,6 +5925,16 @@ async function viewOps(target){
   const sys = (pl.system || []).map(pid => Object.assign({pid: pid}, (pl.meta || {})[pid] || {}));
   $(T).innerHTML = `
   <h2 class="page" style="display:none">⚙️ 运维</h2>
+  <div class="card" id="chkCard" style="margin-bottom:14px">
+    <div class="row" style="justify-content:space-between;gap:8px">
+      <span class="kv" style="margin:0">🩺 系统自检 <span id="chkSum"></span></span>
+      <span class="row" style="gap:6px">
+        <button class="btn tiny" onclick="selfCheck(true)">⟳ 重跑</button>
+        <button class="btn tiny primary" id="chkFixAll" style="display:none" onclick="selfFix('all',this)">全部修复</button>
+      </span>
+    </div>
+    <div id="chkBox" class="kv" style="margin-top:6px">正在检查…</div>
+  </div>
   <div class="opsgrid">
     <div class="card"><h3>${t("ops.panel")}</h3>
       <div class="opsline">角色：<b>${esc(ACTIVE.emoji + " " + ACTIVE.name)}</b>
@@ -5811,6 +6039,7 @@ async function viewOps(target){
   opsCfgPrev = cfg.values || {};
   ruleRender((ru && ru.items) || []);
   ruleSyncForm();
+  selfCheck(true);                                      // 进运维页就先量一遍
   loadRuntime();
   logHash = null; logInited = false;                    // 页面重新装好，第一次必须真渲染
   opsLogs();
