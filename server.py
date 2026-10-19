@@ -2088,9 +2088,13 @@ def _known_chat_sessions() -> set:
         finally:
             con.close()
         known |= {str(r[0]) for r in rows if r[0]}
-    except Exception:                                 # noqa: BLE001
-        pass
-    for e in _read_jsonl(CHAT_JSONL):                 # 尾部 4MB，够覆盖还没同步的那一段
+    except Exception as e:                            # noqa: BLE001
+        # **fail-closed**：索引问不到就返回空集（调用方约定「空 = 不知道，别判孤儿」）。
+        # 只拿 4MB 尾部凑一份不完整的名单更危险 —— 调用方会当它是全量，
+        # 把所有老会话判成孤儿，点一下就真删了。
+        logger.info("读会话清单失败（本轮不判孤儿）：%s", e)
+        return set()
+    for e in _read_jsonl(CHAT_JSONL):                 # 尾部 4MB，补上还没同步的那一段
         sid = e.get("session")
         if sid:
             known.add(str(sid))

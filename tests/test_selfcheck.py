@@ -222,6 +222,18 @@ def main():
                   "brand-new" in S2._known_chat_sessions(), str(S2._known_chat_sessions()))
         finally:
             S2.CHAT_JSONL = real_chat
+        # 索引问不到时必须 fail-closed（返回空集 = 不知道），
+        # 只拿尾部凑一份不完整名单会让所有老会话被判成孤儿、一点就被删
+        real_index = S2._index
+        class DeadIndex:
+            def _connect(self):
+                raise RuntimeError("database is locked")
+        try:
+            S2._index = lambda: DeadIndex()
+            check("8.7c 索引不可用时返回空集（不判孤儿）",
+                  S2._known_chat_sessions() == set(), str(S2._known_chat_sessions()))
+        finally:
+            S2._index = real_index
         n_workers = int("".join(ch for ch in wk["detail"] if ch.isdigit()) or 0)
         check("8.7 长驻线程都被数到（≥4）", n_workers >= 4, wk["detail"])
     except (urllib.error.URLError, OSError) as e:
