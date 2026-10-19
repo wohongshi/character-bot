@@ -6100,6 +6100,7 @@ async function ctlResetCmd(name){
   ctlData = d.after; ctlRenderCmds(); flash("已回到插件默认：" + name);
 }
 let ctlExtra = [];          // 刚「加」进来、还没设任何项的会话（只在页面上挂着）
+let ctlHidden = [];         // 从「最近聊过的会话」里暂时藏起来的（不动数据）
 function ctlChatMetaText(){
   const n = Object.keys((ctlData && ctlData.chats) || {}).length;
   return n ? `· 设了 ${n} 个` : "· 都跟随全局";
@@ -6113,7 +6114,10 @@ function ctlRenderChats(){
   const ids = Object.keys(saved);
   // 设过的排前面，然后是新加的，最后补上「最近聊过的」（方便直接挑）
   ctlExtra.forEach(id => { if (!ids.includes(id)) ids.push(id); });
-  known.forEach(k => { if (!ids.includes(k.id)) ids.push(k.id); });
+  known.forEach(k => {
+    if (ids.includes(k.id) || ctlHidden.includes(k.id)) return;
+    ids.push(k.id);
+  });
   if (meta) meta.textContent = ctlChatMetaText();
   const opt = (cur) => Object.keys(modes).map(k =>
     `<option value="${esc(k)}"${k === (cur || "inherit") ? " selected" : ""}>${esc(modes[k])}</option>`).join("");
@@ -6182,7 +6186,10 @@ async function ctlClearChat(id){
   ctlData = d.after; ctlRenderChats(); flash("已恢复成跟随全局");
 }
 function ctlForget(id){
+  // 两种行：真「加」进来的（从 ctlExtra 里去掉就行）和从「最近聊过」里列出来的
+  // （数据还在别处，只能记进「暂时隐藏」—— 否则重渲染又原样画回来，按钮像是坏的）。
   ctlExtra = ctlExtra.filter(x => x !== id);
+  if (!ctlHidden.includes(id)) ctlHidden.push(id);
   ctlRenderChats();
 }
 async function ctlAddChat(){

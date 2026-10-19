@@ -114,6 +114,10 @@ def main():
     check("7.5 读坏了退回全局", "会话策略读取失败" in src)
     # 全局 group_policy=disabled 只该关群聊：私聊要「显式设过」才认
     check("7.6 私聊只在显式配置时才认 disabled", "blocks_all" in src)
+    # 硬编码 is_group=True 会把刚修好的 bug 种回去：兜底与调用都必须用真实值
+    check("7.8 policy_for 接收真实 is_group", "is_group: bool = True" in src
+          and "is_group=is_group" in src)
+    check("7.9 兜底里也带 blocks_all", '"blocks_all": self.group_policy == "disabled"' in src)
     from bot import chatpolicy as _cp
     for pol, is_group, want in (
             ({"mode": "disabled", "configured": "inherit"}, True, True),

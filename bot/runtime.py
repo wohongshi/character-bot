@@ -615,7 +615,8 @@ class BotRuntime(RuntimeFeatures):
         except Exception:                                          # noqa: BLE001
             logger.debug("%s 钩子链异常（已忽略）", kind)
 
-    def policy_for(self, chat_id: str, now: float | None = None) -> dict:
+    def policy_for(self, chat_id: str, *, is_group: bool = True,
+                   now: float | None = None) -> dict:
         """这个会话此刻生效的策略（含静默时段）。见 bot/chatpolicy.py。
 
         失败按全局策略处理：策略文件坏了不该让消息完全不处理。
@@ -650,15 +651,19 @@ class BotRuntime(RuntimeFeatures):
                     c["data"], c["key"], c["ts"] = data, full_key, time.time()
             pol = chatpolicy.resolve(self.state_dir, chat_id, self.group_policy,
                                      now=now, data=data)
-            # 调用点只有一处（_handle），那里知道 is_group；这里先按「群」算一遍，
-            # 私聊的情况由 blocks_all 自己看 configured（见 chatpolicy.blocks_all）。
-            pol["blocks_all"] = chatpolicy.blocks_all(pol, is_group=True)
+            # 用**真实**的 is_group：`blocks_all` 对私聊的判定和群不一样
+            # （全局 disabled 只关群、不哑私聊）。写死 True 等于把刚修好的
+            # bug 换个地方又种回去。
+            pol["blocks_all"] = chatpolicy.blocks_all(pol, is_group=bool(is_group))
             return pol
         except Exception as e:                                     # noqa: BLE001
             logger.info("会话策略读取失败（按全局 %s）：%s", self.group_policy, e)
+            # 兜底里也要带 blocks_all：调用方直接下标读，缺键会每条消息都抛
+            # KeyError（兜底从「降级」变成「全哑」）。
             return {"mode": self.group_policy, "global_mode": self.group_policy,
                     "configured": "inherit", "quiet": False, "quiet_win": [],
-                    "quiet_mention": False, "note": "", "why": ""}
+                    "quiet_mention": False, "note": "", "why": "",
+                    "blocks_all": self.group_policy == "disabled" and bool(is_group)}
 
     async def handle_event(self, ev: dict) -> None:
         try:
@@ -760,7 +765,7 @@ class BotRuntime(RuntimeFeatures):
         # 会话策略 disabled = 完全不理（连命令也不接，和面板/INSTALL 的措辞一致）。
         # 以前只看全局 group_policy；现在每个群/私聊可以单独设（state/chat_policy.json），
         # 没设的仍然跟全局，行为不变。
-        pol = self.policy_for(chat_id)
+        pol = self.policy_for(chat_id, is_group=is_group)
         # 判定在 chatpolicy.blocks_all 里（模拟器共用同一份规则）
         if pol["blocks_all"]:
             return
