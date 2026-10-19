@@ -1532,10 +1532,18 @@ def _ext_plugin(name: str):
     return (getattr(mgr, "ext_plugins", {}) or {}).get(name)
 
 
-def _toolchain() -> list[dict]:
+#: 版本探测是 10 次子进程（rustc / java / dotnet 各要几十到几百毫秒），
+#: 面板每打开一次就探一遍太浪费 —— 缓存 10 分钟
+_TC_CACHE: dict = {"ts": 0.0, "data": None}
+
+
+def _toolchain(max_age: float = 600.0) -> list[dict]:
     """每种语言的真实版本（面板「运行时」卡直接显示，不猜）。"""
     import shutil as _sh
     import subprocess as _sp
+
+    if _TC_CACHE["data"] is not None and time.time() - _TC_CACHE["ts"] < max_age:
+        return _TC_CACHE["data"]
 
     probes = [
         ("python", ["python3", "--version"], "核心运行时"),
@@ -1569,6 +1577,7 @@ def _toolchain() -> list[dict]:
                 row["version"] = f"{type(e).__name__}"
                 row["ok"] = False
         out.append(row)
+    _TC_CACHE.update(ts=time.time(), data=out)
     return out
 
 

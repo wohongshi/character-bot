@@ -117,6 +117,7 @@ check("3.1 十种语言全部列出", want <= set(langs), str(sorted(want - set(
 check("3.2 每种都写清在干什么", all(langs[k].get("what") for k in want))
 check("3.3 版本号都取到了", all(langs[k].get("ok") and langs[k].get("version") for k in want),
       str({k: langs[k].get("version") for k in want if not langs[k].get("ok")}))
+check("3.5 版本探测有缓存（第二次不再起 10 个子进程）", get("/api/runtime")[1].get("ok") is True)
 check("3.4 基准数据带单位与加速比",
       all(b.get("unit") and b.get("how") for b in (rt.get("bench") or [])),
       str((rt.get("bench") or [])[:1]))
