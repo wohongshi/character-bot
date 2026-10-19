@@ -128,7 +128,10 @@
     "notes",
     "skillbox",
     "utility",
-    "web_tools"
+    "web_tools",
+    "highlight",
+    "similar",
+    "market"
   ],
   "settings": {
     "keyword": {

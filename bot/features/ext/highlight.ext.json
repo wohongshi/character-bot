@@ -1,0 +1,9 @@
+{
+  "id": "highlight",
+  "title": "代码高亮",
+  "description": "Node 写的：把代码块染成带颜色的 HTML（聊天里的 ``` 代码块用它着色）",
+  "language": "node",
+  "entry": "highlight.mjs",
+  "timeout": 4,
+  "version": "1.0"
+}

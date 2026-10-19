@@ -242,14 +242,30 @@ def register(api):
 
 ## 多语言
 
-核心是 Python，但**不是只有 Python**：
+**十种语言，每种都在干一件具体的活** —— 不是演示，是线上真的在跑的那条路径：
 
-| 位置 | 语言 | 为什么 |
-|---|---|---|
-| 面板前端 | JavaScript（单文件，无构建） | 改完刷新就生效 |
-| 边缘层 `edge/` | Go | 静态资源 + 两个 feed 接口，常驻 19 MB |
-| 消息索引 | SQL（SQLite + FTS5） | 让历史可搜索，见下 |
-| 外部插件 | Node / Rust / C / C++ / Java | 同一套 NDJSON 协议，示例都能跑 |
+| 语言 | 干什么 | 形态 | 实测 |
+|---|---|---|---|
+| Python | 服务、插件、协议、渲染 | 主进程 | — |
+| SQL | 历史检索、看板聚合 | SQLite + FTS5 | 看板 2200 ms → **195 ms**（20 万行） |
+| Go | 静态资源 + 消息流 | 独立进程 | 常驻 19 MB |
+| C | 显示宽度 / 按宽截断 | `.so` + ctypes | 0.47 → **0.20 ms**（20 行） |
+| Rust | 多词扫描 / 归一化 | `.so` + ctypes | 500 词 620 → **362 µs** |
+| C++ | 立绘主色提取 | `.so` + ctypes | **65 ms** / 张（新功能） |
+| Node | 代码高亮 | 常驻进程 | **3.3 ms** / 20 行 |
+| Java | 句子相似度（Dice） | 常驻 JVM | **2 ms** / 对 |
+| PHP | 插件市场索引 | 常驻进程 | 132 插件 / 164 命令 |
+| C# | 插件包校验（含 zip 炸弹 / 路径穿越） | 离线 CLI | 0.4 s / 次 |
+
+两条形态，按「多久跑一次」选：
+
+```
+每次调用 < 1 ms、每秒几十次   →  .so + ctypes（同进程，零序列化）
+偶尔一次、启动几十毫秒无所谓  →  常驻进程 + NDJSON（隔离崩溃，任何语言都能接）
+```
+
+`.so` 缺失或加载失败 → **自动回落纯 Python**，主机上没装 rustc/gcc 也能跑，
+面板「运行时」卡会如实写「未编译，回落纯 Python」。
 
 外部插件就是一个常驻子进程，一行一个 JSON：
 
@@ -260,20 +276,18 @@ def register(api):
 插件 → {"id":1,"ok":true,"reply":"要发回去的话"}
 ```
 
-本机实测（RK3399 / arm64 / 4GB）：
+一次编译全部：`bash tools/build_native.sh`（原生库）+ `bash bot/features/ext/tools/build.sh`
+（外部插件示例），缺工具链会跳过并说明。
 
-| 语言 | 示例命令 | 启动 | 常驻 | 一次调用 |
-|---|---|---:|---:|---:|
-| Rust | `.统计` | **5.7 ms** | **1.7 MB** | 1.5 ms |
-| C | `.crc` | **4.3 ms** | **1.4 MB** | 1.4 ms |
-| C++ | `.排序` | 8.1 ms | 3.1 MB | 1.5 ms |
-| Node | `.uuid` / `.json` | 146 ms | 48.6 MB | 2.4 ms |
-| Java | `.sha` | 212–364 ms | 43 MB | 151 ms（首次）/ **3.2 ms**（JIT 热身后） |
+**每种语言为什么是它、踩过什么坑、交叉点在哪，全在
+[docs/POLYGLOT.md](docs/POLYGLOT.md)** —— 包括「Rust 在 64 词以下比 Python 慢，
+所以按词表大小切实现」这种不好听的结论。
 
-一次编译全部：`bash bot/features/ext/tools/build.sh`（缺工具链会跳过并说明）。
-C# 与 PHP：本机没装运行时，**没有实测**，所以没放示例——协议本身与语言无关。
-
-写一个插件 30 行就够，教程见 **[docs/POLYGLOT.md](docs/POLYGLOT.md)**。
+<p align="center">
+  <img src="docs/img/runtime.webp" width="300" alt="运维页的语言运行时：十种语言的版本、职责与实测基准">
+  <img src="docs/img/market.webp" width="300" alt="插件市场：PHP 扫出来的按语言统计">
+</p>
+<p align="center"><sub>运维 → 🧬 语言运行时（左）· 插件 → 🏪 插件市场（右）</sub></p>
 
 ### SQL：让历史可搜索
 
@@ -528,7 +542,7 @@ class TelegramAdapter(BaseAdapter):
 
 ```
 character-bot/
-├── server.py               HTTP 服务 + 面板 API（2,715 行）
+├── server.py               HTTP 服务 + 面板 API（3,339 行）
 ├── bot/
 │   ├── runtime.py          事件分发 / 聊天 / 图片理解 / 限流（1,112 行）
 │   ├── framework.py        插件框架：注册表、热重载、能力门控（1,056 行）
@@ -536,16 +550,22 @@ character-bot/
 │   ├── features/           119 个插件（单文件，热插拔）
 │   ├── characters.py       角色定义 / SOUL / 主题 / 插件归属
 │   ├── agent.py            Agent 工具循环
+│   ├── native.py           原生扩展层（ctypes，缺 .so 自动回落）
+│   ├── palette.py          立绘取色 → 主题配色
+│   ├── toolbox.py          Agent 工具表（工具即插件）
+│   ├── store.py            SQLite + FTS5 消息索引
 │   ├── llm.py              模型供应商与调用
 │   └── vision.py           看图
-├── static/index.html       控制台（单文件，原生 JS，3,651 行）
+├── static/index.html       控制台（单文件，原生 JS，4,116 行）
 ├── edge/                   Go 边缘层：静态资源 + 大接口（613 行）
 ├── tools/                  字体子集 / 图片分档 / 视口矩阵
+│   ├── native/             C / Rust / C++ 源码 → .so（ctypes 直调）
+│   └── pkgcheck/           C# 插件包校验 CLI（.NET 10）
 ├── docs/                   框架、插件、角色、主题、字体、日志
-└── tests/                  28 套测试
+└── tests/                  37 套测试
 ```
 
-规模：Python **26,610 行 / 173 个文件**，面板 3,651 行，Go 613 行。
+规模：Python **22,179 行 / 155 个文件**，面板 4,116 行，Go 613 行；另有 C / Rust / C++ / Node / Java / PHP / C# 七种语言的辅助实现。
 
 ## 测试
 

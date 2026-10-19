@@ -47,11 +47,22 @@ def safe_name(text: str, limit: int = 12) -> str:
 
 
 def short(text: str, limit: int) -> str:
-    """按显示宽度截断（超长补 …，结果不超过 limit 字符），先走白名单清洗。"""
+    """按**显示宽度**截断（超长补 …），先走白名单清洗。
+
+    原来是按 `len()` 截：中文一个字占两列，20 个汉字能顶满 40 列，
+    而 `len()` 只看 20 —— 卡片上中英混排的名字会被撑出框，或者明明还有空位却被切。
+    宽度计算交给 C 扩展（`bot/native.py`，没编 .so 时自动回落纯 Python）。
+    """
     t = clean(text, 999)
     if limit <= 0:
         return ""                                   # OCR 六轮 #7：原来 limit<=1 会返回 2 个字符
-    return t if len(t) <= limit else t[:limit - 1] + "…"
+    try:
+        from bot import native as _native
+        if _native.width(t) <= limit:
+            return t
+        return _native.truncate(t, max(1, limit - 1)) + "…"
+    except Exception:                               # noqa: BLE001
+        return t if len(t) <= limit else t[:limit - 1] + "…"
 
 
 def safe_token(raw) -> str:

@@ -1,0 +1,19 @@
+{
+  "id": "similar",
+  "title": "相似度",
+  "description": "Java 写的：Dice 2-gram 判断两句话是不是同一个问题（常驻 JVM，暖机后 2 ms）",
+  "language": "java",
+  "run": [
+    "java",
+    "-XX:+UseSerialGC",
+    "-Xss256k",
+    "-XX:TieredStopAtLevel=1",
+    "-cp",
+    "tools/classes"
+  ],
+  "args": [
+    "Similar"
+  ],
+  "timeout": 10,
+  "version": "1.0"
+}

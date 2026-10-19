@@ -1,152 +1,167 @@
-# 多语言：插件用任何语言写，历史用 SQL 查
+# 十种语言，各接一件真活
 
-这个项目的核心是 Python，但**不是只有 Python**。两条扩展线：
+这个项目不是「用来演示多语言」的。下面每一行都是**线上代码真的在跑**的那条路径，
+每一行都有本机（RK3399 / 4 GB / 无风扇）实测数字，以及「为什么不是别的语言」。
 
-| 位置 | 语言 | 为什么 |
-|---|---|---|
-| 面板前端 | **JavaScript**（单文件，无构建） | 没有构建链，改完刷新就生效 |
-| 边缘层 `edge/` | **Go** | 静态资源 + 两个 feed 接口，常驻 19MB |
-| 消息索引 `bot/store.py` | **SQL**（SQLite + FTS5） | 20 万条也能毫秒级搜 |
-| 外部插件 `bot/features/ext/` | **Node / Rust / C / C++ / Java**（示例全部跑通） | 见下 |
-| 主程序、121 个插件 | Python（标准库） | 迭代最快 |
+先说结论：**语言不是按喜好挑的，是按「这段代码多久跑一次、每次多大的活」挑的。**
 
----
-
-## 1. 外部插件协议（任何语言）
-
-插件就是一个**常驻子进程**，用 NDJSON 说话（一行一个 JSON）：
-
-```
-宿主 → {"op":"hello","v":1}
-插件 → {"ok":true,"name":"uuid","title":"UUID","commands":[{"name":"uuid","help":"…"}]}
-宿主 → {"op":"call","id":1,"cmd":"uuid","args":[],"text":"用户打的参数","ctx":{…}}
-插件 → {"id":1,"ok":true,"reply":"要发回去的话"}
-宿主 → {"op":"bye"}
-```
-
-- **开机不起进程**：握手结果（命令表）缓存在 `state/extmeta/<id>.json`，键是
-  「规格文件 mtime + 入口文件大小」。开机只读这一份 JSON，第一次调用才真的 spawn。
-  五个示例加起来能省 ~530 ms 启动和 ~26 MB 常驻（Java 那个尤其明显）。
-- 首次调用才启动，之后常驻 —— Node/Java 的启动成本每个进程只付一次。
-- 崩溃自动重启（上限 3 次），之后标红；超时在线程里掐断，不挡事件循环。
-- 崩了自动重启，最多 3 次；之后这个插件标红，面板能看到原因。
-- `ctx` 里有：`user_id` / `user_name` / `chat_id` / `is_group` / `character` /
-  `platform` / `raw`（整条消息原文）/ `message_id`。
-- 超时按插件配置（默认 5s）掐断，不会拖住事件循环 —— 调用跑在线程里。
-
-### 写一个（30 行以内）
-
-规格文件 `bot/features/ext/hello.ext.json`：
-
-```json
-{
-  "id": "hello",
-  "title": "打招呼",
-  "description": "最小的外部插件",
-  "language": "node",
-  "entry": "tools/hello.mjs",
-  "timeout": 3
-}
-```
-
-`tools/hello.mjs`：
-
-```js
-import { createInterface } from "node:readline";
-const send = o => process.stdout.write(JSON.stringify(o) + "\n");
-createInterface({ input: process.stdin }).on("line", line => {
-  const m = JSON.parse(line);
-  if (m.op === "hello")
-    send({ ok: true, name: "hello", title: "打招呼",
-           commands: [{ name: "hi", help: ".hi —— 打个招呼" }] });
-  else if (m.op === "bye") process.exit(0);
-  else if (m.op === "call")
-    send({ id: m.id, ok: true, reply: `你好，${m.ctx.user_name}！` });
-});
-```
-
-放进 `bot/features/config.json` 的 `enabled` 里，8 秒内热重载生效。
-
-**注意**：`text` 是**参数部分**（`.hi 你好` → `你好`），整条消息在 `ctx.raw`。
-写 `.json {"a":1}` 这种命令时用 `text`，别用 `raw`。
+| 语言 | 干什么 | 形态 | 为什么是它 |
+|---|---|---|---|
+| **Python** | 服务、插件、协议、渲染 | 主进程 | 迭代速度 > 单点性能；热点早被 C 库（PIL / sqlite3 / 正则）兜住了 |
+| **SQL** | 历史检索、看板聚合 | SQLite + FTS5 | 集合运算写在 SQL 里，比 Python 里循环快一个量级，还不占内存 |
+| **Go** | 静态资源 + 消息流 | 独立进程（:8796） | 纯 I/O 密集、要长连接；613 行换掉 208 KB 页面的抖动 |
+| **C** | 显示宽度 / 按宽截断 | `.so` + ctypes | 每行卡片文字都要量一次；纯字节循环，没有比它更省的东西 |
+| **Rust** | 多词扫描 / 归一化 | `.so` + ctypes | 每条消息都要扫；零 crate 也能写 Aho-Corasick，敢放在消息路径上 |
+| **C++** | 立绘主色提取 | `.so` + ctypes | 直方图 + 排序 + 合并近色；模板容器写起来最省事，零依赖 |
+| **Node** | 代码高亮 | 常驻进程（NDJSON） | 正则染色是 V8 的原生强项，写出来最短；暖机后 3 ms |
+| **Java** | 句子相似度 | 常驻进程（JVM） | 集合运算 + 位运算直白；暖机后 2 ms，冷启动只付一次 |
+| **PHP** | 插件市场索引 | 常驻进程 | 扫目录、读文件头、拼 JSON —— 这类脚本活 PHP 最短 |
+| **C#** | 插件包校验 | 离线 CLI（.NET 10） | zip 条目校验 + SHA-256 + 路径穿越防护，.NET 的库最完整 |
 
 ---
 
-## 2. 五种语言的示例（仓库里都有，跑通了）
-
-本机实测（RK3399 / arm64 / 4GB，`tools/bench_ext.py`，多轮取最好值）：
-
-| 语言 | 文件 | 命令 | 启动 | 常驻内存 | 一次调用 | 编译 |
-|---|---|---|---:|---:|---:|---|
-| Rust 1.98 | `tools/textstat.rs` | `.统计` | **5.7 ms** | **1.7 MB** | 2.0 ms | `rustc -O` |
-| C (gcc 15) | `tools/crc.c` | `.crc` | **4.3 ms** | **1.4 MB** | 2.6 ms | `gcc -O2` |
-| C++ (g++ 15) | `tools/sort.cpp` | `.排序` | 8.1 ms | 3.1 MB | 4.7 ms | `g++ -O2` |
-| Node 26 | `tools/uuid.mjs` | `.uuid` / `.json` | 235 ms | 48.5 MB | 8.0 ms | 不需要 |
-| Java 21 | `tools/Hash.java` | `.sha` | 212–364 ms | 43 MB | 151 ms 首次 → **3.2 ms** 热身 | `javac` |
-
-一次编译全部（缺工具链会跳过并说明）：
-
-```bash
-bash bot/features/ext/tools/build.sh
-```
-
-实测（本机 RK3399 / 4GB）：
+## 两种接入形态，别混用
 
 ```
-node      ok（解释执行，无需编译）
-rust      已编译 textstat.bin
-c         已编译 crc.bin
-cpp       已编译 sort.bin
-java      已编译 classes/Hash.class
+每次调用 < 1 ms，每秒几十次   →  .so + ctypes（同进程，零序列化）
+偶尔一次、启动几十毫秒无所谓  →  常驻进程 + NDJSON（隔离崩溃，任何语言都能接）
 ```
 
-### 为什么这样选
+这条是踩出来的：第一版把「宽度计算」也做成外部进程，光 pipe 就 4 ms，比 Python 自己算还慢。
+反过来，把 JVM 塞进 ctypes 也不现实 —— 它要的是常驻。
 
-- **Rust / C / C++**：编译成原生二进制，启动 4–8 ms、常驻 1.4–3 MB。适合「每条消息都跑」
-  的小工具（统计、校验、排序）。代价是编译步骤与平台绑定（arm64 编译出来的二进制
-  不能在 x86 上跑，得各自编）。
-- **Node**：零编译、生态最全，起进程 146 ms、常驻 48 MB。适合「逻辑比性能重要」的插件。
-- **Java**：**能用**，但要接受两段成本 —— 启动 364 ms，第一次调用 151 ms（JIT 没热），
-  **从第 2 次起 3.2 ms**，和 C/Rust 同一个量级；常驻 43 MB，占这台 4 GB 机器的 1%。
-  也就是说它不适合「冷启动敏感」的场景（第一条消息会明显慢），常驻之后就没什么区别了。
-- **C# / PHP**：本机没装运行时（没有 `dotnet` / `mono` / `php`），所以**没有实测**，
-  也就没有放进示例目录 —— 协议本身支持，装了运行时按上面 30 行照抄即可。
-
-> 为什么没有把「八种语言全上」写成结论：真正决定要不要用某门语言的是
-> **「这个操作在一轮对话里跑几次」**。每条消息都跑的（统计、校验）值得用原生；
-> 一天几次的（导角色包、批量整理）用什么语言都行，别为它加一份工具链。
+`.so` 这一层还有一条硬规矩：**任何 `.so` 缺失或加载失败，自动回落纯 Python。**
+主机上没装 rustc/gcc 也能跑，面板「运行时」卡会如实写「未编译，回落纯 Python」。
 
 ---
 
-## 3. SQL：消息索引
+## 每一条的实测
 
-`state/messages.db`（SQLite + FTS5）是 `state/*.jsonl` 的**索引**，不是真相：
-删掉它会自动重建，JSONL 少一行它也跟着少（按字节偏移增量同步，文件缩水就整份重建）。
+### SQL：看板聚合 2200 ms → 195 ms（20 万行，11×）
 
-为什么值得多一层（20 万条 / 42MB 合成数据，`tools/bench_sql.py`）：
+看板原来在 Python 里把 `messages.jsonl` 逐行解析、逐条累加：20 万行 = 4000 ms 读 + 2200 ms 算。
+现在 `chat_id / day / role` 都是索引列，一次 `GROUP BY` 拿全：
 
-```
-场景                     JSONL 扫描      SQLite     加速
-关键词搜索（全表）          362.8 ms     12.7 ms     29×
-会话最近 50 条             331.3 ms      1.2 ms    276×
-按天 × 角色聚合           5143.8 ms    483.7 ms     11×
-追加一条                     0.1 ms      8.1 ms    —
+```sql
+SELECT day, role, COUNT(*) FROM msg GROUP BY day, role        -- 逐日 + 角色合计，一次扫描
+SELECT chat_id, COUNT(*), MAX(ts) FROM msg GROUP BY chat_id   -- 覆盖索引
 ```
 
-最后一行是**故意的**：写入还是走 JSONL（0.1ms，纯 append），SQLite 只负责读。
-把写入也搬进 SQLite 就为了那 8ms 的事务开销，还要处理锁竞争 —— 不值。
+**踩过的坑**：`date(ts,'unixepoch','localtime')` 是**逐行调 `localtime_r`**，20 万行要 1.3 秒。
+改成写入时就把本地日期算好存进 `day` 列，才真的快。
 
-接口：
+复现：`python3 tools/bench_dashboard.py 200000`
+
+### C：按宽截断 0.47 ms → 0.20 ms（20 行卡片文字，2.4×）
+
+卡片上的名字、称号、物品名都要按**显示宽度**截断：中文一个字两列，`len()` 看不出来。
+以前是 `t[:limit]`，中英混排会被撑出框，或者明明还有空位却被切。
+
+```c
+int    klee_width(const char *s, size_t n);                 // 列数
+size_t klee_truncate(const char *s, size_t n, int maxw);    // 不切坏多字节字符
+```
+
+**为什么只有 2.4×**：ctypes 每次调用有 ~6 µs 底噪，20 行就是 120 µs。真要更快得做批量接口
+（一次传整段、返回换行位置）。目前不值得 —— 卡片渲染的主要成本在 PIL 上色，不在这里。
+
+### Rust：多词扫描 620 µs → 362 µs（500 词 × 2400 字，1.7×）
+
+屏蔽词是**每条入站消息**的钩子。
+
+- 第一版「按首字节分桶 + 逐词比较」：591 µs，**比 Python 的 `w in text` 还慢** ——
+  中文词的 UTF-8 首字节高度重复，一个桶挤二三十个词，每个位置全比一遍。
+- 第二版字节 trie：226 µs。
+- 第三版 Aho-Corasick（失配链）+ 词表缓存：362 µs（含 FFI 和建树摊销）。
+
+**诚实的交叉点**：词表 ≤ 64 个时 Python 更快 —— `str.__contains__` 是 Two-Way 算法，
+而 ctypes 一次调用就有 6 µs 底噪。所以 `moderation.py` 按词表大小切实现，**两套结果一致**：
+
+```python
+use_native = len(words) >= 64
+```
+
+| 词表规模 | Rust（AC） | Python（`in`） | 谁快 |
+|---:|---:|---:|---|
+| 2 | 44 µs | 1.9 µs | Python 23× |
+| 51 | 77 µs | 70 µs | 持平 |
+| 200 | 183 µs | 259 µs | Rust 1.4× |
+| 500 | 362 µs | 620 µs | Rust 1.7× |
+| 1000 | 698 µs | 1231 µs | Rust 1.8× |
+
+规模越大差距越大：Python 是 `O(词数 × 文本)`，AC 是 `O(文本)`。
+
+### C++：立绘取色 65 ms（新功能）
+
+导入新角色时，从立绘里算出 accent / accent2，生成一套主题色。
+以前只能手填色号或沿用默认红 —— **换一张立绘，主题还是别人的颜色**。
+
+5 bit/通道 直方图（32768 桶）+ 按「占比 × 饱和度 × 中等亮度」打分 + 近色合并。
+480 px 立绘 65 ms，结果缓存到 `state/charpalette.json`，立绘 mtime 变了才重算。
+
+六个角色的实测结果：红红 `#a33153`、可莉 `#d13b0e`、胡桃 `#b39284`、
+茜特菈莉 `#f3c2ba`、昔涟 `#a293da`、亚托莉 `#7d6264`。
+
+### Node：代码高亮 3.3 ms（新功能）
+
+聊天里的 ``` 代码块以前是纯文本。现在服务端染色：关键字 / 字符串 / 注释 / 数字 / 键名。
+**先渲染纯文本，再异步升级** —— 高亮慢一点不该拖慢首屏。
+
+**踩过的坑**：占位符写成 `\u0000<序号>\u0000`，结果数字高亮把占位符里的序号也染成了 `<span>`，
+还原时再也匹配不上。改成 `\u0000x3x\u0000`。
+
+### Java：句子相似度 2 ms（新功能）
+
+「你是不是问过差不多的问题」。发消息前查一遍最近 60 条用户消息。
+
+**踩过的坑**：第一版用 64 位 SimHash + 汉明距离，**短句上完全不可用** ——
+「今天天气怎么样 / .sha 你好」得 0.77，「今天天气怎么样 / 今天天气如何」只有 0.73，
+不相关的比相关的还高。SimHash 要的是长文档，不是一句话。
+换成 **Dice 2-gram**：不相关 = 0.00，换个说法问同一件事 = 0.38~0.67。阈值 0.4。
+
+| 一对短句 | 分数 |
+|---|---:|
+| 明天几点开会 / 明天开会几点 | 0.60 |
+| 今天天气怎么样 / 今天天气如何 | 0.55 |
+| 可莉是谁 / 可莉是哪个角色 | 0.44 |
+| 今天天气怎么样 / .sha 你好 | **0.00** |
+| 你好 / 今天吃什么 | **0.00** |
+
+### PHP：插件市场索引（新功能）
+
+扫 `bot/features/*.py` 的插件头（NAME / DESCRIPTION / CHARACTERS / SYSTEM）+ `ext/*.ext.json`，
+输出按语言 / 按角色 / 命令数的统计。面板「插件市场」直接吃这份清单：
+132 个插件、164 个命令、7 种语言。启动 257 ms，之后每次 < 1 ms。
+
+### C#：插件包校验（新功能）
+
+装插件包之前先过一遍：路径穿越、单文件 2 MB / 整包 8 MB、条目数上限（zip 炸弹）、
+`character.json` 必填字段、`_` 开头的共享模块不许当插件装，输出带 SHA-256 的清单。
 
 ```
-GET /api/search?q=红绳&limit=30&character=klee
-    → {ok, count, took_ms, hits:[{ts,session,character,role,text,snippet}]}
-GET /api/search/stats?days=14
-    → {total, by_character[], by_day[], health:{ok,rows,size}}
+$ dotnet tools/pkgcheck/bin/Release/net10.0/pkgcheck.dll --selftest
+{"ok":true,"problems":["路径穿越：../../etc/passwd","缺少 character.json"],"by":"csharp"}
 ```
 
-中文没有空格，FTS5 的 `unicode61` 会把整句当一个 token —— 所以查询是两段式：
-先 FTS（带高亮片段），没命中再退回 `LIKE`（单字、整句都能搜）。同一条消息会同时
-出现在 `chat.jsonl` 和 `messages.jsonl`，结果按 `(秒级时间, 正文)` 去重。
+0.4 秒一次，离线跑，不在请求路径上。
 
-面板：**看板 → 🔍 历史搜索**。
+---
+
+## 面板里在哪看
+
+- **运维 → 🧬 语言运行时**：十种语言的版本、各自干什么、原生库是否已编译、常驻服务调用次数，
+  以及上面这些基准（带单位和加速比）。
+- **插件 → 🏪 插件市场**：PHP 扫出来的清单（按语言 / 按角色 / 命令数）。
+- **自定义 → 🎨 从立绘取色**：C++ 算的 accent / accent2 直接填进输入框。
+
+---
+
+## 想加一门语言？
+
+1. **偶尔用**：写个 NDJSON 插件放 `bot/features/ext/`，一份 `*.ext.json` 声明 `language` / `entry`。
+   Python 侧用 `ExtPlugin.call(cmd, args, text, ctx)`。参考 `highlight.mjs`（Node）/
+   `Similar.java`（Java）/ `market.php`（PHP）。
+2. **每次调用都要快**：写 C ABI 函数，`tools/build_native.sh` 里加一条编译，
+   `bot/native.py` 里加一个 ctypes 绑定 + **纯 Python 兜底**。没有兜底的扩展层等于给部署埋雷。
+
+两条都遵守同一件事：**编不出来 / 装不上时，服务照常跑，面板如实显示「未编译 / 未安装」。**

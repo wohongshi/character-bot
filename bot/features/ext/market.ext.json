@@ -1,0 +1,9 @@
+{
+  "id": "market",
+  "title": "插件市场索引",
+  "description": "PHP 写的：扫插件目录，统计分类 / 命令 / 中英文名，出可安装清单",
+  "language": "php",
+  "entry": "tools/market.php",
+  "timeout": 6,
+  "version": "1.0"
+}

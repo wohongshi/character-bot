@@ -31,18 +31,37 @@ def register(api):
     reply = str(api.settings.get("reply") or DEFAULT_REPLY)
     cooldown = float(api.settings.get("cooldown") or 60)
 
+    # 词表规模决定用哪套实现（实测在 docs/POLYGLOT.md）：
+    #   ≤ 64 词：Python 的 `w in text` 走 str 快搜，比 ctypes 调用还快（1.9 µs vs 6.4 µs 底噪）
+    #   ≥ 64 词：Rust 的 Aho-Corasick 一次扫描搞定，500 词时快 1.7×，且随词表增大差距继续拉
+    # 两套结果一致（都返回命中词），所以这里只切路径，不动语义。
+    use_native = len(words) >= 64
+    if use_native:
+        api.log("启用 Rust 扫描器（%d 个词）", len(words))
+
     async def check(ctx):
+        if use_native:
+            try:
+                from bot import native as _native
+                hit = _native.scan(ctx.text or "", words)
+                if hit:
+                    return await _block()
+            except Exception:                        # noqa: BLE001
+                pass                                  # 原生层出问题就退回 Python 版
         low = (ctx.text or "").lower()
         for w in words:
             if w.lower() in low:
-                if cooldown > 0:
-                    now = time.monotonic()
-                    if now < api.state.get("last", 0.0):
-                        return api.BLOCK            # 冷却中：静默拦截，不刷屏
-                    api.state["last"] = now + cooldown
-                await ctx.reply(reply)
-                return api.BLOCK
+                return await _block()
         return None
+
+    async def _block():
+        if cooldown > 0:
+            now = time.monotonic()
+            if now < api.state.get("last", 0.0):
+                return api.BLOCK                    # 冷却中：静默拦截，不刷屏
+            api.state["last"] = now + cooldown
+        await ctx.reply(reply)
+        return api.BLOCK
 
     api.on_message(check, priority=10)
     api.log("启用，%d 个词（冷却 %ds）", len(words), int(cooldown))

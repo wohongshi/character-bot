@@ -1066,6 +1066,21 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
   font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
 .msg .bub pre{background:rgba(0,0,0,.07);border-radius:10px;padding:8px 11px;margin:6px 0;
   overflow:auto;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap}
+/* 代码高亮（Node 侧染色，服务端已转义）：字色跟主题走，不写死 */
+.msg .bub pre.code .t-k{color:#c0392b;font-weight:700}
+.msg .bub pre.code .t-s{color:#2e7d32}
+.msg .bub pre.code .t-c{color:#8d6e63;font-style:italic}
+.msg .bub pre.code .t-n{color:#1565c0}
+.msg .bub pre.code .t-a{color:#6a1b9a}
+.msg.me .bub pre.code .t-k{color:#ffd9a0}
+.msg.me .bub pre.code .t-s{color:#c8f0b0}
+.msg.me .bub pre.code .t-c{color:rgba(255,255,255,.72)}
+.msg.me .bub pre.code .t-n{color:#bfe4ff}
+html[data-theme="dark"] .msg .bub pre.code .t-k{color:#ff9d7a}
+html[data-theme="dark"] .msg .bub pre.code .t-s{color:#9fd89a}
+html[data-theme="dark"] .msg .bub pre.code .t-c{color:#a08b7a}
+html[data-theme="dark"] .msg .bub pre.code .t-n{color:#9cc4ff}
+html[data-theme="dark"] .msg .bub pre.code .t-a{color:#d0a0ff}
 .msg .bub i{opacity:.82}
 .msg .bub a{color:var(--ui-accent);text-decoration:underline;word-break:break-all}
 .msg.me .bub code,.msg.me .bub pre{background:rgba(255,255,255,.22)}
@@ -1240,6 +1255,30 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
 /* 键盘可达性：只有键盘聚焦才画环，鼠标点不画 */
 :focus-visible{outline:2px solid color-mix(in srgb,var(--ui-accent) 70%, white);
   outline-offset:2px;border-radius:10px}
+
+.rtwrap{display:flex;flex-direction:column;gap:2px}
+.rtrow{display:grid;grid-template-columns:86px minmax(0,1fr) auto;gap:4px 10px;align-items:center;
+  padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
+.rtrow:last-child{border-bottom:0}
+.rtl{font-weight:650;font-family:var(--font-body)}
+.rtw{color:var(--ink-soft);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rtv{color:var(--dim);font-size:11.5px;text-align:right;white-space:nowrap}
+.rtn{grid-column:2 / 4;color:var(--dim);font-size:11px;margin-top:-2px}
+.rtv{max-width:46vw;overflow:hidden;text-overflow:ellipsis}
+/* 基准：一条一块，「A → B」不许断开 */
+.rtbench{display:grid;gap:4px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.rtb{display:flex;gap:8px;align-items:baseline;font-size:11.5px;flex-wrap:wrap}
+.rtb i{font-style:normal;font-weight:650;color:var(--ink)}
+.rtb em{font-style:normal;color:var(--dim)}
+.rtbp{white-space:nowrap;color:var(--ink-soft)}
+.rtbp b{color:var(--ui-accent)}
+.rtbh{margin-left:auto;font-size:max(11px, calc(10.5px * var(--fx)));color:var(--dim);border:1px solid var(--line);
+  border-radius:999px;padding:0 6px}
+.rtbs{font-size:max(11px, calc(10.5px * var(--fx)));color:var(--green);font-weight:700}
+@media(max-width:520px){
+  .rtrow{grid-template-columns:74px minmax(0,1fr);gap:2px 8px}
+  .rtv{grid-column:2;text-align:left}
+}
 
 /* ============ 可折叠侧栏（替代底部 dock） ============
    手机：侧栏变成浮层，左上角 ☰ 开；点遮罩/选项关。
@@ -1508,9 +1547,37 @@ function faces(text){
     return e ? `<span class="face">${e}</span>` : `<span class="face chip">${esc(n.trim())}</span>`;
   });
 }
+let _hlSeq = 0;
+/* 代码块：先按纯文本渲染（服务器不在也能看），随后异步请求 Node 高亮替换。
+   为什么要异步：高亮要走一次 /api/highlight（~3 ms），但首屏不该等它。 */
+async function upgradeHighlight(){
+  const nodes = [...document.querySelectorAll('pre[data-code]')];
+  for (const el of nodes){
+    if (el.dataset.hl) continue;
+    el.dataset.hl = "1";
+    const lang = el.dataset.lang || "js";
+    const code = el.dataset.code || "";
+    if (code.length > 20000) continue;
+    try{
+      const r = await fetch("/api/highlight", {method:"POST",
+        headers:{"X-Klee-Studio":"1","Content-Type":"application/json"},
+        body: JSON.stringify({lang, code})});
+      const d = await r.json();
+      if (d && d.ok && d.html && el.isConnected){
+        const box = document.createElement("div");
+        box.innerHTML = d.html;                 // 服务端已转义
+        const pre = box.firstElementChild;
+        if (pre){ pre.dataset.hl = "1"; el.replaceWith(pre); }
+      }
+    }catch(e){ /* 高亮失败就保持纯文本 */ }
+  }
+}
 function mdLite(h){
   // 输入已是 esc() 过的纯文本；只认最常见的几种，避免误伤角色扮演里的符号
-  h = h.replace(/```([\s\S]*?)```/g, (m,c) => `<pre>${c.replace(/^\n+|\n+$/g,"")}</pre>`);
+  h = h.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (m, lang, c) =>
+    `<pre data-code="${esc(c.replace(/^\n+|\n+$/g,""))}" data-lang="${esc(lang || "js")}"` +
+    ` data-hlseq="${++_hlSeq}">${c.replace(/^\n+|\n+$/g,"")}</pre>`);
+  setTimeout(upgradeHighlight, 0);
   h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   h = h.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
   h = h.replace(/(^|[\s（(])\*([^*\n]{1,80})\*(?=$|[\s，。！？、）」)])/g, "$1<i>$2</i>");
@@ -1646,6 +1713,19 @@ function flash(text){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("on"), 4200);
 }
+/* 从当前角色立绘里取主色（C++ 直方图，服务端缓存）。
+   以前换角色只能手填色号，或者沿用上一个角色的红色。 */
+async function palettePick(){
+  const d = await api("/api/characters/palette?name=" + encodeURIComponent(ACTIVE.id));
+  if (!d || !d.ok){ flash("取色失败：" + ((d && d.error) || "未知")); return; }
+  const a1 = $("uiAccent"), a2 = $("uiAccent2");
+  if (a1) a1.value = d.accent || "";
+  if (a2) a2.value = d.accent2 || "";
+  document.querySelectorAll(".swatch").forEach(s => s.classList.toggle("on", s.dataset.c === d.accent));
+  uiPreview();
+  flash(`✓ 取色 ${d.accent} / ${d.accent2}（${d.ms} ms · ${d.by}）`);
+}
+
 function setLang(v){
   try { localStorage.setItem("ks_lang", v); } catch(e){}
   location.reload();          // 整套外壳要重刷，重载最干净（切换不频繁）
@@ -2232,11 +2312,22 @@ try { localStorage.removeItem("ks_agent"); } catch (e) {}
 let chatOpts = {
   reasoning: localStorage.getItem("ks_reasoning") || "default",
 };
+/* 发出去之前先问一句「你是不是问过」—— 用 Java 的 Dice 相似度，
+   命中 >= 0.9 才提示（同义改写 0.4~0.7，不该打扰）。 */
+async function maybeDuplicate(text){
+  try{
+    const d = await api("/api/similar?q=" + encodeURIComponent(text) + "&limit=1");
+    const h = (d && d.hits && d.hits[0]) || null;
+    if (h && h.score >= 0.9) flash(`上次你问过差不多的：「${h.text.slice(0, 18)}」`);
+  }catch(e){}
+}
+
 async function sendMsg(){
   const box = $("chatBox"); const text = box.value.trim();
   if (!text) return;
   box.value = ""; box.style.height = "auto";
   localStorage.removeItem("ks_draft_" + ACTIVE.id);
+  maybeDuplicate(text);                       // 不 await：提示慢一点无所谓，别拖慢发送
   await post("/api/chat", {session: chat.session, text, character: ACTIVE.id,
                            reasoning: chatOpts.reasoning});
   await pollChat();
@@ -2363,7 +2454,8 @@ async function viewCustom(keep){
       </div>
     </div>
     <div class="card">
-      <h3>🎨 颜色</h3>
+      <h3>🎨 颜色 <span class="kv" style="font-family:var(--font-body)">留空 = 跟角色配色</span>
+        <button class="btn tiny" style="float:right" onclick="palettePick()">🖼 从立绘取色</button></h3>
       <div class="fld"><label>主色</label>
         <div class="swatches">${PRESET_ACCENTS.map(c => `<span class="swatch ${c === UI.accent ? "on" : ""}" data-c="${c}" style="background:${c}" onclick="document.getElementById('uiAccent').value='${c}';uiPreview()"></span>`).join("")}</div>
         <input type="text" id="uiAccent" value="${esc(UI.accent || "")}" placeholder="留空 = 跟角色配色" oninput="uiPreview()">
@@ -2587,9 +2679,31 @@ async function viewPlugins(readonly){
     <button class="fbtn" data-pf="err" onclick="plugFilter('err')">报错</button>
   </div>
   <div class="pluggrid" id="plugGrid"></div>
+  <div class="card" id="marketCard"><h3>🏪 插件市场 <span class="kv" style="font-family:var(--font-body)">按语言统计，数据由 PHP 扫目录得出</span></h3>
+    <div id="marketBox" class="kv">读取中…</div>
+  </div>
   <div id="agentCardSlot"></div>`;
   renderPlugGrid();
+  loadMarket();
   mountAgentCard();
+}
+
+/* 市场清单：PHP 扫一遍 features/ 与 ext/，按语言与角色统计。
+   面板这边只负责显示 —— 统计口径在插件里，不在这里重算。 */
+async function loadMarket(){
+  const box = $("marketBox"); if (!box) return;
+  const d = await api("/api/market");
+  if (!d || !d.ok){ box.textContent = "✗ " + ((d && d.error) || "读不到清单"); return; }
+  const kinds = Object.entries(d.by_kind || {}).sort((a, b) => b[1] - a[1]);
+  box.innerHTML = `<div class="row" style="gap:6px;flex-wrap:wrap">
+      <span class="tag">共 ${d.total} 个插件</span>
+      <span class="tag">${d.commands} 个命令</span>
+    </div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+      ${kinds.map(([k, n]) => `<span class="tag">${LANG_ICON[k] || "🧩"} ${esc(k)} · ${n}</span>`).join("")}
+    </div>
+    <div class="kv" style="margin-top:6px">每个角色的专属插件：
+      ${Object.entries(d.by_char || {}).map(([c, n]) => `${esc(c)} ${n}`).join(" · ") || "—"}</div>`;
 }
 
 async function mountAgentCard(){
@@ -3715,6 +3829,62 @@ function adapterHTML(ad, compact){
     ${off.length ? `<br><span class="kv">不支持：${esc(off.map(k => CAP_CN[k] || k).join("、"))}</span>` : ""}${warn}`;
 }
 
+/* ================= 语言运行时 =================
+   面板上不写「我们支持 10 种语言」这种话，只写每种的版本、以及在干什么。 */
+const LANG_ICON2 = {python:"🐍", go:"🐹", rust:"🦀", c:"🔵", cpp:"🔷",
+                    node:"🟩", java:"☕", php:"🐘", csharp:"🟪", sql:"🗄"};
+// 版本串前面补一个能看懂的前缀：`10.0.112` 单看不知道是哪门子的版本号
+function prefixVer(lang, v){
+  const s = String(v || "").trim();
+  if (!s) return "";
+  const pick = (re) => { const m = s.match(re); return m ? m[1] : s; };
+  switch (lang) {
+    case "csharp": return ".NET " + s;
+    case "go": return "go " + pick(/go(\d[\w.]*)/);
+    case "rust": return "rustc " + pick(/rustc\s+([\w.]+)/);
+    case "c": return "gcc " + pick(/\)\s+([\d.]+)/);
+    case "cpp": return "g++ " + pick(/\)\s+([\d.]+)/);
+    case "java": return "JDK " + pick(/([\d.]+)/);
+    case "php": return "PHP " + pick(/(\d+\.\d+\.\d+)/);
+    case "node": return "node " + s.replace(/^v/, "");
+    case "python": return s.replace(/^Python /, "Python ");
+    default: return s;
+  }
+}
+async function loadRuntime(){
+  const box = $("rtBox"); if (!box) return;
+  const d = await api("/api/runtime");
+  if (!d || !d.ok){ box.textContent = "✗ 读不到运行时信息"; return; }
+  const nat = {};
+  const NAT_KEY = {Rust: "rust", C: "c", "C++": "cpp"};
+  ((d.native || {}).libs || []).forEach(x => { nat[NAT_KEY[x.lang] || x.lang] = x; });
+  const rows = (d.toolchains || []).map(t => {
+    const n = nat[t.lang] || null;
+    const dot = t.ok ? "●" : "○";
+    const note = n ? (n.loaded ? `已编译 ${Math.round((n.bytes || 0) / 1024)} KB` : "未编译，回落纯 Python")
+                   : (t.ok ? "" : "未安装");
+    return `<div class="rtrow" title="${esc(t.version || "")}">
+      <span class="rtl">${LANG_ICON2[t.lang] || "•"} ${esc(t.lang)}</span>
+      <span class="rtw">${esc(t.what)}</span>
+      <span class="rtv" title="${esc(t.version || "")}">${dot} ${esc(prefixVer(t.lang, t.version || note || ""))}</span>
+      ${note && t.ok ? `<span class="rtn">${esc(note)}</span>` : ""}
+    </div>`;
+  }).join("");
+  const ext = ((d.ext || []).map(x =>
+    `<span class="tag" title="${esc(x.error || "")}">${x.running ? "●" : "○"} ${esc(x.name)} · 本进程 ${x.calls} 次` +
+     (x.calls ? ` · 上次耗时 ${x.last_ms} ms` : "") + `</span>`
+  ).join(" ")) || '<span class="kv">没有常驻外部进程</span>';
+  const m = d.measured || {};
+  box.innerHTML = `<div class="rtwrap">${rows}</div>
+    <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">${ext}</div>
+    <div class="rtbench">${(d.bench || []).map(b =>
+      `<span class="rtb"><i>${esc(b.what)}</i> <em>${esc(b.unit)}</em>
+        <span class="rtbp">${esc(b.before)} → <b>${esc(b.after)}</b></span>
+        ${b.speed ? `<span class="rtbs">${esc(b.speed)}</span>` : ""}
+        <span class="rtbh">${esc(b.how)}</span></span>`).join("")}
+      <div class="kv" style="margin-top:2px">左 = 换成这种实现之前，右 = 现在；数字来自本机实测</div></div>`;
+}
+
 /* 平台的「未就绪」原始报错一般是 OneBotError: ... 一长串，运维页只说人话 */
 function readyText(note){
   const s = String(note || "").trim();
@@ -3779,6 +3949,10 @@ async function viewOps(target){
       </div>`
       : `<div class="kv">✗ 读配置失败：${esc(cfg.error || "")}</div>`}
   </div>
+  <div class="card" id="rtCard"><h3>🧬 语言运行时 <span class="kv" style="font-family:var(--font-body)">每种语言都在干一件具体的活</span>
+    <button class="btn tiny" style="float:right" onclick="loadRuntime()">⟳</button></h3>
+    <div id="rtBox" class="kv">读取中…</div>
+  </div>
   <div class="card"><h3>${t("ops.logs")}</h3>
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="logGrep" placeholder="过滤词，比如 OneBot / ERROR / KB" style="flex:1;min-width:180px">
@@ -3794,6 +3968,7 @@ async function viewOps(target){
     if ($("logAuto").checked) logTimer = setInterval(logTick, 5000);
   };
   opsCfgPrev = cfg.values || {};
+  loadRuntime();
   logHash = null; logInited = false;                    // 页面重新装好，第一次必须真渲染
   opsLogs();
   viewModels("modelSlot");

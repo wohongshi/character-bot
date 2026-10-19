@@ -41,3 +41,10 @@ bot/features/extmeta/
 
 # 插件首次出现的记录（运行时生成，删了会自动重建）
 bot/features/known.json
+
+# 原生扩展编译产物（源码在 tools/native/，跑 tools/build_native.sh 生成）
+bot/native/lib/
+
+# .NET 构建产物
+tools/pkgcheck/bin/
+tools/pkgcheck/obj/

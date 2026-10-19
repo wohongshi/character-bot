@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Iterable
+
+log = logging.getLogger("klee.store")
 
 __all__ = ["MessageIndex"]
 
@@ -36,17 +39,25 @@ CREATE TABLE IF NOT EXISTS msg(
   src     TEXT NOT NULL,          -- chat / messages
   ts      REAL NOT NULL,
   session TEXT,
+  chat_id TEXT,                    -- 会话（group:xxx / private:xxx / web:xxx）：看板按它分组
+  day     TEXT,                    -- 本地日期 YYYY-MM-DD：写入时算好，查的时候才能走索引
   character TEXT,
   role    TEXT,
   text    TEXT NOT NULL,
   elapsed REAL,
   via     TEXT
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts
+  USING fts5(text, content='msg', content_rowid='id');
+"""
+
+#: 索引单独建：老库缺列时要先迁移再建，否则 CREATE INDEX 会先报错
+SCHEMA_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_msg_ts      ON msg(ts);
 CREATE INDEX IF NOT EXISTS idx_msg_sess    ON msg(session, ts);
 CREATE INDEX IF NOT EXISTS idx_msg_char    ON msg(character, ts);
-CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts
-  USING fts5(text, content='msg', content_rowid='id');
+CREATE INDEX IF NOT EXISTS idx_msg_chat    ON msg(chat_id, role, ts);
+CREATE INDEX IF NOT EXISTS idx_msg_day     ON msg(day, role);
 """
 
 
@@ -76,9 +87,26 @@ class MessageIndex:
         con.execute("PRAGMA busy_timeout=3000")
         return con
 
+    #: 索引是**可重建的派生数据**，加列就直接重建，不做逐行迁移
+    NEED_COLUMNS = ("chat_id", "day")
+
     def ensure(self) -> None:
         with self._connect() as con:
             con.executescript(SCHEMA)
+            cols = {r[1] for r in con.execute("PRAGMA table_info(msg)")}
+            missing = [c for c in self.NEED_COLUMNS if c not in cols]
+            if missing:
+                # 旧索引没有这些列：整表重建（比 ALTER + 回填简单，而且这里的数据
+                # 全部能从 JSONL 重新推出来，删掉不丢东西）
+                log.info("消息索引缺少列 %s，重建（一次性）", ",".join(missing))
+                con.executescript("DROP TABLE IF EXISTS msg_fts; DROP TABLE IF EXISTS msg;")
+                con.executescript(SCHEMA)
+                try:
+                    self.state_path.unlink()          # 偏移量清零，下轮从头发一遍
+                except OSError:
+                    pass
+                self._offsets = {}
+            con.executescript(SCHEMA_INDEXES)
 
     def _load_offsets(self) -> dict:
         try:
@@ -171,6 +199,10 @@ class MessageIndex:
                                              "role": d.get("role"), "text": text}),
                         "src": src, "ts": ts,
                         "session": str(d.get("session") or ""),
+                        "chat_id": str(d.get("chat_id") or ""),
+                        # 本地日期在写入时算一次：SQLite 的 'localtime' 修饰符是逐行
+                        # 调 localtime_r，20 万行要 1.3 秒 —— 那是看板慢的真凶
+                        "day": (time.strftime("%Y-%m-%d", time.localtime(ts)) if ts > 0 else ""),
                         "character": str(d.get("character") or ""),
                         "role": str(d.get("role") or ""),
                         "text": text[:8000],
@@ -198,8 +230,8 @@ class MessageIndex:
         n = 0
         for r in rows:
             cur = con.execute(
-                "INSERT OR IGNORE INTO msg(k,src,ts,session,character,role,text,elapsed,via)"
-                " VALUES(:k,:src,:ts,:session,:character,:role,:text,:elapsed,:via)", r)
+                "INSERT OR IGNORE INTO msg(k,src,ts,session,chat_id,day,character,role,text,elapsed,via)"
+                " VALUES(:k,:src,:ts,:session,:chat_id,:day,:character,:role,:text,:elapsed,:via)", r)
             if cur.rowcount:
                 con.execute("INSERT INTO msg_fts(rowid, text) VALUES(?, ?)",
                             (cur.lastrowid, r["text"]))
@@ -301,6 +333,55 @@ class MessageIndex:
         if not parts:
             parts = [q]
         return " AND ".join(f'"{p}"' for p in parts[:8])
+
+    def summary(self, days: int = 14) -> dict:
+        """看板要的聚合，全部下推到 SQL（不再在 Python 里遍历 20 万行）。
+
+        返回 {total, user, assistant, today, daily[{date,n}], sources[{chat_id,n,last}]}
+        """
+        days = max(1, min(int(days or 14), 60))
+        now = time.time()
+        since = now - days * 86400
+        out = {"total": 0, "user": 0, "assistant": 0, "today": 0,
+               "daily": [], "sources": [], "from_sql": True}
+        try:
+            con = self._connect()
+        except sqlite3.Error as e:
+            return {**out, "from_sql": False, "error": str(e)}
+        try:
+            # 一次扫描同时拿到「逐日」和「角色合计」：
+            # 分成两条 SQL 会各扫一遍 20 万行（实测 92 + 67 ms），合并后 60 ms
+            # 一次全量扫描，同时得到「角色合计」（全时段）与「逐日」（只留近 N 天）：
+            # 分两条 SQL 会各扫一遍 20 万行（实测 92 + 67 ms），合并后 60 ms
+            since_day = time.strftime("%Y-%m-%d", time.localtime(since))
+            today = time.strftime("%Y-%m-%d")
+            rows = con.execute(
+                "SELECT day, role, COUNT(*) FROM msg"
+                " WHERE role IN ('user','assistant') GROUP BY day, role").fetchall()
+            per_day: dict[str, int] = {}
+            for day, role, n in rows:
+                n = int(n)
+                if role == "user":
+                    out["user"] += n
+                elif role == "assistant":
+                    out["assistant"] += n
+                if day and day >= since_day:
+                    per_day[day] = per_day.get(day, 0) + n
+            out["daily"] = [{"date": d, "n": n} for d, n in sorted(per_day.items())]
+            out["today"] = per_day.get(today, 0)
+            out["total"] = out["user"] + out["assistant"]
+            # 来源：按 chat_id 分组（群 / 私聊 / 网页）
+            rows = con.execute(
+                "SELECT chat_id, COUNT(*) n, MAX(ts) last"
+                " FROM msg WHERE role IN ('user','assistant') AND chat_id <> ''"
+                " GROUP BY chat_id ORDER BY n DESC LIMIT 8").fetchall()
+            out["sources"] = [{"chat_id": r[0], "n": int(r[1]), "last": float(r[2] or 0)}
+                              for r in rows]
+        except sqlite3.Error as e:
+            return {**out, "from_sql": False, "error": str(e)}
+        finally:
+            con.close()
+        return out
 
     def stats(self, days: int = 14) -> dict:
         con = self._connect()
