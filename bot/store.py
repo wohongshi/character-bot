@@ -259,7 +259,7 @@ class MessageIndex:
 
     # ---------- 查询 ----------
     def search(self, q: str, *, limit: int = 30, character: str = "",
-               session: str = "", role: str = "") -> list[dict]:
+               session: str = "", role: str = "", src: str = "") -> list[dict]:
         """全文搜索。中文没有空格，FTS5 的 unicode61 分词会整段当一个词 ——
         所以短查询退化成 LIKE，长查询（≥2 字）优先 FTS。"""
         q = str(q or "").strip()
@@ -276,6 +276,11 @@ class MessageIndex:
         if role:
             where.append("m.role=?")
             args.append(role)
+        # `messages` 那份没有 session/character，只有 chat 那份能定位到具体气泡；
+        # 全局搜索「跳过去」必须只要 chat，否则点进去无处可去。
+        if src:
+            where.append("m.src=?")
+            args.append(src)
         tail = (" AND ".join(where) + " AND ") if where else ""
         con = self._connect()
         try:
@@ -444,6 +449,36 @@ class MessageIndex:
                         " WHERE session=? ORDER BY ts DESC LIMIT ?", (session, limit))]
         finally:
             con.close()
+
+    def forget(self, src: str, *, session: str, character: str, ts_list,
+               size: int | None = None) -> int:
+        """文件被重写过：把**确实删掉的那些行**从索引里摘掉，并把游标推到新末尾。
+
+        以前重写后只调 `maybe_sync()`，靠「文件比 offset 短」来判断要重建；
+        但重写之后马上又会 append 新行（对话就是这样），文件反而更长，
+        于是从旧 offset 读出来的是半截行 —— 已经在搜索里删掉的消息还能搜到，
+        新消息反而搜不到。这里改成精确删除 + 把 offset 设成当前大小。
+        """
+        ts_list = [float(t) for t in (ts_list or [])]
+        with self._lock:
+            hidden = 0
+            con = self._connect()
+            try:
+                for i in range(0, len(ts_list), 400):
+                    chunk = ts_list[i:i + 400]
+                    marks = ",".join("?" * len(chunk))
+                    sql = ("DELETE FROM msg WHERE src=? AND session=? AND character=?"
+                           f" AND ts IN ({marks})")
+                    hidden += con.execute(sql, [src, session, character, *chunk]).rowcount
+                if ts_list:
+                    con.execute("DELETE FROM msg_fts WHERE rowid NOT IN (SELECT id FROM msg)")
+                if size is not None:
+                    self._offsets[src] = int(size)
+                    self._save_offsets()
+                con.commit()
+            finally:
+                con.close()
+            return max(0, hidden)
 
     def drop_session(self, session: str, character: str = "") -> int:
         """删会话时同步删索引（JSONL 那边自己会重写，这里不能留残影）。"""

@@ -296,6 +296,11 @@ button.btn.tabon{background:var(--red-soft);border-color:#f0a99e;color:var(--red
 #pend .p{position:relative;width:58px;height:58px;border-radius:11px;overflow:hidden;
   border:1px solid var(--line);background:var(--surface-2)}
 #pend .p img{width:100%;height:100%;object-fit:cover;display:block}
+#autoSpk.on{color:var(--ink);border-color:var(--ui-accent);
+  background:color-mix(in srgb, var(--ui-accent) 18%, var(--surface-2))}
+/* 从全局搜索跳过来时闪一下，不然眼睛找不到是哪条 */
+@keyframes hitflash{0%,100%{background:transparent}30%{background:color-mix(in srgb,var(--ui-accent) 22%,transparent)}}
+.msg.hit .bub{animation:hitflash 1.6s ease 2;border-radius:12px}
 #pend .p button{position:absolute;right:2px;top:2px;width:18px;height:18px;border-radius:50%;
   border:0;background:rgba(20,12,10,.62);color:#fff;font-size:11px;line-height:18px;padding:0;cursor:pointer}
 /* 消息操作（悬停/触屏显示） */
@@ -851,6 +856,13 @@ body[data-density="wide"] .card{padding:20px 24px}
 #qbar .qt b{color:var(--ink);margin-right:4px}
 #qbar button{border:0;background:transparent;color:var(--dim);cursor:pointer;font-size:14px;
   line-height:1;padding:0 2px}
+#ebar{display:none;align-items:center;gap:8px;margin:0 0 6px;padding:6px 10px;
+  border-left:3px solid #d69a2d;border-radius:0 10px 10px 0;
+  background:color-mix(in srgb,#d69a2d 12%,var(--surface-2));
+  font-size:max(11px,calc(11px*var(--fx)));color:var(--dim)}
+#ebar.on{display:flex}
+#ebar .et{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#ebar button{border:0;background:transparent;color:var(--dim);cursor:pointer;font-size:12px;padding:0 2px}
 #msgs{gap:14px;padding:6px 2px 2px}
 .msg .bub{
   border-radius:18px;border:1px solid var(--glass-line);
@@ -1914,6 +1926,8 @@ const PAGES = [
   ["custom", "✨", "自定义", "配色、气泡、模块"],
 ];
 let cmdItems = [], cmdIdx = 0, cmdPluginCache = null, cmdPluginTs = 0;
+let cmdSeq = 0, cmdTimer = null, cmdCmdCache = {ts: 0, list: []};
+
 function cmdkOpen(){
   const el = $("cmdk"); if (!el) return;
   el.classList.add("on");
@@ -1927,6 +1941,8 @@ function cmdkOpen(){
   }
 }
 function cmdkClose(){ const el = $("cmdk"); if (el) el.classList.remove("on"); }
+
+/* ---------- 本地部分：页面 / 角色 / 插件（同步，随打随渲染） ---------- */
 function cmdkBuild(q){
   const needle = (q || "").trim().toLowerCase();
   const out = [];
@@ -1953,15 +1969,79 @@ function cmdkBuild(q){
   });
   return out.slice(0, 14);
 }
+
+/* ---------- 远端部分：命令 + 消息（防抖 160ms，输入法组词期间不打断） ---------- */
+async function cmdkCommands(){
+  if (cmdCmdCache.list.length && Date.now() - cmdCmdCache.ts < 60000) return cmdCmdCache.list;
+  try {
+    const d = await api("/api/commands");
+    cmdCmdCache = {ts: Date.now(), list: (d && d.commands) || []};
+  } catch(e){ /* 拿不到就只是搜不到命令，不影响别的 */ }
+  return cmdCmdCache.list;
+}
+async function cmdkSearchMsgs(q){
+  try {
+    // src=chat：只要「点得进去」的那份（另一份是 QQ 消息流，没有会话/角色）
+    const d = await api("/api/search?src=chat&limit=8&q=" + encodeURIComponent(q));
+    return (d && d.hits) || [];
+  } catch(e){ return []; }
+}
+function cmdkSnip(s){
+  return esc(String(s || "")).replace(/&lt;&lt;/g, "<mark>").replace(/&gt;&gt;/g, "</mark>");
+}
+function cmdkCharName(id){
+  const c = ((charData && charData.items) || []).find(x => x.id === id);
+  return (c && c.name) || id || "";
+}
+
 function cmdkRender(q){
-  cmdItems = cmdkBuild(q); cmdIdx = 0;
+  const base = cmdkBuild(q);
+  cmdItems = base; cmdIdx = 0; cmdkPaint();
+  const seq = ++cmdSeq;
+  const needle = String(q || "").trim();
+  if (needle.length < 2) return;              // 一个字就查库，等于每次都全表扫
+  if (cmdTimer) clearTimeout(cmdTimer);
+  cmdTimer = setTimeout(async () => {
+    const [cmds, hits] = await Promise.all([cmdkCommands(), cmdkSearchMsgs(needle)]);
+    if (seq !== cmdSeq) return;               // 期间又敲了字
+    const low = needle.toLowerCase();
+    const extra = [];
+    let ncmd = 0;
+    for (const c of cmds){
+      const hay = (c.name + " " + (c.aliases || []).join(" ") + " " + (c.help || "")).toLowerCase();
+      if (!hay.includes(low) || ncmd >= 6) continue;
+      ncmd++;
+      extra.push({ic: "⌘", title: "." + c.name,
+                  sub: (c.help || "") + (c.title ? " · " + c.title : ""),
+                  run: () => cmdkFillCommand(c.name)});
+    }
+    for (const h of hits){
+      extra.push({ic: h.role === "user" ? "🙋" : "💬",
+                  title: cmdkCharName(h.character) + " · " + (h.session || ""),
+                  sub: cmdkSnip(h.snippet || h.text), subHTML: true,
+                  run: () => cmdkJumpTo(h)});
+    }
+    if (seq !== cmdSeq) return;
+    cmdItems = base.concat(extra);
+    if (cmdIdx >= cmdItems.length) cmdIdx = 0;
+    cmdkPaint();
+  }, 160);
+}
+
+function cmdkPaint(){
   const box = $("cmdkList"); if (!box) return;
   box.innerHTML = cmdItems.length
-    ? cmdItems.map((it, i) => `<div class="cmdkitem ${i === 0 ? "on" : ""}" onclick="cmdkRun(${i})">
-        <span class="ic">${it.ic}</span><span>${esc(it.title)}</span><span class="sub">${esc(it.sub)}</span></div>`).join("")
-    : `<div class="cmdkempty">没有找到；试试「角色」「插件」「运维」</div>`;
+    ? cmdItems.map((it, i) => `<div class="cmdkitem ${i === cmdIdx ? "on" : ""}" onclick="cmdkRun(${i})">
+        <span class="ic">${it.ic}</span><span>${esc(it.title)}</span>
+        <span class="sub">${it.subHTML ? it.sub : esc(it.sub)}</span></div>`).join("")
+    : `<div class="cmdkempty">没有找到；试试「角色」「插件」「运维」，或者一句话里的几个字</div>`;
+  const on = box.querySelector(".cmdkitem.on");
+  if (on) on.scrollIntoView({block: "nearest"});
 }
+
 function cmdkKey(e){
+  // 中文输入法组词时的 Enter 是「确认候选词」，不是「打开这一条」
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp"){
     e.preventDefault();
     if (!cmdItems.length) return;
@@ -1978,6 +2058,52 @@ function cmdkRun(i){
   const it = cmdItems[i]; if (!it) return;
   cmdkClose();
   Promise.resolve(it.run()).catch(e => flash(String(e)));
+}
+
+/* 命令：填进输入框（不直接发 —— 参数得自己看着填） */
+async function cmdkFillCommand(name){
+  if (V !== "chat") go("chat");
+  await new Promise(r => setTimeout(r, 90));
+  const box = $("chatBox");
+  if (!box){ flash("先打开对话页再试"); return; }
+  const cur = box.value.replace(/\s+$/, "");
+  box.value = (cur ? cur + "\n" : "") + "." + name + " ";
+  box.dispatchEvent(new Event("input"));
+  box.focus();
+  try { box.setSelectionRange(box.value.length, box.value.length); } catch(e){}
+}
+
+/* 消息：跳到那条气泡上并闪一下 */
+async function cmdkJumpTo(h){
+  const target = h.character || ACTIVE.id;
+  if (target !== ACTIVE.id){
+    const r = await post("/api/characters/switch", {id: target});
+    if (!r || !r.ok){ flash("切换角色失败"); return; }
+    if (r.character) setActiveChar(r.character);
+    chat.char = ""; chat.after = 0;
+  }
+  chat.session = h.session || "studio-main";
+  chat.after = 0;
+  localStorage.setItem("ks_session", chat.session);
+  if (V !== "chat") go("chat"); else viewChat();
+  // viewChat 自己会拉第一屏；这里只等它铺好，别再手动清一次 ——
+  // 清了以后 chat.after 已经推到最新，再 poll 只会拿到空数组（之前就这么白屏的）。
+  for (let i = 0; i < 30 && !document.querySelector("#msgs .msg[data-ts]"); i++){
+    await new Promise(r => setTimeout(r, 100));
+  }
+  const want = Number(h.ts || 0);
+  let best = null, bestD = Infinity;
+  document.querySelectorAll("#msgs .msg[data-ts]").forEach(n => {
+    const d = Math.abs(Number(n.dataset.ts) - want);
+    if (d < bestD){ bestD = d; best = n; }
+  });
+  if (best && bestD < 0.01){
+    best.scrollIntoView({block: "center"});
+    best.classList.add("hit");
+    setTimeout(() => best.classList.remove("hit"), 3400);
+  } else {
+    flash("这条不在当前加载的历史里（对话太长，可以「导出 Markdown」看全文）");
+  }
 }
 
 /* ================= 插件详情抽屉 ================= */
@@ -2448,6 +2574,8 @@ function heroHTML(){
   </div>`;
 }
 async function viewChat(){
+  stopSpeak();                                  // 换页/换角色就别接着念了
+  chatEdit = null;                              // 换会话时「正在编辑」就没意义了
   if (chat.char !== ACTIVE.id){ chat.char = ACTIVE.id; chat.after = 0; }
   // 先用本地缓存的会话名把壳子画出来，不等后端 —— 3G 上一次 RTT 就是 300ms，
   // 切页手感差别很明显。真正的会话列表到了只补下拉（见函数末尾），不重画整页。
@@ -2478,11 +2606,14 @@ async function viewChat(){
     </div>
     <div id="msgs" onscroll="updateToBottom()"></div>
     <button id="toBottom" onclick="jumpBottom()" aria-label="回到最新">↓</button>
+    <div id="ebar"></div>
     <div id="qbar"></div>
     <div id="pend"></div>
     <div id="chatInput">
       <button class="btn tiny icon" id="attachBtn" onclick="pickImg()" title="发图片（也可以直接粘贴/拖进来）"
               aria-label="发图片">📎</button>
+      <button class="btn tiny icon" id="autoSpk" onclick="toggleAutoSpeak()"
+              title="自动朗读新回复" aria-label="自动朗读新回复" aria-pressed="false">🔈</button>
       <input type="file" id="imgFile" accept="image/*" multiple hidden onchange="onPick(this)">
       <textarea id="chatBox" rows="1" placeholder="跟${esc(ACTIVE.name)}说点什么…（可以发图）"></textarea>
       <button class="btn primary" id="sendBtn" onclick="sendMsg()">🎇 发送</button>
@@ -2492,7 +2623,8 @@ async function viewChat(){
       ${(ACTIVE.chips && ACTIVE.chips.length ? ACTIVE.chips : (CHIPS[ACTIVE.id] || CHIPS.klee)).map(t=>`<button onclick="quick('${esc(t)}')">${esc(t)}</button>`).join("")}
     </div>
   </div>`;
-  $("sessSel").onchange = () => { chat.session = $("sessSel").value; localStorage.setItem("ks_session", chat.session); chat.after = 0; $("msgs").innerHTML=""; pollChat(); };
+  $("sessSel").onchange = () => { stopSpeak(); chat.session = $("sessSel").value; localStorage.setItem("ks_session", chat.session); chat.after = 0; $("msgs").innerHTML=""; pollChat(); };
+  paintAutoSpk();
   $("chatBox").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendMsg(); } });
   /* 截图后直接 Ctrl+V：粘贴板里有图片就上传（没有就走正常粘贴文字） */
   $("chatBox").addEventListener("paste", e => {
@@ -2673,47 +2805,95 @@ async function exportConv(){
    自动播放：合成要几秒，用户手势的「临时激活」早过期了，play() 会被拦。
    所以在点击那一刻先用一个静音 wav 把同一个 <audio> 元素解锁，后面只换 src。 */
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+/* 一次只念一条：点第二条会先停掉前一条。分段返回的音频按顺序播，播完自动收尾。
+   自动播放：合成要几秒，用户手势的「临时激活」早过期了，play() 会被拦。
+   所以「解锁」必须发生在点击那一刻 —— 手动朗读在按钮的 click 里做，
+   自动朗读在打开开关的那一下做（同一个 <audio> 元素，页面活着就一直算解锁）。
+   注意：stopSpeak() **不销毁**这个元素，否则解锁状态跟着丢。 */
 let speakState = {box: null, audio: null, list: [], idx: 0, btn: null, token: 0, tick: null};
+const AUTO_SPEAK_MAX = 500;          // 超过这么多字就不自动念（点 🔊 还能手动念）
 
+function ensureAudio(){
+  let a = speakState.audio;
+  if (!a){
+    try { a = new Audio(); a.preload = "auto"; } catch(e){ return null; }
+    speakState.audio = a;
+  }
+  return a;
+}
+/* 必须在用户手势里调：静音 wav 先把元素「点着」，之后换 src 才播得出来 */
+function unlockAudio(){
+  const a = ensureAudio();
+  if (!a) return;
+  try { a.onended = null; a.onerror = null; a.src = SILENT_WAV; a.play().catch(() => {}); } catch(e){}
+}
 function stopSpeak(){
   const st = speakState;
   st.token++;
   if (st.tick){ clearInterval(st.tick); st.tick = null; }
-  if (st.audio){ try{ st.audio.pause(); }catch(e){} try{ st.audio.src = ""; }catch(e){} st.audio = null; }
+  if (st.audio){
+    try{ st.audio.onended = null; st.audio.onerror = null; st.audio.pause(); }catch(e){}
+    try{ st.audio.removeAttribute("src"); st.audio.load(); }catch(e){}
+  }
   if (st.box) st.box.classList.remove("speaking");
   if (st.btn){ st.btn.textContent = "🔊 朗读"; st.btn = null; }
   st.box = null; st.list = []; st.idx = 0;
 }
 
-async function speakMsg(el){
-  const box = el.closest(".msg");
-  if (!box) return;
-  if (speakState.box === box && speakState.audio){ stopSpeak(); return; }   // 再点一次 = 停
-  stopSpeak();
-  const bub = box.querySelector(".bub");
-  if (!bub) return;
-  // 念**原文**：页面上的 textContent 已经把 ``` 变成 <pre>、把 ** 变成 <b>，
-  // 后端那套清洗规则一条都匹配不上，代码块会被整段念出来。
-  const raw = bub.dataset.raw;
-  const qb = bub.querySelector(".qb");                 // 引用块不念，只念这一轮的正文
-  const text = (raw != null && raw !== "")
-    ? String(raw).trim()
-    : (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
-  if (!text){ flash("这条没有可念的文字"); return; }
+/* ---------- 自动朗读 ---------- */
+function autoSpeakWanted(){
+  try { return localStorage.getItem("ks_autospeak") === "1"; } catch(e){ return false; }
+}
+function paintAutoSpk(){
+  const b = $("autoSpk");
+  if (!b) return;
+  const on = autoSpeakWanted();
+  b.classList.toggle("on", on);
+  b.textContent = on ? "🔊" : "🔈";
+  b.title = on ? "自动朗读已开：新回复会念出来（点一下关）" : "自动朗读新回复";
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+}
+function toggleAutoSpeak(){
+  const on = !autoSpeakWanted();
+  try { localStorage.setItem("ks_autospeak", on ? "1" : "0"); } catch(e){}
+  if (on){ unlockAudio(); flash("自动朗读已开：新回复会念出来"); }   // 手势里解锁
+  else { stopSpeak(); flash("自动朗读已关"); }
+  paintAutoSpk();
+}
+/* 只念**刚到的**助手回复：翻历史、切会话都不出声。 */
+function maybeAutoSpeak(fresh){
+  if (!autoSpeakWanted() || !fresh || !fresh.length) return;
+  let pick = null;
+  for (const m of fresh){
+    if (m.role !== "assistant" || m.kind === "image") continue;
+    if (String(m.text || "").trim()) pick = m;
+  }
+  if (!pick) return;
+  const text = String(pick.text || "").trim();
+  if (text.length > AUTO_SPEAK_MAX){
+    flash(`这条 ${text.length} 字，太长就不自动念了（点消息下面的 🔊 朗读 可以手动念）`);
+    return;
+  }
+  const box = document.querySelector(`#msgs .msg[data-ts="${Number(pick.ts || 0)}"]`);
+  speakText(text, box, null);
+}
 
+/* ---------- 朗读本体（手动 / 自动共用） ---------- */
+async function speakText(text, box, btn){
+  stopSpeak();
   const token = ++speakState.token;
-  const btn = el;
-  // 在用户手势里解锁音频元素（必须先 play 一次）
-  const audio = new Audio(SILENT_WAV);
-  audio.play().catch(() => {});
-  speakState.audio = audio;
-  speakState.box = box;
-  speakState.btn = btn;
-  box.classList.add("speaking");
+  const audio = ensureAudio();
+  if (!audio){ flash("这个浏览器不支持播放音频"); return; }
+  if (btn){                            // 手动：在手势里解锁
+    try { audio.onended = null; audio.onerror = null; audio.src = SILENT_WAV; audio.play().catch(() => {}); } catch(e){}
+  }
+  speakState.box = box || null;
+  speakState.btn = btn || null;
+  if (box) box.classList.add("speaking");
 
   const t0 = Date.now();
-  btn.textContent = "…合成中 0s";
-  speakState.tick = setInterval(() => {
+  if (btn) btn.textContent = "…合成中 0s";
+  if (btn) speakState.tick = setInterval(() => {
     if (token !== speakState.token) return;
     btn.textContent = "…合成中 " + Math.round((Date.now() - t0) / 1000) + "s";
   }, 500);
@@ -2729,22 +2909,51 @@ async function speakMsg(el){
   }
   speakState.list = d.chunks.map(c => "/api/tts.wav?h=" + encodeURIComponent(c.h));
   speakState.idx = 0;
-  btn.textContent = "⏹ 停止";
+  if (btn) btn.textContent = "⏹ 停止";
 
   const playNext = () => {
     if (token !== speakState.token) return;
     const url = speakState.list[speakState.idx];
     if (!url){ stopSpeak(); return; }
     const a = speakState.audio;
-    a.onended = () => { speakState.idx++; playNext(); };
+    /* 「迟到的 ended」：解锁用的静音 wav 只有几十毫秒，它结束时派发的事件
+       可能还排在队列里 —— 我们换完 src、挂上新 onended，它就打在新处理器上，
+       于是第一段还没开口就被当成「播完了」。只有元素自己确实 ended 才算数。 */
+    a.onended = () => {
+      // 三种都可能是「假 ended」：解锁用的静音 wav 的事件迟到、换 src 时被 abort、
+      // 或者上一段的收尾打在新处理器上。只有真的播到末尾才进下一段。
+      if (!a.ended) return;
+      const dur = Number(a.duration);
+      if (isFinite(dur) && dur > 0 && a.currentTime + 0.2 < dur) return;
+      speakState.idx++; playNext();
+    };
     /* 换 src 会 abort 上一次加载，浏览器据此派发 error 但 a.error 是 null；
        只有真错误（编码/网络）才停，否则会被 abort 误伤。 */
     a.onerror = () => { if (a.error){ stopSpeak(); flash("这一段播不出来（" + (a.error.message || a.error.code) + "）"); } };
     a.src = url;
-    a.play().catch(() => { stopSpeak(); flash("浏览器拦住了自动播放，再点一次朗读"); });
+    a.play().catch(() => { stopSpeak(); flash("浏览器拦住了自动播放，点一下 🔊 朗读 再试"); });
   };
   playNext();
 }
+
+async function speakMsg(el){
+  const box = el.closest(".msg");
+  if (!box) return;
+  const busy = speakState.tick || (speakState.audio && !speakState.audio.paused);
+  if (speakState.box === box && busy){ stopSpeak(); return; }      // 再点一次 = 停（合成中也能停）
+  const bub = box.querySelector(".bub");
+  if (!bub) return;
+  // 念**原文**：页面上的 textContent 已经把 ``` 变成 <pre>、把 ** 变成 <b>，
+  // 后端那套清洗规则一条都匹配不上，代码块会被整段念出来。
+  const raw = bub.dataset.raw;
+  const qb = bub.querySelector(".qb");                 // 引用块不念，只念这一轮的正文
+  const text = (raw != null && raw !== "")
+    ? String(raw).trim()
+    : (qb ? bub.textContent.replace(qb.textContent, "") : bub.textContent).trim();
+  if (!text){ flash("这条没有可念的文字"); return; }
+  speakText(text, box, el);
+}
+
 async function keepMsg(el){
   const box = el.closest(".msg");
   if (!box) return;
@@ -2817,6 +3026,45 @@ function renderQ(){
   bar.innerHTML = `<div class="qt"><b>${esc(chatQuote.who)}</b>${esc(chatQuote.text.slice(0, 120))}</div>` +
                   `<button onclick="dropQuote()" aria-label="取消引用">✕</button>`;
 }
+let chatEdit = null;                  // {ts, n: 后面还有几条}
+function renderEdit(){
+  const bar = $("ebar");
+  if (!bar) return;
+  if (!chatEdit){ bar.classList.remove("on"); bar.innerHTML = ""; return; }
+  bar.classList.add("on");
+  bar.innerHTML = `<span class="et">正在改这条提问${chatEdit.n ? `（发送后它之后 ${chatEdit.n} 条会作废）` : ""}</span>` +
+                  `<button onclick="cancelEdit()">取消</button>`;
+}
+function cancelEdit(){
+  chatEdit = null;
+  renderEdit();
+  const box = $("chatBox");
+  if (box){ box.value = ""; box.style.height = "auto"; box.dispatchEvent(new Event("input")); }
+}
+function editMsg(el){
+  const box = el.closest(".msg");
+  if (!box) return;
+  const ts = Number(box.dataset.ts || 0);
+  if (!ts) return;
+  const bub = box.querySelector(".bub");
+  const raw = (bub && bub.dataset.raw != null && bub.dataset.raw !== "")
+    ? bub.dataset.raw : (bub ? bub.textContent : "");
+  const all = Array.from(box.parentNode.querySelectorAll(":scope > .msg"));
+  const at = all.indexOf(box);
+  const nAfter = at >= 0 ? all.length - 1 - at : 0;
+  // 改中间那句 = 把它之后的回复全丢掉，先说清楚再动手
+  if (nAfter > 0 && !confirm(`这条之后还有 ${nAfter} 条消息，改完会一起删掉。继续？`)) return;
+  chatEdit = {ts, n: nAfter};
+  chatQuote = null;                    // 改提问的时候不要再带着旧引用
+  const inp = $("chatBox");
+  if (!inp){ flash("先打开对话页"); return; }
+  inp.value = String(raw || "");
+  inp.dispatchEvent(new Event("input"));
+  inp.focus();
+  try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch(e){}
+  renderEdit();
+  renderQ();
+}
 function quoteMsg(el){
   const box = el.closest(".msg"); if (!box) return;
   const bub = box.querySelector(".bub");
@@ -2872,6 +3120,22 @@ async function sendMsg(){
   pendingImgs = []; renderPend();
   chatQuote = null; renderQ();
   if (text) maybeDuplicate(text);             // 不 await：提示慢一点无所谓，别拖慢发送
+  if (chatEdit){
+    // 编辑重发：先让服务端把这条之后的都删掉，再把新文本排进队列
+    const r = await post("/api/chat/edit", {session: chat.session, character: ACTIVE.id,
+                                            ts: chatEdit.ts, text,
+                                            reasoning: chatOpts.reasoning});
+    if (!r || !r.ok){
+      flash((r && r.error) || "改不了这条");
+      box.value = text; box.dispatchEvent(new Event("input"));
+      return;
+    }
+    chatEdit = null; renderEdit();
+    chat.after = 0;
+    $("msgs").innerHTML = "";
+    await pollChat();
+    return;
+  }
   const r = await post("/api/chat", {session: chat.session, text, images: imgs, quote,
                                      character: ACTIVE.id, reasoning: chatOpts.reasoning});
   if (!r || !r.ok){
@@ -2892,7 +3156,8 @@ function actsHTML(role){
   const regen = role === "assistant"
     ? `<button data-regen="1" onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
   const del = `<button onclick="delMsg(this)" title="删掉这一条">删除</button>`;
-  return `<div class="acts">${copy}${quote}${speak}${keep}${regen}${del}</div>`;
+  const edit = role === "user" ? `<button onclick="editMsg(this)" title="改一下这句，然后从这里重新回答">编辑</button>` : "";
+  return `<div class="acts">${copy}${edit}${quote}${speak}${keep}${regen}${del}</div>`;
 }
 /* 只有**最后一条**回复能重新生成：接口永远重跑「最后那一问」，
    挂在一堆旧回复上，点第三条其实替换的是最新那条 —— 会让人以为删错了。 */
@@ -2943,10 +3208,15 @@ async function pollChat(){
   if (!j || j.session !== chat.session){ return; }
   const box = $("msgs"); if (!box) return;
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 60;
-  const fresh = (j.messages || []);
+  /* 去重：切会话/跳转时两个 poll 可能同时带着 after=0 回来（viewChat 一个、
+     跳转一个），不去重就会把同一段历史插两遍。按 ts 认，比按条数靠谱。 */
+  const seen = new Set(Array.from(box.querySelectorAll(":scope > .msg[data-ts]"))
+                          .map(n => n.dataset.ts));
+  const fresh = (j.messages || []).filter(m => !seen.has(String(Number(m.ts || 0))));
   fresh.forEach(m => box.insertAdjacentHTML("beforeend", bubble(m)));
   if (fresh.length) onlyLastRegen();
-  chat.after = j.total;
+  if (fresh.length) maybeAutoSpeak(fresh);      // 自动朗读：只念刚到的回复
+  chat.after = Math.max(chat.after, j.total);   // 慢的那个响应不能把游标推回去
   if (fresh.length || j.running){ chat.idle = 0; } else { chat.idle += 1; }
   // 间隔由 armChatPoll 每轮自己算，这里不再手动重排
   lastRunning = j.running;
@@ -4790,6 +5060,8 @@ async function boot(){
 let stripTimer = setInterval(strip, 15000);
 strip();
 boot();
+
+
 </script>
 </body>
 </html>

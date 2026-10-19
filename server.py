@@ -277,6 +277,8 @@ def _chat_rewrite(session: str, cid: str, keep) -> tuple[int, int]:
     """
     tmp = CHAT_JSONL.with_name("chat.jsonl.tmp.%d" % os.getpid())
     removed = total = 0
+    gone_ts: list[float] = []
+    size = 0
     with _lock:
         with open(CHAT_JSONL, "r", encoding="utf-8", errors="replace") as src, \
                 open(tmp, "w", encoding="utf-8") as dst:
@@ -296,13 +298,20 @@ def _chat_rewrite(session: str, cid: str, keep) -> tuple[int, int]:
                         and str(e.get("character") or "klee") == cid)
                 if mine and not keep(e):
                     removed += 1
+                    gone_ts.append(float(e.get("ts") or 0))
                     continue
                 dst.write(line)
         tmp.replace(CHAT_JSONL)
+        size = CHAT_JSONL.stat().st_size          # 在锁里取：append 也在这把锁上
+    # 索引要跟着精确回退（见 MessageIndex.forget 的注释）；顺手把游标推到新末尾
     try:
-        _index().maybe_sync()
+        _index().forget("chat", session=session, character=cid,
+                        ts_list=gone_ts, size=size)
     except Exception:                                  # noqa: BLE001
-        pass
+        try:
+            _index().maybe_sync()
+        except Exception:                              # noqa: BLE001
+            pass
     return removed, total - removed
 
 
@@ -2686,6 +2695,52 @@ def apply_plugins_config(cur: dict, body: dict, known: set) -> tuple[dict, str]:
 _PLUG_CACHE: dict = {}
 
 
+_CMD_CACHE: dict = {"ts": 0.0, "data": None, "key": ""}
+
+
+def _commands_list() -> dict:
+    """当前角色可用的命令清单（去别名、5 秒缓存）。
+
+    给面板的全局搜索用：135 个插件里到底有哪些命令、各自什么作用，
+    以前只能去插件抽屉里一个个翻。
+    """
+    rt = getattr(BOT, "runtime", None) if BOT is not None else None
+    mgr = getattr(rt, "mgr", None) if rt is not None else None
+    cid = _active_cid()
+    raw = getattr(mgr, "commands", None) if mgr is not None else None
+    key = "%s:%d" % (cid, len(raw) if isinstance(raw, dict) else 0)
+    now = time.time()
+    if _CMD_CACHE["data"] is not None and _CMD_CACHE["key"] == key and now - _CMD_CACHE["ts"] < 5:
+        return _CMD_CACHE["data"]
+    meta = _plugin_meta()
+    out, seen = [], set()
+    if isinstance(raw, dict):
+        for k, cmd in list(raw.items()):
+            name = str(getattr(cmd, "name", "") or "").strip()
+            if not name or name.lower() != str(k).lower():
+                continue                        # 别名：同一个命令只列一次
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            plugin = str(getattr(cmd, "plugin", "") or "")
+            row = meta.get(plugin) or {}
+            out.append({
+                "name": name,
+                "aliases": [str(a) for a in (getattr(cmd, "aliases", ()) or ())][:6],
+                "help": str(getattr(cmd, "help", "") or "")[:160],
+                "plugin": plugin,
+                # 内置命令没有插件元数据，别在面板上显示 `__builtin__` 这种内部名
+                "title": ("内置" if plugin in ("__builtin__", "_builtin", "builtin")
+                          else str(row.get("title") or plugin)),
+                "scope": str(getattr(cmd, "scope", "") or ""),
+                "permission": str(getattr(cmd, "permission", "") or ""),
+            })
+    out.sort(key=lambda r: (r["name"].lower(), r["plugin"]))
+    data = {"ok": True, "character": cid, "commands": out, "count": len(out)}
+    _CMD_CACHE.update(ts=now, data=data, key=key)
+    return data
+
+
 def _plugins_get(max_age: float = 2.0, *, lite: bool = True) -> dict:
     """插件页要读 config.json + 47 个文件头；2 秒内复用。
 
@@ -3566,7 +3621,8 @@ class Handler(BaseHTTPRequestHandler):
                 hits = idx.search(term, limit=limit,
                                   character=_q1(q, "character"),
                                   session=_q1(q, "session"),
-                                  role=_q1(q, "role"))
+                                  role=_q1(q, "role"),
+                                  src=_q1(q, "src"))
                 err = ""
             except Exception as e:                                 # noqa: BLE001
                 hits, err = [], f"{type(e).__name__}: {e}"
@@ -3598,6 +3654,11 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/characters/palette":
             self._json(_palette((q.get("name") or [""])[0],
                                 (q.get("refresh") or [""])[0] in ("1", "true")))
+            return
+        if u.path == "/api/commands":
+            # 面板「⌘K」用的命令清单：只列**当前注册着**的命令（角色限定插件
+            # 不在当前角色上就不会出现），别名不重复占一行。
+            self._json(_commands_list())
             return
         if u.path == "/api/plugins":
             full = (q.get("full") or [""])[0] in ("1", "true")
@@ -4212,6 +4273,58 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "queued": True, "removed": removed})
             return
 
+        if u.path == "/api/chat/edit":
+            # 改一句自己说过的话，然后从那里重来：这条之后的回复全部作废。
+            # 和「删除 + 重新发送」的区别是：提问被替换掉，不会在历史里留两份。
+            session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48] or "studio-main"
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            text = str(body.get("text") or "").strip()
+            if not text:
+                self._json({"ok": False, "error": "改成空的了"}, 400)
+                return
+            try:
+                ts = float(body.get("ts"))
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "ts 不合法"}, 400)
+                return
+            with _lock:
+                run = _chat_state["running"]
+            if run and run.get("session") == session and \
+                    str(run.get("character") or _active_cid()) == cid:
+                self._json({"ok": False, "error": "这条还在生成，等它说完再改"}, 409)
+                return
+            target = None
+            for e in _read_jsonl_all(CHAT_JSONL):
+                if (e.get("session") == session
+                        and str(e.get("character") or "klee") == cid
+                        and abs(float(e.get("ts") or 0) - ts) < 1e-6):
+                    target = e
+                    break
+            if target is None:
+                self._json({"ok": False, "error": "找不到这条消息（可能已经删掉了）"}, 404)
+                return
+            if target.get("role") != "user":
+                self._json({"ok": False, "error": "只能改自己说的话"}, 400)
+                return
+            # 这条以及它后面的一切都作废（只在这个会话里）
+            removed, _left = _chat_rewrite(
+                session, cid, lambda e: float(e.get("ts") or 0) < ts - 1e-9)
+            imgs = [r for r in (target.get("images") or []) if _upload_file(str(r))]
+            quote = target.get("quote") if isinstance(target.get("quote"), dict) else None
+            eid = f"{time.time():.6f}-{os.urandom(4).hex()}"
+            _append_jsonl(CHAT_JSONL, {"id": eid, "ts": time.time(), "session": session,
+                                       "character": cid, "role": "user", "text": text[:4000],
+                                       **({"images": imgs} if imgs else {}),
+                                       **({"quote": quote} if quote else {})})
+            _append_jsonl(MSG_JSONL, {"ts": time.time(), "chat_id": "web:" + session,
+                                      "role": "user", "text": text[:800]})
+            _chat_q.put({"session": session, "text": text[:4000], "character": cid, "eid": eid,
+                         "in_imgs": imgs, "quote": quote, "agent": False,
+                         "reasoning": str(body.get("reasoning") or "default")[:16]})
+            self._json({"ok": True, "queued": True, "removed": removed,
+                        "position": _chat_q.qsize()})
+            return
+
         if u.path == "/api/chat/msg/delete":
             session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48] or "studio-main"
             cid = str(body.get("character") or "").strip().lower() or _active_cid()
@@ -4320,6 +4433,7 @@ class Handler(BaseHTTPRequestHandler):
             # 切换后才失效缓存：POST 开头清过一次，但并发 GET 可能在切换过程中把旧值又缓存上
             _CHAR_CACHE.update(ts=0.0, data=None)
             _PLUG_CACHE.update(ts=0.0, data=None)   # snapshot 里的 enabled 是按角色算的
+            _CMD_CACHE.update(ts=0.0, data=None, key="")   # 命令清单也随角色变
             self._json({"ok": True, "active": info["id"], "character": info,
                         "note": "已切换（人格 / 知识库 / 角色插件一起生效）"})
             return
