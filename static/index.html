@@ -287,6 +287,25 @@ button.btn.tabon{background:var(--red-soft);border-color:#f0a99e;color:var(--red
 .msg.me .bub{background:linear-gradient(180deg,#ffece5,#ffdcd0);border-color:#f2bfb4;
   border-radius:16px;border-top-right-radius:5px}
 .bub.img{padding:6px;background:var(--surface);overflow:hidden}
+/* 用户发上来的图（气泡内） */
+.att{display:block;max-width:230px;max-height:230px;border-radius:12px;margin-top:6px;cursor:zoom-in;
+  border:1px solid var(--line)}
+/* 发送前的预览条 */
+#pend{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}
+#pend:empty{display:none}
+#pend .p{position:relative;width:58px;height:58px;border-radius:11px;overflow:hidden;
+  border:1px solid var(--line);background:var(--surface-2)}
+#pend .p img{width:100%;height:100%;object-fit:cover;display:block}
+#pend .p button{position:absolute;right:2px;top:2px;width:18px;height:18px;border-radius:50%;
+  border:0;background:rgba(20,12,10,.62);color:#fff;font-size:11px;line-height:18px;padding:0;cursor:pointer}
+/* 消息操作（悬停/触屏显示） */
+.acts{display:flex;gap:4px;margin-top:4px;opacity:0;transition:opacity .15s;flex-wrap:wrap}
+.msg:hover .acts,.msg:focus-within .acts{opacity:1}
+html[data-touch="1"] .acts{opacity:.85}
+.acts button{border:1px solid var(--line);background:var(--surface-2);color:var(--dim);
+  border-radius:8px;padding:1px 7px;font-size:max(11px, calc(10.5px * var(--fx)));cursor:pointer;
+  font-family:var(--font-body)}
+.acts button:hover{color:var(--ink);border-color:var(--ui-accent)}
 .bub.img img{display:block;max-width:100%;border-radius:12px;cursor:zoom-in}
 .bub.img .cap{font-size:12px;color:var(--dim);padding:6px 6px 2px;white-space:pre-wrap}
 .meta{font-size:11px;color:var(--dim);margin-top:5px;max-width:100%;overflow-wrap:anywhere}
@@ -406,6 +425,9 @@ html[data-touch="1"] #view .btn.tiny,
 html[data-touch="1"] #view button.tiny{min-height:30px}
 html[data-touch="1"] nav button{min-height:44px}
 html[data-touch="1"] #view .chatbar .btn.tiny{min-height:32px;height:auto}
+/* 发送栏里的 📎：和发送按钮同高，手指按得准（32px 太小） */
+html[data-touch="1"] #chatInput #attachBtn{width:40px;height:40px;min-height:40px}
+@media(pointer:coarse){#chatInput #attachBtn{width:40px;height:40px;min-height:40px}}
 html[data-touch="1"] #reasonSel{height:32px}
 /* 文字链（看板的「去运维 →」、供应商的「删除」、面板卡的「切换」）在触屏上
    只有 16–18px 高，横着够宽但竖着按不准 —— 补到 26px，不改变排版观感 */
@@ -2310,7 +2332,9 @@ function armChatPoll(){
     pollChat();            // pollChat 结束时会自己重新排下一轮
   }, chatPollDelay());
 }
+let sessLabels = {};                  // session → 用户改过的名字（后端 sessions.json）
 function sessLabel(s){
+  if (sessLabels[s]) return sessLabels[s];
   if (s === "studio-main") return "主对话";
   if (s === "studio-smoke") return "工作室试音";
   const m = /^studio-(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(s);
@@ -2352,6 +2376,8 @@ async function viewChat(){
     <div class="chatbar">
       <select id="sessSel" title="会话">${sessions.map(s=>`<option value="${esc(s)}" ${s===chat.session?"selected":""}>${esc(sessLabel(s))}</option>`).join("")}</select>
       <button class="btn tiny" onclick="newConv()">＋ 新对话</button>
+      <button class="btn tiny icon" onclick="renameConv()" title="重命名会话" aria-label="重命名会话">✏️</button>
+      <button class="btn tiny icon" onclick="exportConv()" title="导出为 Markdown" aria-label="导出为 Markdown">⬇️</button>
       <button class="btn tiny icon" onclick="delConv()" title="删除当前会话" aria-label="删除当前会话">🗑</button>
       <select id="reasonSel" title="推理强度：让模型多想一会儿再答" onchange="chatOpts.reasoning=this.value;localStorage.setItem('ks_reasoning',this.value)">
         <option value="default" ${chatOpts.reasoning==="default"?"selected":""}>🪶 默认</option>
@@ -2363,8 +2389,12 @@ async function viewChat(){
     </div>
     <div id="msgs" onscroll="updateToBottom()"></div>
     <button id="toBottom" onclick="jumpBottom()" aria-label="回到最新">↓</button>
+    <div id="pend"></div>
     <div id="chatInput">
-      <textarea id="chatBox" rows="1" placeholder="跟${esc(ACTIVE.name)}说点什么…"></textarea>
+      <button class="btn tiny icon" id="attachBtn" onclick="pickImg()" title="发图片（也可以直接粘贴/拖进来）"
+              aria-label="发图片">📎</button>
+      <input type="file" id="imgFile" accept="image/*" multiple hidden onchange="onPick(this)">
+      <textarea id="chatBox" rows="1" placeholder="跟${esc(ACTIVE.name)}说点什么…（可以发图）"></textarea>
       <button class="btn primary" id="sendBtn" onclick="sendMsg()">🎇 发送</button>
     </div>
     <div class="hintline">Enter 发送 · Shift+Enter 换行</div>
@@ -2374,6 +2404,22 @@ async function viewChat(){
   </div>`;
   $("sessSel").onchange = () => { chat.session = $("sessSel").value; localStorage.setItem("ks_session", chat.session); chat.after = 0; $("msgs").innerHTML=""; pollChat(); };
   $("chatBox").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendMsg(); } });
+  /* 截图后直接 Ctrl+V：粘贴板里有图片就上传（没有就走正常粘贴文字） */
+  $("chatBox").addEventListener("paste", e => {
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || [])
+      .filter(f => String(f.type).startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    files.slice(0, 3 - pendingImgs.length).forEach(f => uploadBlob(f, "paste"));
+  });
+  ["dragover", "drop"].forEach(ev => $("chatWrap").addEventListener(ev, e => {
+    if (ev === "dragover"){ e.preventDefault(); return; }
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || [])
+      .filter(f => String(f.type).startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    files.slice(0, 3 - pendingImgs.length).forEach(f => uploadBlob(f, f.name));
+  }));
   // 输入框自动长高（最多 5 行）+ 草稿保留
   $("chatBox").addEventListener("input", e => {
     const el = e.target;
@@ -2387,9 +2433,11 @@ async function viewChat(){
   const _draft = localStorage.getItem("ks_draft_" + ACTIVE.id);
   if (_draft){ const el = $("chatBox"); el.value = _draft; el.dispatchEvent(new Event("input")); }
   chat.after = 0; $("msgs").innerHTML = "";
+  pendingImgs = []; renderPend();
   await pollChat();
   // 会话列表（不阻塞首帧）
   api("/api/chat/sessions?character=" + encodeURIComponent(ACTIVE.id)).then(d => {
+    sessLabels = (d && d.labels) || {};
     const list = ((d && d.sessions) || []).slice();
     if (chat.session && !list.includes(chat.session)) list.push(chat.session);
     const sel = $("sessSel");
@@ -2418,6 +2466,50 @@ function newConv(){
   viewChat();
 }
 function quick(t){ $("chatBox").value = t; sendMsg(); }
+async function renameConv(){
+  const cur = sessLabels[chat.session] || sessLabel(chat.session);
+  const name = prompt("给这个会话起个名字（留空 = 恢复默认）", cur === sessLabel(chat.session) ? "" : cur);
+  if (name === null) return;
+  const r = await post("/api/chat/session/rename", {session: chat.session, name: name.trim()});
+  if (!r || !r.ok){ alert((r && r.error) || "改名失败"); return; }
+  sessLabels = r.labels || {};
+  const sel = $("sessSel");
+  if (sel) Array.from(sel.options).forEach(o => { o.textContent = sessLabel(o.value); });
+  flash("改好了");
+}
+function exportConv(){
+  const u = `/api/chat/export?session=${encodeURIComponent(chat.session)}` +
+            `&character=${encodeURIComponent(ACTIVE.id)}`;
+  window.open(u, "_blank");            // 服务端带 Content-Disposition，浏览器直接下载
+}
+async function copyMsg(el){
+  const b = el.closest(".msg").querySelector(".bub");
+  const t = b ? (b.innerText || "").trim() : "";
+  try { await navigator.clipboard.writeText(t); flash("复制好了"); }
+  catch(e){                                  // 非 https / 老浏览器
+    const ta = document.createElement("textarea");
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); flash("复制好了"); } catch(e2){ flash("复制不了"); }
+    ta.remove();
+  }
+}
+async function regenMsg(){
+  if (!confirm("重新生成最后一条回复？当前这条会被替换。")) return;
+  const r = await post("/api/chat/regen", {session: chat.session, character: ACTIVE.id,
+                                           reasoning: chatOpts.reasoning});
+  if (!r || !r.ok){ alert((r && r.error) || "重新生成失败"); return; }
+  chat.after = 0; $("msgs").innerHTML = ""; await pollChat();
+}
+async function delMsg(el){
+  const box = el.closest(".msg");
+  const ts = Number(box && box.dataset.ts);
+  if (!ts) return;
+  if (!confirm("删掉这一条？")) return;
+  const r = await post("/api/chat/msg/delete", {session: chat.session, character: ACTIVE.id, ts});
+  if (!r || !r.ok){ alert((r && r.error) || "删除失败"); return; }
+  box.remove();
+  flash("删掉了");
+}
 // agent 常开（面板本身就是半个 agent）：不再有开关，也就不再存偏好。
 try { localStorage.removeItem("ks_agent"); } catch (e) {}
 let chatOpts = {
@@ -2433,29 +2525,84 @@ async function maybeDuplicate(text){
   }catch(e){}
 }
 
+/* ---------- 发图 ---------- */
+let pendingImgs = [];                 // 已上传、还没发出去的图片 ref
+function pickImg(){ const el = $("imgFile"); if (el) el.click(); }
+function renderPend(){
+  const box = $("pend");
+  if (!box) return;
+  box.innerHTML = pendingImgs.map((r, i) =>
+    `<div class="p"><img src="/api/chat/image?p=${encodeURIComponent(r)}" alt="">` +
+    `<button onclick="dropPend(${i})" aria-label="移除">✕</button></div>`).join("");
+}
+function dropPend(i){ pendingImgs.splice(i, 1); renderPend(); }
+async function uploadBlob(blob, name){
+  if (!blob) return;
+  if (blob.size > 8 * 1024 * 1024){ flash("图太大（上限 8MB）"); return; }
+  const data = await new Promise(res => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result || ""));
+    r.onerror = () => res("");
+    r.readAsDataURL(blob);
+  });
+  if (!data){ flash("读不到这个文件"); return; }
+  const d = await post("/api/chat/upload", {data, name: name || ""});
+  if (!d || !d.ok){ flash((d && d.error) || "上传失败"); return; }
+  if (pendingImgs.length >= 3){ flash("一次最多 3 张"); return; }
+  if (d.vision === false) flash(d.note || "没配看图模型");
+  pendingImgs.push(d.ref);
+  renderPend();
+}
+async function onPick(inp){
+  const files = Array.from(inp.files || []);
+  inp.value = "";                     // 允许连续选同一张
+  for (const f of files.slice(0, 3 - pendingImgs.length)) await uploadBlob(f, f.name);
+}
 async function sendMsg(){
   const box = $("chatBox"); const text = box.value.trim();
-  if (!text) return;
+  if (!text && !pendingImgs.length) return;
+  const imgs = pendingImgs.slice();
   box.value = ""; box.style.height = "auto";
   localStorage.removeItem("ks_draft_" + ACTIVE.id);
-  maybeDuplicate(text);                       // 不 await：提示慢一点无所谓，别拖慢发送
-  await post("/api/chat", {session: chat.session, text, character: ACTIVE.id,
-                           reasoning: chatOpts.reasoning});
+  pendingImgs = []; renderPend();
+  if (text) maybeDuplicate(text);             // 不 await：提示慢一点无所谓，别拖慢发送
+  const r = await post("/api/chat", {session: chat.session, text, images: imgs,
+                                     character: ACTIVE.id, reasoning: chatOpts.reasoning});
+  if (!r || !r.ok){
+    // 发失败就把图和文字还给用户，别让人重打一遍
+    flash((r && r.error) || "没发出去");
+    pendingImgs = imgs; renderPend();
+    if (!box.value) { box.value = text; box.dispatchEvent(new Event("input")); }
+    return;
+  }
   await pollChat();
 }
+function actsHTML(role){
+  const copy = `<button onclick="copyMsg(this)" title="复制这条">复制</button>`;
+  const regen = role === "assistant" ? `<button onclick="regenMsg()" title="按同一句重新生成">重新生成</button>` : "";
+  const del = `<button onclick="delMsg(this)" title="删掉这一条">删除</button>`;
+  return `<div class="acts">${copy}${regen}${del}</div>`;
+}
+function attsHTML(m){
+  return (m.images || []).map(r =>
+    `<img class="att" src="/api/chat/image?p=${encodeURIComponent(r)}" alt="附件" loading="lazy"` +
+    ` onclick="window.open(this.src,'_blank')">`).join("");
+}
 function bubble(m){
+  const ts = Number(m.ts || 0);
   if (m.kind === "image" && m.img)
-    return `<div class="msg klee">${charAva()}<div><div class="bub img">` +
+    return `<div class="msg klee" data-ts="${ts}">${charAva()}<div><div class="bub img">` +
       `<img src="/api/chat/image?p=${encodeURIComponent(m.img)}" alt="${esc(m.caption || "图片")}" loading="lazy"` +
       ` onclick="window.open(this.src,'_blank')">` +
       (m.caption ? `<div class="cap">${esc(m.caption)}</div>` : "") +
-      `</div><div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}</div></div></div>`;
+      `</div><div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}</div>` +
+      `${actsHTML("assistant")}</div></div>`;
   if (m.role === "user")
-    return `<div class="msg me"><div class="ava">我</div><div><div class="bub">${fmt(m.text)}</div>
-      <div class="meta">${hhmm(m.ts)}</div></div></div>`;
+    return `<div class="msg me" data-ts="${ts}"><div class="ava">我</div><div><div class="bub">${attsHTML(m)}${fmt(m.text)}</div>
+      <div class="meta">${hhmm(m.ts)}</div>${actsHTML("user")}</div></div>`;
   const err = m.error ? `<div class="meta">⚠ ${esc(m.error)}</div>` : "";
-  return `<div class="msg klee">${charAva()}<div><div class="bub">${fmt(m.text || "(没接上话……再试一次？)")}</div>
-    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 用时 ${m.elapsed} 秒` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}</div>${err}</div></div>`;
+  return `<div class="msg klee" data-ts="${ts}">${charAva()}<div><div class="bub">${fmt(m.text || "(没接上话……再试一次？)")}</div>
+    <div class="meta">${esc(ACTIVE.name)} · ${hhmm(m.ts)}${m.elapsed ? ` · 用时 ${m.elapsed} 秒` : ""}${m.via === "plugin" ? " · 🧩 插件" : ""}${m.via === "agent" ? ` · 🧠 Agent${m.tools ? "(" + m.tools + " 次工具)" : ""}` : ""}${m.via === "vision" ? " · 👁 看图" : ""}</div>${err}${actsHTML("assistant")}</div></div>`;
 }
 let lastRunning = null;
 function updateToBottom(){

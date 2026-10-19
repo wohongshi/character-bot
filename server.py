@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import ast
+import base64
+import binascii
 import email.utils
 import glob
 import gzip
@@ -135,6 +137,7 @@ STATIC = STUDIO_HOME / "static"
 STATE_DIR = STUDIO_HOME / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 CHAT_JSONL = STATE_DIR / "chat.jsonl"
+SESSION_META = STATE_DIR / "sessions.json"        # 会话显示名（重命名的结果）
 MSG_DB = STATE_DIR / "messages.db"          # SQLite 索引（可随时删除重建）
 MSG_JSONL = STATE_DIR / "messages.jsonl"           # 面板自有消息流（QQ + 网页）
 STATE_DB = STATE_DIR / "legacy-state.db"           # 已弃用（保留常量避免旧引用炸）
@@ -211,6 +214,60 @@ def _read_jsonl(path: Path) -> list:
     except OSError:
         pass
     return out
+
+
+def _session_labels() -> dict:
+    try:
+        d = json.loads(SESSION_META.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_session_labels(labels: dict) -> None:
+    try:
+        tmp = SESSION_META.with_suffix(".tmp")
+        tmp.write_text(json.dumps(labels, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(SESSION_META)
+    except OSError as e:
+        logger.warning("会话名写不进去：%s", e)
+
+
+def _chat_rewrite(session: str, cid: str, keep) -> tuple[int, int]:
+    """按 `keep(entry)` 重写某角色某会话的聊天行；返回 (删掉条数, 剩余条数)。
+
+    必须全量读（`_read_jsonl()` 只读尾部），而且**只碰这个会话**，
+    别的会话一行都不动。
+    """
+    tmp = CHAT_JSONL.with_name("chat.jsonl.tmp.%d" % os.getpid())
+    removed = total = 0
+    with _lock:
+        with open(CHAT_JSONL, "r", encoding="utf-8", errors="replace") as src, \
+                open(tmp, "w", encoding="utf-8") as dst:
+            for line in src:
+                if not line.strip():
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    dst.write(line)                  # 坏行原样留着
+                    continue
+                if not isinstance(e, dict):
+                    dst.write(line)
+                    continue
+                total += 1
+                mine = (e.get("session") == session
+                        and str(e.get("character") or "klee") == cid)
+                if mine and not keep(e):
+                    removed += 1
+                    continue
+                dst.write(line)
+        tmp.replace(CHAT_JSONL)
+    try:
+        _index().maybe_sync()
+    except Exception:                                  # noqa: BLE001
+        pass
+    return removed, total - removed
 
 
 def _append_jsonl(path: Path, entry: dict) -> None:
@@ -721,6 +778,7 @@ IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # （bot/features/draw.py 的 timeout 默认 90 秒）—— 设成 40 就是「画到一半被取消」，
 # 而 CancelledError 是 BaseException，插件的 `except Exception` 兜底也接不住。
 TASK_DRAIN_SECONDS = 120.0
+UPLOAD_DIR = STUDIO_HOME / "state" / "uploads"      # 面板里用户发上来的图
 IMG_ROOTS = (STUDIO_HOME / "bot" / "features" / "state", STUDIO_HOME / "state",
              STUDIO_HOME / "static" / "img")
 
@@ -755,6 +813,61 @@ def _img_file(rel: str) -> Path | None:
         if fp.is_file():
             return fp
     return None
+
+
+def _save_upload(data_url: str) -> dict:
+    """把前端给的数据 URL 存成文件，返回 {ref, bytes, mime}。
+
+    只收**真图片**：按魔数判类型（不信后缀，也不信浏览器给的 MIME），
+    存成 `<sha1前16位>.<ext>` —— 同一张图重复发不会堆文件。
+    """
+    from bot import vision as _vision
+    raw = str(data_url or "")
+    if "," in raw and raw.split(",", 1)[0].startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("图片数据不是合法的 base64") from None
+    if not blob:
+        raise ValueError("空图片")
+    mime = _vision.sniff_mime(blob)
+    if not mime:
+        raise ValueError("认不出图片格式（支持 PNG / JPEG / GIF / WebP）")
+    if len(blob) > vision_max_bytes():
+        raise ValueError(f"图片太大（>{vision_max_bytes() // 1024} KB）")
+    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+           "image/webp": ".webp"}[mime]
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    fp = UPLOAD_DIR / (hashlib.sha1(blob).hexdigest()[:16] + ext)
+    if not fp.is_file():
+        tmp = fp.with_suffix(fp.suffix + ".tmp")
+        tmp.write_bytes(blob)
+        tmp.replace(fp)
+    return {"ref": f"uploads/{fp.name}", "bytes": len(blob), "mime": mime}
+
+
+def vision_max_bytes() -> int:
+    try:
+        cfg = (BOT.config if BOT else {}) or {}
+        return max(64 * 1024, int(cfg.get("vision_max_bytes") or 8 * 1024 * 1024))
+    except (TypeError, ValueError):
+        return 8 * 1024 * 1024
+
+
+def _upload_file(ref: str) -> Path | None:
+    """只认 uploads 目录里的图（别让模型去「看」面板自己的卡片）。"""
+    rel = str(ref or "").strip()
+    if not rel.startswith("uploads/"):
+        return None
+    fp = _img_file(rel)
+    if fp is None:
+        return None
+    try:
+        fp.resolve().relative_to(UPLOAD_DIR.resolve())
+    except (ValueError, OSError):
+        return None
+    return fp
 
 
 # ---------- 网页端插件分发（与 QQ 同一套命令/钩子/NLU） ----------
@@ -1008,6 +1121,44 @@ def _chat_worker() -> None:
 
             reasoning = str(job.get("reasoning") or "default")
             dtxt = job.get("dispatch_text") or job["text"]   # 入站钩子可能改写过的文本
+            # ---- 用户发来的图：先看图，再把描述并进这一轮的文本 ----
+            # QQ 侧一直是这么做的（runtime._prepare_images），面板以前只能打字。
+            in_imgs = [r for r in (job.get("in_imgs") or []) if r][:3]
+            if in_imgs:
+                from bot import vision as _vision
+                cname = (_char_store().get(cid) or {}).get("name") or cid
+                if not _vision.configured(BOT.models):
+                    text = ("这边没装「看图模型」，图片我收下了但看不懂…"
+                            "（自定义 → 看图模型，配一个就行）")
+                    with _lock:
+                        _chat_state["running"] = None
+                    _append_jsonl(CHAT_JSONL, {
+                        "ts": time.time(), "session": job["session"], "character": cid,
+                        "role": "assistant", "text": text, "via": "vision",
+                        "elapsed": round(time.time() - t0, 1)})
+                    continue
+                notes = []
+                for ref in in_imgs:
+                    fp = _upload_file(ref)
+                    if fp is None:
+                        notes.append("[图片：找不到这个文件]")
+                        continue
+                    try:
+                        raw = fp.read_bytes()
+                        desc = _vision.describe(
+                            BOT.models, raw, text=dtxt or "",
+                            name=cname, timeout=min(60.0, float(CHAT_TIMEOUT)))
+                    except _vision.VisionUnavailable:
+                        notes.append("[图片：看图模型不可用]")
+                        continue
+                    except Exception as e:                       # noqa: BLE001
+                        logger.info("看图失败：%s", e)
+                        notes.append("[图片：没看懂（可能是格式或网络问题）]")
+                        continue
+                    notes.append(f"[图片内容: {desc}]")
+                if notes:
+                    # 图片描述作为「用户这一轮说的话」交给模型，它才知道要评论什么
+                    dtxt = (dtxt + "\n" if dtxt.strip() else "") + "\n".join(notes)
             # 面板本身就是半个 agent：网页聊天默认就走工具循环，
             # 不再读 job["agent"]（前端也已经没有那个开关了）。
             use_agent = rt is not None
@@ -2677,7 +2828,7 @@ def _gz(body: bytes, tag: str) -> bytes:
 _SENSITIVE_GET = frozenset({
     "/api/napcat/qr", "/api/requests", "/api/feed", "/api/feed/sources",
     "/api/logs", "/api/logs/meta", "/api/persona", "/api/chat",
-    "/api/chat/sessions", "/qr.png", "/qr",
+    "/api/chat/sessions", "/api/chat/export", "/qr.png", "/qr",
     # 下面是「个人数据/配置」，不登录也该挡：插件配置、看板、提醒、纪念日、知识库命中
     "/api/plugins", "/api/dashboard", "/api/reminders", "/api/anniversaries",
     "/api/kb/recent", "/api/search", "/api/plugin/page", "/api/plugins/detail",
@@ -2867,18 +3018,63 @@ class Handler(BaseHTTPRequestHandler):
                         "queue": _chat_q.qsize(),
                         "running": running if running and running["session"] == session else None})
             return
+        if u.path == "/api/chat/export":
+            session = (q.get("session") or ["studio-main"])[0]
+            cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
+            info = _char_store().get(cid) or {}
+            cname = info.get("name") or cid
+            rows = [e for e in _read_jsonl(CHAT_JSONL)
+                    if e.get("session") == session
+                    and str(e.get("character") or "klee") == cid]
+            labels = _session_labels()
+            title = labels.get(session) or session
+            lines = [f"# {cname} · {title}", "",
+                     f"> 导出时间：{time.strftime('%Y-%m-%d %H:%M')}　共 {len(rows)} 条", ""]
+            for e in rows:
+                ts = float(e.get("ts") or 0)
+                when = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else ""
+                who = "我" if e.get("role") == "user" else cname
+                if e.get("kind") == "image" and e.get("img"):
+                    lines.append(f"**{who}**（{when}）：![图片]({e.get('img')})")
+                    continue
+                txt = str(e.get("text") or "").strip()
+                if not txt:
+                    continue
+                for ref in (e.get("images") or []):
+                    lines.append(f"**{who}**（{when}）：![图片]({ref})")
+                lines.append(f"**{who}**（{when}）：{txt}")
+                lines.append("")
+            body = "\n".join(lines).encode("utf-8")
+            fname = f"{cid}-{session}.md"
+            self._send_bytes(body, "text/markdown; charset=utf-8", cache="no-store",
+                             extra=[("Content-Disposition",
+                                     f'attachment; filename="{fname}"')])
+            return
         if u.path == "/api/chat/sessions":
             cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
             sessions = []
+            labels = _session_labels()
+            meta: dict[str, dict] = {}
             for e in _read_jsonl(CHAT_JSONL):
                 if str(e.get("character") or "klee") != cid:
                     continue
                 s = e.get("session")
-                if s and s not in sessions:
+                if not s:
+                    continue
+                m = meta.setdefault(s, {"count": 0, "last": 0.0})
+                m["count"] += 1
+                m["last"] = max(m["last"], float(e.get("ts") or 0))
+                if s not in sessions:
                     sessions.append(s)
             if "studio-main" not in sessions:
                 sessions.insert(0, "studio-main")
-            self._json({"sessions": sessions})
+            # 最近的排前面（主对话永远第一）
+            rest = sorted([s for s in sessions if s != "studio-main"],
+                          key=lambda x: -meta.get(x, {}).get("last", 0.0))
+            ordered = ["studio-main"] + rest
+            self._json({"sessions": ordered,
+                        "labels": {s: labels.get(s, "") for s in ordered},
+                        "meta": {s: meta.get(s, {"count": 0, "last": 0}) for s in ordered}})
             return
         if u.path == "/api/docs":
             name = (q.get("name") or ["characters"])[0]
@@ -3333,10 +3529,34 @@ class Handler(BaseHTTPRequestHandler):
             return
 
 
+        if u.path == "/api/chat/upload":
+            raw = str(body.get("data") or "")
+            if not raw:
+                self._json({"ok": False, "error": "没有图片数据"}, 400)
+                return
+            try:
+                info = _save_upload(raw)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            from bot import vision as _vision
+            if not _vision.configured(BOT.models if BOT else None):
+                info["note"] = "面板没配「看图模型」（自定义 → 看图模型），图我收得到但看不懂"
+                info["vision"] = False
+            else:
+                info["vision"] = True
+            self._json({"ok": True, **info})
+            return
+
         if u.path == "/api/chat":
             session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or "studio-main"))[:48]
             text = str(body.get("text") or "").strip()
-            if not text:
+            # 图片：只认 uploads 里的（用户刚发上来的），最多 3 张
+            in_imgs = []
+            for ref in (body.get("images") or [])[:3]:
+                if _upload_file(str(ref)) is not None:
+                    in_imgs.append(str(ref).strip())
+            if not text and not in_imgs:
                 self._json({"ok": False, "error": "空消息"}, 400)
                 return
             cid = str(body.get("character") or "").strip().lower() or _active_cid()
@@ -3345,17 +3565,77 @@ class Handler(BaseHTTPRequestHandler):
             eid = f"{time.time():.6f}-{os.urandom(4).hex()}"
             _append_jsonl(CHAT_JSONL, {"id": eid, "ts": time.time(),
                                        "session": session or "studio-main",
-                                       "character": cid, "role": "user", "text": text[:4000]})
+                                       "character": cid, "role": "user", "text": text[:4000],
+                                       **({"images": in_imgs} if in_imgs else {})})
             _append_jsonl(MSG_JSONL, {"ts": time.time(),
                                       "chat_id": "web:" + (session or "studio-main"),
                                       "role": "user", "text": text[:800]})
             _chat_q.put({"session": session or "studio-main", "text": text[:4000],
                          "character": cid, "eid": eid,
+                         "in_imgs": in_imgs,
                          "agent": bool(body.get("agent")),
                          "reasoning": str(body.get("reasoning") or "default")[:16]})
             self._json({"ok": True, "queued": True,
                         "position": _chat_q.qsize(),
                         "note": "可莉正在从蒙德赶过来（约 35 秒）"})
+            return
+
+        if u.path == "/api/chat/regen":
+            # 重新生成：删掉最后一条用户消息之后的所有助手行，再按同样的输入重跑
+            session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48] or "studio-main"
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            rows = [e for e in _read_jsonl(CHAT_JSONL)
+                    if e.get("session") == session
+                    and str(e.get("character") or "klee") == cid]
+            last_user = None
+            for e in reversed(rows):
+                if e.get("role") == "user":
+                    last_user = e
+                    break
+            if last_user is None:
+                self._json({"ok": False, "error": "这个会话里还没有你说过的话"}, 400)
+                return
+            cut = float(last_user.get("ts") or 0)
+            removed, _left = _chat_rewrite(
+                session, cid,
+                lambda e: not (e.get("role") == "assistant" and float(e.get("ts") or 0) >= cut))
+            text = str(last_user.get("text") or "")[:4000]
+            imgs = [r for r in (last_user.get("images") or []) if _upload_file(str(r))]
+            # **不新写一条用户消息**：原那条还在，重跑时按它的 id 从历史里剔掉
+            # （worker 里那段 eid 过滤就是干这个的）。否则界面上会出现两条一样的提问。
+            eid = str(last_user.get("id") or "")
+            _chat_q.put({"session": session, "text": text, "character": cid, "eid": eid,
+                         "in_imgs": imgs, "agent": False,
+                         "reasoning": str(body.get("reasoning") or "default")[:16]})
+            self._json({"ok": True, "queued": True, "removed": removed})
+            return
+
+        if u.path == "/api/chat/msg/delete":
+            session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48] or "studio-main"
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            try:
+                ts = float(body.get("ts"))
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "ts 不合法"}, 400)
+                return
+            removed, left = _chat_rewrite(
+                session, cid, lambda e: abs(float(e.get("ts") or 0) - ts) > 1e-6)
+            self._json({"ok": bool(removed), "removed": removed, "left": left})
+            return
+
+        if u.path == "/api/chat/session/rename":
+            session = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session") or ""))[:48]
+            name = str(body.get("name") or "").strip()[:40]
+            if not session:
+                self._json({"ok": False, "error": "缺 session"}, 400)
+                return
+            labels = _session_labels()
+            if name:
+                labels[session] = name
+            else:
+                labels.pop(session, None)
+            _save_session_labels(labels)
+            self._json({"ok": True, "labels": labels})
             return
 
         if u.path == "/api/chat/delete":
