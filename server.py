@@ -689,8 +689,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
     kw = {}
     if reasoning and reasoning != "default":
         kw["temperature"] = 0.4 if reasoning == "high" else 0.7
-    _sink: list[str] = []
-    _res = agent_mod.run(
+    return agent_mod.run(
         rt.models, msgs,
         provider="", model="",
         tools=tools,
@@ -699,7 +698,7 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
         # `send`、`owner_id`）。以前给 None，于是 use_skill 一调就
         # AttributeError: 'NoneType' object has no attribute '_chat_id' ——
         # 面板里等于所有插件技能都不可用（截图那轮模型就是这么白跑一趟的）。
-        chat={"adapter": _WebAdapter(rt, cid, sink=_sink), "is_group": False, "group_id": "",
+        chat={"adapter": _WebAdapter(rt, cid), "is_group": False, "group_id": "",
               "user_id": "panel", "user_name": "主人", "role": "owner",
               "is_owner": True, "loop": None, "loop_thread": None},
         max_steps=int(cfg.get("agent_max_steps") or 3),
@@ -711,10 +710,6 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default") -> dic
         character=cid,
         **kw,
     )
-    # 技能如果只通过 adapter.send 说话（不返回值），文字在这里，别丢
-    if _sink:
-        _res["plugin_texts"] = list(_sink)
-    return _res
 
 
 # ---------- 插件发出来的图片（卡片 / 画图 / 二维码） ----------
@@ -769,7 +764,7 @@ class _WebAdapter:
     def __init__(self, rt, cid: str, sink: list | None = None):
         self._rt = rt
         self._cid = cid
-        self.sink = sink                       # 捕获列表：插件直发 adapter.send 的文字
+        # 捕获列表：插件直发 adapter.send 的文字。__init__ 末尾会回落到 self.texts。
         # BOT 在测试桩 / 半初始化时可能没有 config：这只是「谁在说话」的标记，
         # 拿不到就给个默认值，不该让整条消息挂掉（以前只有命令消息才建这个对象，
         # 改成「每条消息都过钩子」之后这一行就跑在热路径上了）
@@ -780,8 +775,7 @@ class _WebAdapter:
         self.feature_prefix = str(rt.config.get("feature_prefix") or ".")
         self.images: list[dict] = []          # 插件发的图，交给 worker 落盘
         self.texts: list[str] = []            # 插件直接 adapter.send 的文字
-        if self.sink is None:
-            self.sink = self.texts             # 没有外部捕获表时，就写自己的
+        self.sink = sink if sink is not None else self.texts   # 没有外部表就写自己的
 
     async def send(self, chat_id, text, reply_to=None, sentence_split=None, **kw):
         # 命令走 ctx.reply（已换成捕获函数），但插件里也有直接
@@ -790,12 +784,9 @@ class _WebAdapter:
         # 直接写进 sink（= captured），这样顺序和 ctx.reply 混排时是对的，
         # 而且提前 return 的路径（钩子拦截 / 异常）也不会漏。
         if text:
-            if self.sink is not None:
-                for line in str(text).split("\n"):
-                    if line.strip():
-                        self.sink.append(line)
-            else:
-                self.texts.append(str(text))
+            for line in str(text).split("\n"):
+                if line.strip():
+                    self.sink.append(line)      # sink 永远是列表（见 __init__）
         return SimpleNamespace(success=True)
 
     async def send_image_file(self, chat_id, path, caption=None, **kw):
@@ -853,9 +844,22 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
     def _bg_exc(_loop, ctx):               # 兜住「没人 await 的后台任务异常」
         exc = ctx.get("exception")
         logger.warning("插件后台任务异常（无人 await）：%s: %s",
-                       type(exc).__name__ if exc else "?", exc or ctx.get("message"))
+                       type(exc).__name__ if exc else "?", exc or ctx.get("message"),
+                       exc_info=exc)       # 不带 traceback 等于没线索
 
     loop.set_exception_handler(_bg_exc)
+    # asyncio.all_tasks() 只返回**没跑完**的；提前抛异常的任务已经 done，
+    # 永远不会被 await。用 task factory 把它们记下来，收尾时逐个取异常。
+    _bg_tasks: list = []
+    _default_factory = loop.get_task_factory()
+
+    def _factory(_loop, coro, **kwargs):
+        t = (_default_factory(_loop, coro, **kwargs) if _default_factory
+             else _aio.Task(coro, loop=_loop, **kwargs))
+        _bg_tasks.append(t)
+        return t
+
+    loop.set_task_factory(_factory)
     try:
         # 1) 入站钩子（违禁词、复读……）：每条消息都跑
         passed = loop.run_until_complete(rt.mgr.run_message_hooks(ctx))
@@ -891,7 +895,10 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
             # 过、从没 set_event_loop() —— 3.12+ 会直接抛「no current event loop」。
             # 改成逐个 task 调 .exception()：done 的顺手把异常取走（否则 GC 时才报
             # 「Task exception was never retrieved」），没 done 的先取消。
-            pending = list(_aio.all_tasks(loop))
+            pending = [t for t in _bg_tasks if t is not _aio.current_task(loop)]
+            for t in _aio.all_tasks(loop):          # 兜底：factory 之前就存在的
+                if t not in pending:
+                    pending.append(t)
             if pending:
                 loop.run_until_complete(_aio.wait(pending, timeout=TASK_DRAIN_SECONDS))
                 left = [t for t in pending if not t.done()]
@@ -899,7 +906,10 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
                     t.cancel()
                 if left:
                     loop.run_until_complete(_aio.wait(left, timeout=5))
-                    logger.warning("插件还有 %d 个后台任务没跑完（已取消）", len(left))
+                    # 5 秒宽限期里多半已经退出了 —— 重新数一遍，否则日志会说谎
+                    still = [t for t in left if not t.done()]
+                    if still:
+                        logger.warning("插件还有 %d 个后台任务没跑完（已取消）", len(still))
                 for t in pending:
                     if not t.done():
                         continue
@@ -1038,10 +1048,6 @@ def _chat_worker() -> None:
                                       "caption": str(i.get("caption") or "")}
                                      for i in (res.get("images") or []) if i.get("path")]
                     reply_agent = str(res.get("text") or "").strip()
-                    if not reply_agent and res.get("plugin_texts"):
-                        # 技能只调用 adapter.send 说了句话：那也是回答
-                        reply_agent = "\n".join(
-                            t for t in res["plugin_texts"] if str(t).strip())[:800]
                     if not reply_agent and job.get("images"):
                         # 技能执行成功了、图也生成了，但收尾那句人话没拿到：
                         # 图先落盘，别让整批丢掉。

@@ -140,9 +140,10 @@ def _markup_is_example(text: str) -> bool:
         return True
     # 「示例：」「格式：」这种引导词 + 很短的正文，也按例子处理
     head = _clear_stray_tags(t[:start])
-    # 「示例如下：」「写法如下：」「格式是这样的：」—— 关键词和句末之间常夹几个字
-    return bool(re.search(r"(示例|例子|格式|写法|例如|示范)[^。！？!?]{0,8}[：:]?\s*$", head)) \
-        and len(head) <= 24
+    # 只认「示例/写法/格式 … 如下：」这类**真的在介绍语法**的引导词。
+    # 一开始放成「关键词后允许任意 8 个字」，结果「我换个写法试试：」
+    # 「按这个格式来：」也会命中 —— 那是模型在说自己要干什么，调用会被误杀掉。
+    return bool(_RE_EXAMPLE_HEAD.search(head)) and len(head) <= 24
 
 
 def _clear_stray_tags(text: str) -> str:
@@ -160,6 +161,9 @@ def _looks_like_debris(text: str) -> bool:
     t = re.sub(r"[\s\d\W_]+", "", t)
     return len(t) < 2
 
+
+_RE_EXAMPLE_HEAD = re.compile(
+    r"(示例|例子|格式|写法|例如|示范)\s*(如下|是这样|是这样的|长这样|就)?\s*[：:。]?\s*$")
 
 _RE_BLOCK_INVOKE = re.compile(
     rf"<{_DSML}\s*invoke\b[^>]*>.*?</{_DSML}\s*invoke\s*>", re.S)
