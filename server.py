@@ -823,9 +823,12 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
 TASK_DRAIN_SECONDS = 120.0
 
 def _draw_budget() -> float:
-    """出图插件最坏要多久：先 POST 拿 URL，GLM 那条路**再下一张图**。
+    """出图插件最坏要多久（秒）。
 
-    `_download()` 有自己的 90 秒超时，所以最坏是 2×`settings.draw.timeout`。
+    `draw.generate_image()` 是**按顺序试 provider** 的：Cloudflare 烧满 `t`，
+    再轮到 GLM 烧 `t`，而 GLM 拿到 URL 后还要 `_download()` 再下一张图
+    （那条下载用的是写死的 90 秒默认值，不是配置里的 t）。
+    所以真正的上界是 `2*t + 90`，不是 `2*t`。
     """
     t = 90.0
     try:
@@ -834,7 +837,7 @@ def _draw_budget() -> float:
         t = float(((raw.get("settings") or {}).get("draw") or {}).get("timeout") or 90)
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    return max(60.0, min(300.0 * 2, t * 2))
+    return max(60.0, min(600.0, t * 2 + 90))
 
 
 def _panel_drain() -> float:
@@ -1241,7 +1244,8 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
                 if t not in pending:
                     pending.append(t)
             if pending:
-                loop.run_until_complete(_aio.wait(pending, timeout=TASK_DRAIN_SECONDS))
+                # 和 agent / 试跑同一个口径：直接敲 .画画 也要等得到图
+                loop.run_until_complete(_aio.wait(pending, timeout=_panel_drain()))
                 left = [t for t in pending if not t.done()]
                 for t in left:
                     t.cancel()
