@@ -162,8 +162,12 @@ def _looks_like_debris(text: str) -> bool:
     return len(t) < 2
 
 
+# 白名单要够宽到盖住「例如下面这样：」「格式是：」，又要窄到不含
+# 「我换个写法试试：」「按这个格式来：」这类**意图**句（那些是真要调用）。
 _RE_EXAMPLE_HEAD = re.compile(
-    r"(示例|例子|格式|写法|例如|示范)\s*(如下|是这样|是这样的|长这样|就)?\s*[：:。]?\s*$")
+    r"(示例|例子|格式|写法|例如|示范)\s*"
+    r"(是这样的|下面这样|就像这样|是这样|长这样|如下|这样|是|就)?"
+    r"\s*[：:。]?\s*$")
 
 _RE_BLOCK_INVOKE = re.compile(
     rf"<{_DSML}\s*invoke\b[^>]*>.*?</{_DSML}\s*invoke\s*>", re.S)

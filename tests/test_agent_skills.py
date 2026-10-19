@@ -430,6 +430,11 @@ def main():
     check("13.12 例子里的块保留在回答里", "<tool_call>" in res["text"] and "写法是这样的" in res["text"],
           res["text"][:120])
     check("13.13 例子不被执行", res["tool_calls"] == [], str(res["tool_calls"]))
+    # 13.14b 引导词白名单：讲语法要认，说意图不能认
+    for h, want in (("例如下面这样：", True), ("格式是：", True),
+                    ("我换个写法试试：", False), ("按这个格式来：", False)):
+        check(f"13.14b 引导词 {h!r} → 例子={want}",
+              A._markup_is_example(h + '<tool_call>{"name":"now"}</tool_call>') is want, h)
     # 13.14 「好的，我去查」+ 纯块 → 仍然要执行（别把正常调用当解释）
     c = script({"text": "好的，我这就去查一下最新的资料。<tool_call>{\"name\":\"now\","
                         "\"arguments\":{}}</tool_call>", "tool_calls": []},
