@@ -176,8 +176,8 @@ def register(api):
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     check("11.1 有体检按钮", "plugAudit()" in html and "🩺 体检" in html)
     check("11.2 结果区在网格上方", html.index('id="auditBox"') < html.index('id="plugGrid"'))
-    check("11.3 每个问题能点开对应插件", "openPluginDrawer('${esc(i.plugin)}')" in html
-          or 'openPluginDrawer(\'${esc(i.plugin)}\')' in html)
+    # 参数现在走 jsq()（JSON.stringify + 实体转义），不再是单引号里塞 esc()
+    check("11.3 每个问题能点开对应插件", "openPluginDrawer(${jsq(i.plugin)})" in html)
     check("11.4 区分必修/建议", "必修" in html and "建议" in html)
 
     print(f"\nPASS {len(PASS)} / {len(PASS) + len(FAIL)}")

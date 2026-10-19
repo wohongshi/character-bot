@@ -68,11 +68,13 @@ def register(api):
             return
         enc = encode(text)
         if len(enc) > MAX_OUT:
-            # base64 会涨 4/3：截断后的编码解不回原文，等于给了一段废码。
-            # 宁可说清楚能编多少。
+            # base64 按**字节**涨 4/3：截断后的编码解不回原文，等于给了一段废码。
+            # 提示也要按字节说 —— 说成「最多能编 1350 字」的话，用户拿 1350 个汉字
+            # 再试一次（4050 字节 → 5400 字符）只会得到同一条错误。
             room = MAX_OUT * 3 // 4
-            await ctx.reply(f"编出来太长（{len(enc)} 字，上限 {MAX_OUT}）～"
-                            f"最多能编 {room} 字，分两段来吧")
+            await ctx.reply(f"编出来太长（{len(enc)} 字符，上限 {MAX_OUT}）～"
+                            f"最多能编 {room} 字节（中文约 {room // 3} 字、英文约 {room} 字符），"
+                            "分两段来吧")
             return
         await ctx.reply("🔐 " + enc)
 

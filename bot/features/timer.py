@@ -132,9 +132,13 @@ async def fire_due(api) -> int:
             # 一秒钟的连接抖动就等于闹钟凭空消失。按提醒那套排 60 秒后重投，
             # 最多追 RETRY_AFTER_S*MAX_RETRIES（≈30 分钟）。
             tries = int(it.get("retries") or 0)
-            age = time.time() - float(it.get("due", 0))
+            # 重投会把 due 推到 60 秒后，所以「晚了多久」要按**最初**的到期时间算，
+            # 否则 age 永远是 0，日志里的「晚了 X 分钟」永远是 0~1 分钟。
+            origin = float(it.get("origin_due") or it.get("due", 0) or 0)
+            age = time.time() - origin
             if tries < MAX_RETRIES and age < MAX_AGE_S:
                 again = dict(it)
+                again["origin_due"] = origin
                 again["due"] = time.time() + RETRY_AFTER_S
                 again["retries"] = tries + 1
                 retry.append(again)

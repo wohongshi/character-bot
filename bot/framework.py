@@ -700,7 +700,9 @@ class FeatureManager:
         # 单测用的是临时插件目录，工具表就靠 bootstrap 那一份。
         for _name, _info in self.plugins.items():
             if not _info.get("enabled"):
-                toolbox.unregister_plugin(_name)
+                # 只摘 bootstrap 留下的那份（owner 是哨兵），别把同一进程里
+                # 另一个 FeatureManager 注册的同名工具一起端掉（owner=None 会全摘）。
+                toolbox.unregister_plugin(_name, toolbox._BOOT_OWNER)
 
         self.hooks_in.sort(key=lambda h: h.priority)
         self.hooks_out.sort(key=lambda h: h.priority)

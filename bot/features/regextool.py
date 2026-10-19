@@ -29,17 +29,29 @@ def raw_args(ctx) -> str:
     return parts[1] if len(parts) > 1 else ""
 
 
-# 嵌套量词（(a+)+ / (.*)* / (x|y+)+）在 Python 的 re 里没有任何超时机制，
-# 一段 30 字的输入就能卡死整个事件循环（`(a+)+$` + 30 个 a 就是指数级）。
-# 这里的命令跑在 bot 的事件循环里，没法用线程超时救 —— 只能提前拒。
-_NESTED_QUANT = re.compile(r"\([^()]*[*+]\)\s*[*+]")
+# 灾难性回溯（`(a+)+` / `(a|aa)+` / `(\w+\s?)+`）在 Python 的 re 里没有任何超时机制，
+# 30 个字符的输入就能卡死整个事件循环。这里的命令跑在 bot 的事件循环里，
+# 没有线程超时可用 —— 只能提前拒。两条规则，都尽量不收误报：
+#   ① 分组以量词收尾、组外再套量词：`(a+)+`、`(a*)*`、`(\w+\s?)+`
+#   ② 交替分组里有一个分支是另一个的前缀，且组外带量词：`(a|aa)+`、`(foo|foobar)+`
+#      （`(?:x|y)+` 这种纯字面量交替不会被误伤）
+_GROUP_QUANT = re.compile(r"\(([^()]*)\)\s*[*+{]")
+_TRAIL_QUANT = re.compile(r"[*+?]$")
 
 
 def risky_pattern(pattern: str) -> str:
     """看起来会指数回溯的模式返回原因，否则返回空串。"""
-    m = _NESTED_QUANT.search(pattern)
-    if m:
-        return f"这个写法（{m.group(0)}）容易指数回溯"
+    for m in _GROUP_QUANT.finditer(pattern):
+        inner, full = m.group(1), m.group(0)
+        body = inner[3:] if inner.startswith("?:") else inner
+        if _TRAIL_QUANT.search(body):
+            return f"这个写法（{full}）容易指数回溯"
+        branches = [b for b in body.split("|") if b]
+        if len(branches) > 1:
+            for a in branches:
+                for b in branches:
+                    if a is not b and b.startswith(a) and len(a) < len(b):
+                        return f"这个写法（{full}）里的交替有前缀关系，容易指数回溯"
     if pattern.count("(") > 12:
         return "分组太多了"
     return ""
@@ -49,7 +61,7 @@ def match_report(pattern: str, text: str, limit: int = MAX_HITS) -> list[str]:
     """返回给人看的多行；编译失败抛 re.error。"""
     why = risky_pattern(pattern)
     if why:
-        raise ValueError(f"{why}，换种写法吧（比如把 (a+)+ 改成 a+）")
+        raise ValueError(f"{why}，换种写法吧（比如 (a+)+ 改成 a+，(a|aa)+ 改成 (?:aa?)+ 或加锚点）")
     rx = re.compile(pattern, re.MULTILINE)
     lines = []
     n = 0
@@ -112,9 +124,17 @@ def register(api):
             await ctx.reply(f"文字太长了（{len(text)}，上限 {MAX_LEN}）")
             return
         try:
+            why = risky_pattern(pattern)
+            if why:
+                # 替换和匹配走的是同一个 re 引擎：漏了这道闸，
+                # `.正则替换 (a+)+ :: x :: aaaa…` 照样能把事件循环卡死。
+                raise ValueError(f"{why}，换种写法吧")
             out, n = re.subn(pattern, repl, text, flags=re.MULTILINE)
         except re.error as e:
             await ctx.reply(f"这个正则写错了：{e}")
+            return
+        except ValueError as e:
+            await ctx.reply(f"❌ {e}")
             return
         if not n:
             await ctx.reply("一处都没匹配到，原样返回：\n" + text[:1200])

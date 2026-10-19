@@ -650,6 +650,15 @@ def _chat_drop_session(session: str, cid: str) -> tuple[int, int]:
                 tmp.unlink()
             except OSError:
                 pass
+    if removed:
+        # 会话删了，压缩提要也得跟着忘：否则下次用同一个会话名（面板默认就是
+        # studio-main）重新聊天时，第一次压缩会把**已删除会话**的提要当成
+        # 「【之前已经压过的提要】」喂回模型。
+        try:
+            from bot import context as _ctx
+            _ctx.forget(_state_dir(), f"{cid}:{session}")
+        except Exception as e:                                    # noqa: BLE001
+            logger.info("清理会话提要失败（不影响删除）：%s", e)
     return removed, total - removed
 
 
@@ -1601,7 +1610,7 @@ def _note_mood(cid: str, user_text: str, reply: str) -> None:
 
 
 def _apply_stickers(text: str, job: dict, cid: str) -> str:
-    """把回复里的 `[表情:名字]` 变成真的表情图。
+    """把回复里的 `[[sticker:名字]]` 变成真的表情图。
 
     图走 `job["images"]`（和技能出图同一条路），所以面板会落成独立的
     图片气泡、QQ 走适配器 send_image —— 两边都不用另写一套。
@@ -2094,11 +2103,19 @@ def _sched_view(it: dict) -> dict:
     from bot import schedule as sched
     spec = it.get("when") if isinstance(it.get("when"), dict) else {}
     out = dict(it)
-    out["when_text"] = sched.describe(spec) if spec else "—"
-    out["next_text"] = sched.next_text(spec) if spec else "—"
+    # 三条都要兜住：when 被手改坏时 describe/next_text 会抛 ValueError，
+    # 而 _sched_view 是整页列表的渲染路径 —— 一条坏任务能让整个「定时任务」页 500。
+    try:
+        out["when_text"] = sched.describe(spec) if spec else "—"
+    except (TypeError, ValueError, KeyError):
+        out["when_text"] = "（时间规则无效）"
+    try:
+        out["next_text"] = sched.next_text(spec) if spec else "—"
+    except (TypeError, ValueError, KeyError):
+        out["next_text"] = "—"
     try:
         out["next_at"] = sched.next_due(spec) if spec else 0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, KeyError):
         out["next_at"] = 0
     return out
 
@@ -2140,6 +2157,14 @@ def _sched_tick(now: float | None = None) -> list[str]:
     """检查一遍到期项；返回这次触发了哪些任务名（测试直接调它）。"""
     from bot import schedule as sched
     now = time.time() if now is None else now
+    # 整段拿锁：面板的 add/delete/toggle 是同一套 load→save，
+    # 只锁 save 的话，tick 期间用户新加的任务会被这次「整份旧快照」覆盖掉。
+    # 锁是 RLock，里面 _sched_run 再调 _sched_save 也不会自锁。
+    with _SCHED_LOCK:
+        return _sched_tick_locked(sched, now)
+
+
+def _sched_tick_locked(sched, now: float) -> list[str]:
     items = _sched_load()
     if not items:
         return []
@@ -4912,7 +4937,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "character": cid, "items": items,
                         "count": len(items), "max": st.MAX_PER_CHAR,
                         "max_bytes": st.MAX_BYTES,
-                        "hint": "文件名就是它的意思（开心.png）；回复里写 [表情:开心] 就会发它"})
+                        "hint": "文件名就是它的意思（开心.png）；回复里写 [[sticker:开心]] 就会发它"
+                                "（[表情:呲牙] 那种是 QQ 表情，不走表情包）"})
             return
         if u.path == "/api/mood":
             from bot import mood as mood_mod
@@ -5530,7 +5556,12 @@ class Handler(BaseHTTPRequestHandler):
                     row["enabled"] = not bool(row.get("enabled", True))
                     spec = row.get("when") if isinstance(row.get("when"), dict) else {}
                     if row["enabled"] and spec:
-                        row["next_at"] = sched.next_due(spec)      # 重新打开：从现在起算
+                        try:
+                            row["next_at"] = sched.next_due(spec)   # 重新打开：从现在起算
+                        except (TypeError, ValueError) as e:
+                            row["next_at"] = 0
+                            row["enabled"] = False
+                            row["last_error"] = f"时间规则无效：{e}"[:200]
                     _sched_save(items)
                     self._json({"ok": True, "item": _sched_view(row)})
                     return

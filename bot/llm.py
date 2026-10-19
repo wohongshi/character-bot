@@ -28,6 +28,12 @@ log = logging.getLogger("klee.bot.llm")
 _USAGE_HOOK = None
 
 
+def _require_text(res: dict) -> None:
+    """HTTP 200 但正文空、也没有工具调用 = 没拿到答案（docstring 一直这么写）。"""
+    if not str(res.get("text") or "").strip() and not res.get("tool_calls"):
+        raise RuntimeError("模型返回空内容（正文和工具调用都是空的）")
+
+
 def set_usage_hook(fn) -> None:
     """注册一个回调：每次模型调用结束都会被叫一次（失败不影响主流程）。"""
     global _USAGE_HOOK
@@ -653,8 +659,7 @@ class ModelStore:
             # 「HTTP 200 但正文是空的」也算没拿到答案：docstring 一直是这么写的，
             # 但以前这条路径直接 return 了 —— 空回复被当成成功，降级链根本没走，
             # 调用方（chat()）才抛「模型返回空内容」，用户白等一轮。
-            if not str(res.get("text") or "").strip() and not res.get("tool_calls"):
-                raise RuntimeError("模型返回空内容（正文和工具调用都是空的）")
+            _require_text(res)
             res["fails"] = fails
             res["fallback"] = False
             return res
@@ -678,7 +683,11 @@ class ModelStore:
                 # 一步 5 秒的预算会被拖成 5+15×N。
                 base = float(timeout or 0) or 90.0
                 spent = time.monotonic() - t0
-                left = max(3.0, min(base * 0.6, base - spent))
+                remain = base - spent
+                if remain < 2.0:
+                    # 预算已经耗光：再发一次只会继续超时，直接收工把原错误抛出去
+                    raise last or RuntimeError("模型调用超时，剩余预算不够再试备用模型")
+                left = max(2.0, min(base * 0.6, remain))
                 try:
                     res = self._complete_once(
                         messages, model=fb["model"], provider=fb["provider"], timeout=left,
@@ -686,6 +695,9 @@ class ModelStore:
                         tool_choice=tool_choice, extra_body=extra_body,
                         stream=stream, on_delta=_delta if on_delta else None,
                         _fails=len(fails))
+                    # 备用模型也要判空：否则空回复被当成成功，链上剩下的不再尝试，
+                    # 最终还是 chat() 抛「模型返回空内容」—— 白等一轮。
+                    _require_text(res)
                     res["fails"] = fails
                     res["fallback"] = True
                     log.info("已降级到备用模型 %s/%s（前面失败 %d 次）",

@@ -49,11 +49,13 @@ def calc(spec: str) -> list[str]:
             h = list(net)
             lines.append(f"可用主机：2（点对点链路，{h[0]} 与 {h[1]} 都是主机）")
         else:
-            lines.append(f"可用主机：1（{net.network_address} 自己，/32 单主机）")
+            lines.append(f"可用主机：1（{net.network_address} 自己，/{net.prefixlen} 单主机）")
+    elif iface.version == 6:
+        # IPv6 没有广播地址：hosts() 只排除网络地址，最后一个地址是可用的
+        lines.append(f"可用范围：{net.network_address + 1} ~ {net.broadcast_address}")
+        lines.append(f"可用主机数：{net.num_addresses - 1}（共 {net.num_addresses} 个地址）")
     else:
-        first = net.network_address + 1
-        last = net.broadcast_address - 1
-        lines.append(f"可用范围：{first} ~ {last}")
+        lines.append(f"可用范围：{net.network_address + 1} ~ {net.broadcast_address - 1}")
         lines.append(f"可用主机数：{net.num_addresses - 2}（共 {net.num_addresses} 个地址）")
     try:
         priv = iface.ip.is_private

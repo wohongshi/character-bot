@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import shutil
 import sys
@@ -61,9 +62,13 @@ def main(argv) -> int:
     from bot.framework import FeatureContext
 
     mgr = build()
-    bad = [p for p in mgr.snapshot().get("plugins", []) if p.get("error")]
-    if bad:
-        print("!! 加载失败的插件：", [(p["name"], p["error"]) for p in bad])
+    all_bad = [p for p in mgr.snapshot().get("plugins", []) if p.get("error")]
+    # 外部插件（ext/*.ext.json）的失败多半是环境问题：干净 checkout 下
+    # `bot/features/ext/tools/*.bin` 没编译（.gitignore），crc/sort/textstat 都会报错。
+    # 那不算「代码坏了」，只警告；纯 Python 插件的加载失败才算失败。
+    bad = [p for p in all_bad if not p.get("external") and not p.get("ext")]
+    if all_bad:
+        print("!! 加载失败的插件：", [(p["name"], p["error"]) for p in all_bad])
 
     rc = 0
     for line in argv:
@@ -85,7 +90,8 @@ def main(argv) -> int:
         ctx.args = rest.split()
         try:
             res = cmd.handler(ctx)
-            if asyncio.iscoroutine(res):
+            # 和 FeatureManager 一样用 isawaitable：Future / 自定义 awaitable 也算
+            if inspect.isawaitable(res):
                 res = asyncio.run(res)
             # handle_command 支持「直接 return 一段话」的处理器（lore / 一些老插件
             # 就是 `return "…"`）。只收 ctx.reply 的话，这些命令会被误报成「没有回复」。

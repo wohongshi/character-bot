@@ -64,7 +64,10 @@ def looks_like_md(text: str) -> bool:
 
 def md_table(rows: list[list[str]], limit_rows: int = MAX_ROWS,
              limit_cols: int = MAX_COLS) -> list[str]:
-    rows = [r[:limit_cols] for r in rows[:limit_rows]]
+    # 先清洗/转义再算列宽：`|` → `\|`、换行 → ` ⏎ ` 都会改变显示宽度，
+    # 先算宽度再转义会让含转义的行比别的行宽 1~2 列（表格就歪了）。
+    rows = [[str(c).replace("\r", " ").replace("\n", " ⏎ ").replace("|", "\\|")
+             for c in r[:limit_cols]] for r in rows[:limit_rows]]
     if not rows:
         return []
     width = [0] * max(len(r) for r in rows)
@@ -76,8 +79,6 @@ def md_table(rows: list[list[str]], limit_rows: int = MAX_ROWS,
         cells = []
         for j, w in enumerate(width):
             c = r[j] if j < len(r) else ""
-            # 单元格里的 `|` 会把 Markdown 表格多切一列，换行会把一行拆成两行。
-            c = str(c).replace("\r", " ").replace("\n", " ⏎ ").replace("|", "\\|")
             cells.append(c + " " * max(0, w - _w(c)))
         out.append("| " + " | ".join(cells) + " |")
         if i == 0:

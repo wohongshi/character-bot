@@ -43,12 +43,12 @@ def parse_date(s: str, today: datetime.date | None = None) -> datetime.date | No
     m = re.fullmatch(r"(\d{1,2})-(\d{1,2})", t)
     if m:
         mo, da = int(m.group(1)), int(m.group(2))
-        for year in (today.year, today.year + 1):
+        # 往后找 8 年：2-29 最多隔 8 年才出现一次（1900 那种世纪年要跳过）。
+        # 只试今年/明年的话，连撞两个平年就直接报「日期看不懂」。
+        for year in range(today.year, today.year + 9):
             try:
                 d = datetime.date(year, mo, da)
             except ValueError:
-                # 2-29 在平年是非法日期：换下一年再试，
-                # 以前这里直接 return None（今年不是闰年就永远算不出 2-29）。
                 continue
             if d >= today:
                 return d

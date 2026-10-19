@@ -1659,6 +1659,11 @@ function applyChrome(){
 // 不转单引号的话，一个带 ' 的名字（或英文 "it's"）就能跳出 JS 字符串。
 const esc = s => (s ?? "").toString().replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// 往 onclick 里塞字符串必须用这个，不能用 esc()：
+// 属性值里的字符实体是**先被 HTML 解码、再当 JS 解析**的，所以 esc("'") 变成
+// &#39; 之后又变回 '，照样能跳出 JS 字符串。这里用 JSON.stringify 生成带双引号的
+// 字面量（属性本身是双引号，所以里面的 " 再由 esc 转成 &quot;）。
+const jsq = s => esc(JSON.stringify(String(s ?? "")));
 const FACE = {"呲牙":"😁","微笑":"🙂","大哭":"😭","流泪":"😢","捂脸":"🤦","调皮":"😜","doge":"🐶","比心":"🫰","点赞":"👍",
  "睡":"😴","抓狂":"😫","亲亲":"😘","委屈":"🥺","偷笑":"🤭","酷":"😎","可怜":"🥹","生气":"😠","疑问":"🤔","鼓掌":"👏",
  "ok":"👌","爱心":"❤️","玫瑰":"🌹","吃瓜":"🍉","惊讶":"😮","汗":"😅","奋斗":"💪","大兵":"🫡","抱抱":"🤗","庆祝":"🎉"};
@@ -2175,7 +2180,7 @@ async function openPluginDrawer(name, meta){
     <div>${esc(bi(m.description, m.description_en) || "（没有说明）")}</div>
     ${m.system ? capLine : ""}
     ${m.has_page ? `<div class="row" style="margin:8px 0 2px">
-      <button class="btn primary tiny" onclick="openPluginPage('${esc(name)}')">🧩 打开插件页</button>
+      <button class="btn primary tiny" onclick="openPluginPage(${jsq(name)})">🧩 打开插件页</button>
       <span class="kv">这个插件自带一个小界面（扫码 / 诊断 / 控制台），不用去运维页找</span></div>` : ""}
     ${m.usage ? `<h4>用法</h4><div>${esc(m.usage)}</div>` : ""}
     ${(m.tools && m.tools.length) ? `<h4>工具（${m.tools.length}）</h4>
@@ -2362,12 +2367,12 @@ async function openPluginPage(name){
   if (!d || !d.ok){
     body.classList.remove("paged");
     body.innerHTML = `<div class="kv">✗ ${esc((d && d.error) || "打不开这个页面")}</div>
-      <div class="row" style="margin-top:8px"><button class="btn tiny" onclick="openPluginDrawer('${esc(name)}')">← 返回</button></div>`;
+      <div class="row" style="margin-top:8px"><button class="btn tiny" onclick="openPluginDrawer(${jsq(name)})">← 返回</button></div>`;
     return;
   }
   body.innerHTML = `
     <div class="row" style="margin-bottom:8px;flex:none">
-      <button class="btn tiny" onclick="openPluginDrawer('${esc(name)}')">← 返回设置</button>
+      <button class="btn tiny" onclick="openPluginDrawer(${jsq(name)})">← 返回设置</button>
       <span class="kv">${esc(d.title || name)} · 插件自带页面</span>
     </div>
     <iframe id="plugFrame" class="plugframe" title="${esc(d.title || name)}"
@@ -2805,7 +2810,7 @@ async function viewChat(){
     </div>
     <div class="hintline">Enter 发送 · Shift+Enter 换行</div>
     <div class="chips">
-      ${(ACTIVE.chips && ACTIVE.chips.length ? ACTIVE.chips : (CHIPS[ACTIVE.id] || CHIPS.klee)).map(t=>`<button onclick="quick('${esc(t)}')">${esc(t)}</button>`).join("")}
+      ${(ACTIVE.chips && ACTIVE.chips.length ? ACTIVE.chips : (CHIPS[ACTIVE.id] || CHIPS.klee)).map(t=>`<button onclick="quick(${jsq(t)})">${esc(t)}</button>`).join("")}
     </div>
   </div>`;
   $("sessSel").onchange = () => { stopSpeak(); chat.session = $("sessSel").value; localStorage.setItem("ks_session", chat.session); chat.after = 0; $("msgs").innerHTML=""; pollChat(); };
@@ -4121,7 +4126,7 @@ async function plugAudit(){
           ${i.fix ? `<div class="kv" style="opacity:.8">↳ ${esc(i.fix)}</div>` : ""}
         </div>
         ${i.plugin && plMeta[i.plugin] ? `<button class="btn tiny" style="flex:none"
-            onclick="openPluginDrawer('${esc(i.plugin)}')">打开</button>` : ""}
+            onclick="openPluginDrawer(${jsq(i.plugin)})">打开</button>` : ""}
       </div>`).join("")}
     </div></div>`;
 }
@@ -4350,7 +4355,7 @@ function renderPlugGrid(){
          ${p.tools.length ? `<span>${t("plug.tools")} ${p.tools.length}</span>`
                           : `<span>${t("plug.commands")} ${p.commands}</span>`}<span>${t("plug.hits")} ${p.hits}</span>`;
     return `<div class="plugcard ${p.name === plSel ? "on" : ""} ${p.system ? "syscard" : ""}"
-        onclick="openPluginDrawer('${esc(p.name)}')" title="${esc(p.description)}">
+        onclick="openPluginDrawer(${jsq(p.name)})" title="${esc(p.description)}">
       <span class="st ${p.error ? "err" : (p.enabled ? "on" : "")}"></span>
       <div class="top"><span class="ico">${p.system ? "🔌"
         : (p.external ? (LANG_ICON[p.language] || "🧬")
@@ -4500,7 +4505,7 @@ function cmRender(map){
         <option value="">（跟全局）</option>
         ${models.map(m=>`<option ${own && m===own.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
-      <button class="btn tiny" onclick="cmSave('${esc(c.id)}')">保存</button>
+      <button class="btn tiny" onclick="cmSave(${jsq(c.id)})">保存</button>
       ${own ? `<span class="kv">用 ${esc(own.model)}</span>` : ""}
     </div>`;
   }).join("");
@@ -4862,7 +4867,7 @@ async function viewChars(){
   <div class="chargrid">
     ${items.map(c => `
       <div class="charitem ${c.id===charSel?"on":""} ${c.active?"active":""}" data-id="${esc(c.id)}"
-           style="--c1:${esc(c.color)};--c2:${esc(c.color2)}" onclick="pickChar('${esc(c.id)}')">
+           style="--c1:${esc(c.color)};--c2:${esc(c.color2)}" onclick="pickChar(${jsq(c.id)})">
         <div class="artbg"><img src="${charSrc(c.id, "card")}" alt="" loading="lazy" decoding="async" onerror="artFallback(this)"></div>
         <div class="artveil"></div>
         ${c.active ? `<span class="charbadge">✦ 当前角色</span>` : ""}
@@ -4878,8 +4883,8 @@ async function viewChars(){
             ${c.active
               ? `<button class="btn tiny" onclick="event.stopPropagation();go('custom')">✨ 自定义</button>
                  <button class="btn tiny" onclick="event.stopPropagation();go('persona')">🌸 人格 / 知识库</button>`
-              : `<button class="btn primary tiny" onclick="event.stopPropagation();switchChar('${esc(c.id)}')">切换角色</button>
-                 <button class="btn tiny" onclick="event.stopPropagation();pickChar('${esc(c.id)}')">看详情</button>`}
+              : `<button class="btn primary tiny" onclick="event.stopPropagation();switchChar(${jsq(c.id)})">切换角色</button>
+                 <button class="btn tiny" onclick="event.stopPropagation();pickChar(${jsq(c.id)})">看详情</button>`}
           </div>
         </div>
       </div>`).join("")}
@@ -5117,8 +5122,8 @@ function ruleRender(items){
         : r.action === "command" ? "：" + esc(r.command) : ""}
         ${r.scope && r.scope !== "all" ? " · " + esc(scCN[r.scope] || r.scope) : ""}
         ${r.hits ? ` · 命中 ${r.hits} 次` : ""}</span>
-      <button class="btn tiny" style="flex:none" onclick="ruleToggle('${esc(r.id)}')">${r.enabled ? "暂停" : "启用"}</button>
-      <button class="btn tiny" style="flex:none" onclick="ruleDel('${esc(r.id)}')">删</button>
+      <button class="btn tiny" style="flex:none" onclick="ruleToggle(${jsq(r.id)})">${r.enabled ? "暂停" : "启用"}</button>
+      <button class="btn tiny" style="flex:none" onclick="ruleDel(${jsq(r.id)})">删</button>
     </div>`).join("");
 }
 function ruleFormToggle(){
@@ -5721,8 +5726,8 @@ async function viewOps(target){
               title="还差：${esc((p.missing || []).join(" / "))}">缺 ${p.missing.length} 项</span>` : ""}
         <span class="kv" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
               title="${esc(p.ready_note || p.description || "")}">${esc(p.enabled || p.default_off === false ? readyText(p.ready_note) || p.description || "" : p.description || "")}</span>
-        <button class="btn tiny" style="flex:none" onclick="go('plugins');setTimeout(()=>openPluginDrawer('${esc(p.pid)}'),260)">账号</button>
-        ${p.has_page ? `<button class="btn tiny" style="flex:none" onclick="openPluginPage('${esc(p.pid)}')">插件页</button>` : ""}
+        <button class="btn tiny" style="flex:none" onclick="go('plugins');setTimeout(()=>openPluginDrawer(${jsq(p.pid)}),260)">账号</button>
+        ${p.has_page ? `<button class="btn tiny" style="flex:none" onclick="openPluginPage(${jsq(p.pid)})">插件页</button>` : ""}
       </div>`).join("")}
       <div class="row" style="margin-top:10px">
         <span class="kv">收到 ${st.events ?? 0} · 发出 ${st.sent ?? 0} · 聊天 ${st.chats ?? 0} · 错误 ${st.errors ?? 0}</span>

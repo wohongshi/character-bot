@@ -756,14 +756,17 @@ class BotRuntime(RuntimeFeatures):
                     return
                 # 规则里配的命令名不存在（打错字、或者那个插件被关了）。
                 # 以前这里无条件 return —— 消息被静默吞掉，用户以为机器人哑了。
-                # 现在记一条日志，然后把这条消息交回后面的正常流程。
+                # 现在记一条日志，并把这条消息**交回后面的正常流程**：
+                # 注意不能再走下面「回复/return」那条路（command 规则的 reply 是空的，
+                # 走到那儿照样是静默 return）。
                 logger.warning("关键词规则指向的命令不存在：%r（按普通消息继续处理）", cname)
                 ctx.text = chat_text
-            reply = str(hit.get("reply") or "")
-            if reply:
-                self._log_msg(chat_id, "assistant", reply)
-                await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
-            return
+            else:
+                reply = str(hit.get("reply") or "")
+                if reply:
+                    self._log_msg(chat_id, "assistant", reply)
+                    await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
+                return
 
         chime = False
         if is_group and self.group_policy == "mention" and not mentioned:

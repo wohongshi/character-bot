@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import time
 
@@ -76,6 +77,10 @@ def parse(expr: str) -> tuple[set[int], ...]:
     return tuple(_field(f, i) for i, f in enumerate(fields))
 
 
+_ALL_DAYS = frozenset(range(1, 32))
+_ALL_DOW = frozenset(range(0, 7))
+
+
 def matches(sets, dt: datetime.datetime) -> bool:
     minutes, hours, dom, month, dow = sets
     if dt.minute not in minutes or dt.hour not in hours or dt.month not in month:
@@ -84,7 +89,7 @@ def matches(sets, dt: datetime.datetime) -> bool:
     dom_ok = dt.day in dom
     dow_ok = cron_dow in dow
     # 标准语义：日 和 周 都被限定（不是 *）时，任一命中即可
-    if dom != set(range(1, 32)) and dow != set(range(0, 7)):
+    if dom != _ALL_DAYS and dow != _ALL_DOW:
         return dom_ok or dow_ok
     return dom_ok and dow_ok
 

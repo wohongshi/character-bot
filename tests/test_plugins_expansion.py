@@ -324,6 +324,17 @@ def main() -> int:
           len(runs) == 3 and all(r.hour == 9 and r.minute == 0 and r.weekday() < 5 for r in runs),
           str([str(r) for r in runs]))
     check("9.16 cron 坏表达式给人话", "有问题" in run(mgr, "cron 61 * * * *"))
+    # 合法表达式这条路以前根本没跑过：`next_runs` 里的 asyncio.to_thread
+    # 少了一个 import，只有输入合法时才会 NameError（坏表达式在 describe 就返回了）。
+    _cron_ok = run(mgr, "cron */5 * * * *")
+    check("9.17 cron 合法表达式能算出下一次", "接下来" in _cron_ok, _cron_ok[:80])
+    check("9.18 cron 周区间 5-7 不再报错", "周六" in run(mgr, "cron \"0 9 * * 5-7\"")
+          or "周日" in run(mgr, "cron \"0 9 * * 5-7\""), "")
+    # 危险正则要提前拒（Python 的 re 没有超时，30 个字就能卡死事件循环）
+    from bot.features import regextool as RX
+    check("9.19 嵌套量词被拒", bool(RX.risky_pattern("(a+)+")))
+    check("9.20 交替前缀被拒", bool(RX.risky_pattern("(a|aa)+")))
+    check("9.21 普通正则不误报", RX.risky_pattern("(a+b)+") == "" and RX.risky_pattern("[a-z]+") == "")
 
     print("\n[10] 工具挂上了（agent 能用）")
     from bot import toolbox

@@ -26,6 +26,9 @@ DEFAULT_CONFIG = {
     # 老配置没有这个键时，_load_config 会迁移成 [adapter]，不会把 QQ 停掉。
     "system_plugins": [],
     "web_seen": False,            # 迁移标记：网页平台是否已介绍给这份配置
+    # 已经「介绍过」的默认 agent 工具：新默认工具只补一次，
+    # 用户之后自己勾掉就真的勾掉了（缺了它，每次启动都会把工具重新塞回去）。
+    "agent_tools_seen": [],
     "adapter": "onebot11",       # 单平台模式下的默认项（迁移用；多开看 system_plugins）
     "webhook_url": "",           # adapter=webhook 时的出站地址
     "webhook_token": "",         # 有则带 Authorization: Bearer
@@ -270,19 +273,14 @@ class BotService:
                 # todo 装了却调不到，看起来像插件没生效）。
                 # 用 `agent_tools_seen` 记「已经介绍过哪些默认工具」：
                 # 补过一次之后用户自己去勾掉，就真的勾掉了，不再回填。
-                try:
-                    from .toolbox import DEFAULT_TOOLS as _DEF
-                except Exception:                                   # noqa: BLE001
-                    _DEF = []
                 seen = disk.get("agent_tools_seen")
                 seen = [str(x) for x in seen] if isinstance(seen, list) else []
-                if _DEF:
-                    fresh = [t for t in _DEF if t not in seen]
-                    if fresh:
-                        cur = resolve_tools(cfg.get("agent_tools"))
-                        cfg["agent_tools"] = list(dict.fromkeys(cur + fresh))
-                        cfg["agent_tools_seen"] = list(dict.fromkeys(seen + list(_DEF)))
-                        self._config_needs_persist = True
+                fresh = [t for t in DEFAULT_TOOLS if t not in seen]
+                if fresh:
+                    cur = resolve_tools(cfg.get("agent_tools"))
+                    cfg["agent_tools"] = list(dict.fromkeys(cur + fresh))
+                    cfg["agent_tools_seen"] = list(dict.fromkeys(seen + list(DEFAULT_TOOLS)))
+                    self._config_needs_persist = True
         except (TypeError, ValueError) as e:                 # 结构怪但能解析：不覆盖
             logger.warning("bot 配置结构异常（%s），忽略磁盘内容", e)
         return cfg

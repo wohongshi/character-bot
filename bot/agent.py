@@ -859,14 +859,21 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
                         # 插件作者写成 `async def` 时，直接把它跑完 —— 否则返回的是协程对象，
                         # `_clip()` 会把它变成 "<coroutine object tool_x at 0x…>" 交给模型，
                         # 工具其实一次都没执行（还会刷 RuntimeWarning）。
-                        # 这里在 worker 线程里（run 由 to_thread 调用），没有运行中的事件循环。
+                        # 必须在调用前就判断「这里能不能起事件循环」，不能靠捕获 asyncio.run
+                        # 抛的 RuntimeError —— 工具自己在协程体里抛 RuntimeError 会被当成
+                        # 「上下文不支持」，真实报错被掩盖成一句「请改成普通 def」。
                         try:
-                            out = asyncio.run(out)
+                            asyncio.get_running_loop()
+                            busy = True
                         except RuntimeError:
+                            busy = False
+                        if busy or not inspect.iscoroutine(out):
                             if hasattr(out, "close"):
                                 out.close()
-                            out = (f"错误：工具 {name} 是 async 的，但当前上下文不能等待它；"
+                            out = (f"错误：工具 {name} 是异步的，但当前上下文不能等待它；"
                                    "请把这个工具改成普通的 def")
+                        else:
+                            out = asyncio.run(out)       # 工具自己的异常照常往上抛
                 except Exception as e:                           # noqa: BLE001
                     out = f"工具 {name} 出错：{type(e).__name__}: {e}"
             ctx.timeout = old_timeout

@@ -56,10 +56,11 @@ def _path(state_dir: Path | str) -> Path:
 
 
 def _clamp(v, default: float = 50.0) -> float:
-    """钳到 0~100；脏数据（字符串/None/NaN）回落到调用方给的默认值。"""
+    """钳到 0~100；脏数据（字符串/None/NaN/超大整数）回落到调用方给的默认值。"""
     try:
         f = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # json 里一个 1000 位的大整数会让 float() 抛 OverflowError
         return float(default)
     if f != f:                      # NaN
         return float(default)
@@ -69,7 +70,7 @@ def _clamp(v, default: float = 50.0) -> float:
 def _num(v) -> float:
     try:
         return float(v or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
 
 

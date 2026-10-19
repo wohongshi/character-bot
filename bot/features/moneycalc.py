@@ -96,9 +96,13 @@ def register(api):
             return
         try:
             pay, save = discount(parts[0], parts[1])
-        except (ValueError, InvalidOperation) as e:
+        except InvalidOperation:
             # Decimal(str(x)) 对非数字抛的是 decimal.InvalidOperation，不是 ValueError；
-            # 漏掉它就只有框架的通用 except 接住 —— 用户什么回复都收不到。
+            # 它的 str() 是 `[<class 'decimal.ConversionSyntax'>]` 这种内部标记，
+            # 直接回给用户等于乱码。
+            await ctx.reply("价格要写数字，比如 .折扣 199 8折")
+            return
+        except ValueError as e:
             await ctx.reply(str(e))
             return
         await ctx.reply(f"🛒 原价 ¥{money(parts[0])}\n实付 ¥{pay}\n省下 ¥{save}"
