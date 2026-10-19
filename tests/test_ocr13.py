@@ -109,6 +109,36 @@ def main() -> int:
           len(M.pick(td, "scope", "")) == 3, str(len(M.pick(td, "scope", ""))))
     txt = M.render(td, "demo", "草莓")
     check("2.6 提示词里来源说人话（主人让你记的）", "主人让你记的" in txt, txt[:120])
+    check("2.7 不会拼成「记的记的」", "记的记的" not in txt, txt[:120])
+    # 同一条在群里记过、又在另一个群记一次 → 两边都得看得到
+    M.add(td, "merge", "同一条事", scope="group:A")
+    M.add(td, "merge", "同一条事", scope="group:B")
+    in_a = [e["text"] for e in M.pick(td, "merge", "", scope="group:A")]
+    in_b = [e["text"] for e in M.pick(td, "merge", "", scope="group:B")]
+    check("2.8 两个群记同一条：两边都能看到", "同一条事" in in_a and "同一条事" in in_b,
+          f"A={in_a} B={in_b}")
+    check("2.9 合并后仍然只有一条（不重复）", len(M.all_items(td, "merge")) == 1,
+          str(len(M.all_items(td, "merge"))))
+    # 面板再全局记一次 → 升级成全局
+    M.add(td, "merge", "同一条事", scope="")
+    in_c = [e["text"] for e in M.pick(td, "merge", "", scope="group:C")]
+    check("2.10 面板再记一次 → 升级成全局（别的群也看得到）", "同一条事" in in_c, str(in_c))
+    # 写失败不能把「没落盘的 ts」留在缓存里
+    blocked2 = M.path_for(td, "ghost")
+    blocked2.mkdir(parents=True, exist_ok=True)
+    check("2.11 写失败返回 None 且读回来还是空的", M.add(td, "ghost", "幽灵") is None
+          and M.all_items(td, "ghost") == [])
+
+    print("\n[2b] agent 的 remember：写不进去不能回「记住了」")
+    from bot import agent as AG
+    td2 = Path(tempfile.mkdtemp(prefix="klee-ocr13-rem-"))
+    blocked = M.path_for(td2, "c1")
+    blocked.mkdir(parents=True, exist_ok=True)          # 让记忆文件写不进去
+    ctx = AG.ToolContext(state_dir=td2, character="c1", scope="group:1")
+    msg = AG.tool_remember({"text": "记住这条"}, ctx)
+    check("2b.1 写盘失败时不谎报「记住了」", "记住了" not in msg and "没写进磁盘" in msg, msg[:120])
+    import shutil
+    shutil.rmtree(td2, ignore_errors=True)
 
     print("\n[3] 备份：不含密钥、收记忆")
     memfile = ROOT / "state" / "memories" / "_selftest.jsonl"
@@ -125,6 +155,8 @@ def main() -> int:
               cfg.get("napcat_token") in ("***", "", None), repr(cfg.get("napcat_token"))[:40])
         check("3.3 max_tokens 这种「名字里带 token」的数值不能被误抹",
               isinstance(cfg.get("max_tokens"), int), repr(cfg.get("max_tokens")))
+        check("3.3b webhook_url 里的 access_token 也被抹掉",
+              "abc123" not in str(cfg.get("webhook_url") or ""), repr(cfg.get("webhook_url"))[:60])
         check("3.4 长期记忆进了备份",
               "state/memories/_selftest.jsonl" in names, str([n for n in names if "memor" in n]))
         raw = z.raw if hasattr(z, "raw") else None
@@ -132,7 +164,12 @@ def main() -> int:
         memfile.unlink(missing_ok=True)
     check("3.5 收尾：自测记忆文件已删", not memfile.exists())
 
-    print("\n[4] 上传：认得出但不支持的格式要说人话")
+    print("\n[4] 朗读/试跑的小口径")
+    check("4.0a [表情:xx] 不念出来", "[表情" not in S._tts_clean("今天的可莉也活力满满！[表情:呲牙]"),
+          repr(S._tts_clean("今天的可莉也很棒[表情:呲牙]")))
+    check("4.0b 正常文字还在", "活力满满" in S._tts_clean("今天的可莉也活力满满！[表情:呲牙]"), "")
+
+    print("\n[4b] 上传：认得出但不支持的格式要说人话")
     bmp = b"BM" + b"\x00" * 200
     data = "data:image/bmp;base64," + base64.b64encode(bmp).decode()
     try:
@@ -232,6 +269,15 @@ def main() -> int:
         joined2 = (str(res2.get("text") or "") + "\n" + "\n".join(ad2.texts))
         check("7.3 不等（drain=0）时后台任务被丢掉 —— 对照组", "后台任务跑完了" not in joined2,
               joined2[:160])
+
+        # join 的预算必须把 drain 算进去：timeout=1 + drain=5 也要等得到
+        ad3 = Ad()
+        res3 = hub.run("ad", "ad", adapter=ad3, is_group=False, group_id="",
+                       user_id="1", user_name="主人", role="owner", timeout=1,
+                       chat={"adapter": ad3, "drain": 5})
+        joined3 = (str(res3.get("text") or "") + "\n" + "\n".join(ad3.texts))
+        check("7.4 timeout=1 但 drain=5：后台任务仍然等到了",
+              "后台任务跑完了" in joined3, joined3[:200])
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)

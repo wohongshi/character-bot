@@ -401,6 +401,8 @@ class SkillHub:
             except BaseException as e:                            # noqa: BLE001
                 box["error"] = f"{type(e).__name__}: {e}"
 
+        state: dict = {"main_done": False}
+
         def _invoke_thread():
             # 不用 asyncio.run()：它在退出时会**取消**所有没跑完的任务，
             # 而插件常见写法是 `create_task(worker())` 然后立刻返回（draw.py 就是）。
@@ -408,6 +410,7 @@ class SkillHub:
             loop = asyncio.new_event_loop()
             try:
                 loop.run_until_complete(_invoke_async())
+                state["main_done"] = True
                 if drain > 0:
                     pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
                     if pending:
@@ -464,7 +467,13 @@ class SkillHub:
             th = threading.Thread(target=_invoke_thread, daemon=True,
                                   name=f"skill-{s['name']}")
             th.start()
+            # 两段式 join：
+            #  1) 主逻辑只给 timeout —— 超时就是超时（测试里 3 秒的活配 2 秒预算要报错）；
+            #  2) 主逻辑已经跑完、只剩 drain 时才追加等 drain —— 不然「主处理 35 秒 +
+            #     drain 60 秒」会在 90 秒处被判超时，drain 里刚凑齐的图/字全白等。
             th.join(max(0.5, float(timeout)))
+            if th.is_alive() and drain > 0 and state.get("main_done"):
+                th.join(max(0.0, drain) + 5)
             if th.is_alive():
                 log.warning("技能 %s（.%s）线程执行超时（>%.0fs）", s["name"], cmd.name, timeout)
                 return {"ok": False, "error": f"技能 {s['name']} 执行超时（>{timeout:.0f}s）"}

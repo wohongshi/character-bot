@@ -94,10 +94,15 @@ def add(state_dir: Path, character: str, text: str, *,
     key = _norm(t)
     with _LOCK:
         items = list(_read(path))          # 缓存里的是共享 list，别原地改
-        for e in items:
+        for i, e in enumerate(items):
             if _norm(e.get("text")) == key:
+                # 元素 dict 也是缓存里的对象：改之前先复制，写失败才不会留下
+                # 「没落盘的 ts/hits」被别的线程读到。
+                e = dict(e)
+                items[i] = e
                 e["ts"] = time.time()
                 e["hits"] = int(e.get("hits") or 0) + 1
+                e["scope"] = _merge_scope(e.get("scope"), scope)
                 return e if _write(path, items) else None
         entry = {"ts": time.time(), "text": t, "source": str(source or "panel")[:16],
                  "who": str(who or "")[:16], "scope": str(scope or "")[:64], "hits": 0}
@@ -126,7 +131,35 @@ def _write(path: Path, items: list[dict]) -> bool:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        _CACHE.pop(str(path), None)        # 缓存里的对象可能已经被改过，作废
         return False
+
+
+def _merge_scope(old: str, new: str) -> str:
+    """同一条记忆在多个会话里都被记过：作用域取并集（空串 = 全局，吞掉一切）。
+
+    以前只刷新 ts/hits 不动 scope：先在群 A 记过，之后在群 B 再说一次，
+    条目还挂在 group:A 上，群 B 里永远注入不到 —— 用户以为记下了，其实没有。
+    """
+    a = str(old or "").strip()
+    b = str(new or "").strip()
+    if a == "" or b == "":
+        return ""                          # 任一处是全局 → 升级成全局
+    if a == b:
+        return a
+    parts = []
+    for x in (a.split(",") + b.split(",")):
+        x = x.strip()
+        if x and x not in parts:
+            parts.append(x)
+    return ",".join(parts)[:120]
+
+
+def _scope_hit(entry: dict, want: str) -> bool:
+    sc = str(entry.get("scope") or "").strip()
+    if sc == "":                           # 全局：处处算数
+        return True
+    return str(want or "") in [x.strip() for x in sc.split(",")]
 
 
 def all_items(state_dir: Path, character: str) -> list[dict]:
@@ -170,7 +203,7 @@ def pick(state_dir: Path, character: str, query: str = "", limit: int = 8,
     items = all_items(state_dir, character)
     if scope is not None:
         want = str(scope or "")
-        items = [e for e in items if str(e.get("scope") or "") in ("", want)]
+        items = [e for e in items if _scope_hit(e, want)]
     if not items:
         return []
     q = _grams(query)
@@ -216,6 +249,7 @@ def render(state_dir: Path, character: str, query: str = "", limit: int = 8,
         when = time.strftime("%m-%d", time.localtime(ts)) if ts else ""
         # 站在角色的角度说话：面板里点「记住」是主人让她记的，
         # 写成「我」会被模型理解成「我自己想起来的」，语气就偏了。
-        src = "主人让你记的" if e.get("source") == "panel" else "你自己记的"
+        # 注意别带「记的」——后面的模板已经拼了「…记的」。
+        src = "主人让你" if e.get("source") == "panel" else "你自己"
         lines.append(f"- {e['text']}" + (f"（{when}，{src}记的）" if when else ""))
     return "【你记得的事】这些是你和主人之间真实发生过/说过的，聊天时自然用上，别逐条复述：\n" + "\n".join(lines)

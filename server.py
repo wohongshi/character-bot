@@ -841,10 +841,11 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
         chat={"adapter": _WebAdapter(rt, cid), "is_group": False, "group_id": "",
               "user_id": "panel", "user_name": "主人", "role": "owner",
               "is_owner": True,
-              # 交给 bot 自己那条 loop：插件的 `create_task(worker())`（.画画）
-              # 才不会被临时 loop 关掉。
-              "loop": getattr(rt, "loop", None),
-              "loop_thread": getattr(rt, "loop_thread", None)},
+              # 不给 bot 那条 loop：给了只会让 create_task 活下来，而 SkillHub
+              # 把 adapter 包成 _Capture，后台任务产的图要等 drain 才收得到，
+              # `tool_use_skill` 读 res["images"] 时早就返回了。
+              # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
+              "loop": None, "loop_thread": None, "drain": 45},
         max_steps=int(cfg.get("agent_max_steps") or 3),
         timeout=float(cfg.get("agent_timeout") or 120),
         max_tokens=int(cfg.get("max_tokens") or 800),
@@ -920,6 +921,7 @@ def _tts_clean(text: str) -> str:
     t = re.sub(r"```.*?```", " ", t, flags=re.S)          # 代码块
     t = re.sub(r"`([^`]*)`", r"\1", t)                    # 行内代码
     t = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", t)          # 图片
+    t = re.sub(r"\[表情[:：][^\]]*\]", " ", t)              # [表情:呲牙] 是给前端换 emoji 的
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)        # 链接 → 文字
     t = re.sub(r"https?://\S+", " ", t)                   # 裸链接
     t = re.sub(r"[*_#>~|]+", " ", t)                      # 强调/标题/表格符号
@@ -1285,8 +1287,20 @@ BACKUP_DIRS = ("state/characters", "state/characters.d", "bot/features/state",
 _SECRET_KEY_RE = re.compile(r"(?:^|_)(?:token|secret|password|passwd|api_key|apikey)$", re.I)
 
 
+# URL 里的凭据：钉钉/ntfy/Bark 这类 webhook 把 token 放在 query 里
+_URL_SECRET_RE = re.compile(r"(?i)([?&](?:access_token|token|key|secret|apikey|auth)=)[^&]*")
+
+
+def _scrub_url(v: str) -> str:
+    """`https://oapi.dingtalk.com/robot/send?access_token=abc` → `...=***`。"""
+    out = _URL_SECRET_RE.sub(r"\1***", v)
+    # userinfo：https://user:pass@host/path
+    out = re.sub(r"(//[^/@\s:]+):[^/@\s]*@", r"\1:***@", out)
+    return out
+
+
 def _scrub_secrets(obj):
-    """递归把密钥字段换成 "***"（保留键，恢复时知道这里本来有东西）。"""
+    """递归把密钥换成 "***"（保留键，恢复时知道这里本来有东西）。"""
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
@@ -1297,6 +1311,8 @@ def _scrub_secrets(obj):
         return out
     if isinstance(obj, list):
         return [_scrub_secrets(x) for x in obj]
+    if isinstance(obj, str) and ("://" in obj or obj.startswith("//")):
+        return _scrub_url(obj)
     return obj
 
 
@@ -1316,8 +1332,10 @@ def _build_backup() -> bytes:
                     cfg = json.loads(fp.read_text(encoding="utf-8"))
                     z.writestr(rel, json.dumps(_scrub_secrets(cfg), ensure_ascii=False,
                                                indent=1))
-                except (OSError, ValueError):
-                    continue                  # 读不出来就不放，别裸拷
+                except (OSError, ValueError) as e:
+                    # 不能让备份「看起来完整」却少了整份配置：至少留个日志
+                    logger.warning("备份跳过 %s：读不出来（%s）", rel, e)
+                    continue
             else:
                 z.write(fp, rel)
             files.append(rel)

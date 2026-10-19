@@ -496,15 +496,20 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
         return "错误：没有可写的位置"
     # 同时写进「长期记忆」：面板里能看到、下一条消息就会注入到提示里。
     # agent_notes.json 保留（它是 agent 自己的流水账），但人看的那一份在这里。
+    mem_ok = True
     try:
         from . import memory as mem_mod
         if ctx.character:
             # scope 跟着会话走：群成员让记的事只在这个群里算数
-            mem_mod.add(ctx.state_dir, ctx.character, text, source="agent",
-                        who=str((ctx.chat or {}).get("user_name") or ""),
-                        scope=ctx.scope)
+            ent = mem_mod.add(ctx.state_dir, ctx.character, text, source="agent",
+                              who=str((ctx.chat or {}).get("user_name") or ""),
+                              scope=ctx.scope)
+            # add() 写失败是**返回 None**，不抛异常 —— 只 except 是接不住的
+            mem_ok = ent is not None
+            if not mem_ok:
+                log.warning("长期记忆写入失败（%s）：磁盘写不进去", ctx.character)
     except Exception as e:                                   # noqa: BLE001
-        # 写失败不能悄悄咽掉：记住了但没落盘，下一条消息就不见了
+        mem_ok = False
         log.warning("长期记忆写入失败：%s", e)
     with _notes_lock(path):
         try:
@@ -523,6 +528,10 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
             os.replace(tmp, path)
         except OSError as e:
             return f"记不下来：{e}"
+    if not mem_ok:
+        # 别让模型对用户说「记住了」：面板和下一条消息里都不会有这条
+        return ("笔记记下了，但长期记忆没写进磁盘（可能只读或满了）——"
+                "这条下一条消息不会自动带出来，跟主人说一声。")
     return f"记住了（{ctx.scope}）：{text[:80]}"
 
 

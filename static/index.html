@@ -306,6 +306,7 @@ html[data-touch="1"] .acts{opacity:.85}
   border-radius:8px;padding:1px 7px;font-size:max(11px, calc(10.5px * var(--fx)));cursor:pointer;
   font-family:var(--font-body)}
 .acts button:hover{color:var(--ink);border-color:var(--ui-accent)}
+.acts button[hidden]{display:none}       /* 作者样式别把 UA 的 [hidden] 顶掉 */
 .bub.img img{display:block;max-width:100%;border-radius:12px;cursor:zoom-in}
 .bub.img .cap{font-size:12px;color:var(--dim);padding:6px 6px 2px;white-space:pre-wrap}
 .meta{font-size:11px;color:var(--dim);margin-top:5px;max-width:100%;overflow-wrap:anywhere}
@@ -2788,6 +2789,7 @@ async function delMsg(el){
   // 否则下一次轮询从旧游标切，新发的消息会被跳过（要刷新页面才看得见）。
   chat.after = Math.max(0, chat.after - Number(r.removed || 0));
   box.remove();
+  onlyLastRegen();          // 删的可能就是最后一条：让新的最后一条拿回按钮
   flash("删掉了");
 }
 // agent 常开（面板本身就是半个 agent）：不再有开关，也就不再存偏好。
@@ -2897,7 +2899,8 @@ function actsHTML(role){
 function onlyLastRegen(){
   const box = $("msgs"); if (!box) return;
   const btns = Array.from(box.querySelectorAll('.acts button[data-regen]'));
-  btns.forEach((b, i) => { if (i < btns.length - 1) b.remove(); });
+  // 用隐藏而不是 remove：把最后一条删掉以后，前一条要能重新拿到按钮
+  btns.forEach((b, i) => { b.hidden = i < btns.length - 1; });
 }
 function quoteHTML(q){
   if (!q || !q.text) return "";
