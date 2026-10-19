@@ -101,10 +101,14 @@ def main() -> int:
           str(d.get("characters"))[:60])
 
     tmp = Path(tempfile.mkdtemp(prefix="klee-sched-"))
-    old = (S.SCHEDULED, S.CHAT_JSONL, S.MSG_JSONL)
+    # SESSION_META 也要一起重定向：_sched_run 会给 sched-<id> 写会话名，
+    # 不重定向就写进真实 state/sessions.json —— 留下一堆「有名字但没记录」的孤儿
+    # （自检里那条「会话清单」warn 就是它带出来的）。
+    old = (S.SCHEDULED, S.CHAT_JSONL, S.MSG_JSONL, S.SESSION_META)
     S.SCHEDULED = tmp / "scheduled.json"
     S.CHAT_JSONL = tmp / "chat.jsonl"
     S.MSG_JSONL = tmp / "msg.jsonl"
+    S.SESSION_META = tmp / "sessions.json"
     S.CHAT_JSONL.write_text("", encoding="utf-8")
     S.MSG_JSONL.write_text("", encoding="utf-8")
     drained = []
@@ -153,7 +157,7 @@ def main() -> int:
         # 同一条不会在 20 秒内跑两次
         check("3.9 立刻再 tick 不会重复触发", S._sched_tick() == [], "")
     finally:
-        S.SCHEDULED, S.CHAT_JSONL, S.MSG_JSONL = old
+        S.SCHEDULED, S.CHAT_JSONL, S.MSG_JSONL, S.SESSION_META = old
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
     check("3.10 临时目录已删", not tmp.exists())

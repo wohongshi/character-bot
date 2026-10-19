@@ -36,7 +36,6 @@ DISK_BAD_B = 500 * 1024 ** 2         # 剩余 < 500 MB 算严重
 MEM_WARN_B = 400 * 1024 ** 2         # 可用内存 < 400 MB 提醒
 TEMP_WARN = 75.0                     # 温度 > 75℃ 提醒（这台是 fanless）
 TEMP_BAD = 85.0                      # > 85℃ 算严重（thermal-gate 的红线）
-LOG_WARN_B = 20 * 1024 ** 2          # state 下日志类文件合计 > 20 MB
 TTS_MAX_FILES = 80                   # 与 server.TTS_DIR 的回收上限一致
 USAGE_MAX_LINES = 20000              # 与 server 的截断上限一致
 
@@ -73,10 +72,16 @@ def _read_text(path: Path) -> str:
 
 
 def _json_ok(path: Path) -> tuple[bool, str]:
+    """(能解析, 原因)。**读不了也算不行** —— 读失败时返回空串再去解析，
+    会得到「解析成功」的假绿（只读挂载、权限不足都会这样）。"""
     if not path.exists():
         return False, "文件不存在"
     try:
-        json.loads(_read_text(path) or "null")
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return False, f"读不了：{e.strerror or e}"
+    try:
+        json.loads(raw or "null")
         return True, ""
     except (ValueError, TypeError) as e:
         return False, str(e)[:120]
@@ -111,8 +116,11 @@ def _max_temp() -> float:
     base = Path("/sys/class/thermal")
     try:
         for zone in base.glob("thermal_zone*"):
+            txt = _read_text(zone / "temp").strip()
+            if not txt:
+                continue                      # 读不到就当这个传感器不存在，别报 0℃
             try:
-                raw = int(_read_text(zone / "temp").strip() or 0)
+                raw = int(txt)
             except ValueError:
                 continue
             t = raw / 1000.0 if raw > 200 else float(raw)      # 有的驱动给的是度
@@ -346,6 +354,10 @@ def fix(env: dict, action: str, hooks: dict | None = None) -> dict:
             if not callable(fn):
                 return {"ok": False, "action": action, "error": "这个环境没有索引可重建"}
             res = fn() or {}
+            if isinstance(res, dict) and res.get("error"):
+                # `MessageIndex.sync()` 打不开库时**不抛**，而是返回 {"error": …}；
+                # 只看 added 会把「重建失败」报成「重建了 0 条」的假成功。
+                return {"ok": False, "action": action, "error": f"索引重建失败：{res['error']}"}
             added = int(res.get("added") or res.get("rows") or 0)
             rebuilt = res.get("rebuilt") if isinstance(res.get("rebuilt"), list) else []
             done.append(f"重建了 {added} 条" + (f"（{len(rebuilt)} 份来源）" if rebuilt else ""))
@@ -406,3 +418,7 @@ def fix(env: dict, action: str, hooks: dict | None = None) -> dict:
         return {"ok": False, "action": action, "error": "不认识的修复动作"}
     except OSError as e:
         return {"ok": False, "action": action, "error": f"{type(e).__name__}: {e}"}
+    except Exception as e:                                     # noqa: BLE001
+        # sqlite3.Error / ValueError 之类不属于 OSError：修复失败要变成一条
+        # 可读的错误，而不是让 HTTP 线程抛 500
+        return {"ok": False, "action": action, "error": f"{type(e).__name__}: {e}"[:200]}

@@ -101,6 +101,18 @@ def main():
     check("4.4 清单条数对得上", idx["count"] == len(pys), f"{idx['count']} vs {len(pys)}")
     check("4.5 README 说明这不是一键安装包", "不是" in z2.read("README.md").decode())
 
+    section("4b. 打包上限要和导入入口对齐")
+    # 导入入口把 plugin.json / README.md 也算进 20 个条目里，所以自己只能放 18 个 .py
+    names = sorted(f.stem for f in FEATURES.glob("*.py") if not f.name.startswith("_"))
+    blob18, _ = P.pack(FEATURES, names[:18])
+    files18 = server._plugin_zip_files(blob18)
+    check("4b.1 18 个插件打得出来且能被导入", len(files18) == 18, str(len(files18)))
+    try:
+        P.pack(FEATURES, names[:19])
+        check("4b.2 19 个插件被自己挡住", False)
+    except P.PackError as e:
+        check("4b.2 19 个插件被自己挡住", "最多打包 18" in str(e), str(e))
+
     section("5. 拒绝坏输入")
     for name, label in (("Bad-Name", "大小写/横线"), ("a", "太短"), ("_x", "下划线开头"),
                         ("", "空名字")):

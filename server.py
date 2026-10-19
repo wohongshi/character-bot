@@ -595,7 +595,7 @@ def _index_boot() -> None:
             except Exception as e:                                 # noqa: BLE001
                 logger.warning("消息索引同步失败（搜索仍可用，只是不更新）：%s", e)
             time.sleep(20)
-    threading.Thread(target=_run, name="msg-index", daemon=True).start()
+    _spawn_worker("msg-index", _run)
 
 
 def _warm_caches() -> None:
@@ -613,7 +613,7 @@ def _warm_caches() -> None:
             except Exception:                                      # noqa: BLE001
                 pass
         logger.info("面板缓存已预热")
-    threading.Thread(target=_run, name="cache-warm", daemon=True).start()
+    _spawn_worker("cache-warm", _run, long_lived=False)
 
 
 def _chat_drop_session(session: str, cid: str) -> tuple[int, int]:
@@ -2084,22 +2084,27 @@ def _known_chat_sessions() -> set:
         return set()
 
 
-def _selfcheck_env() -> dict:
-    rt = getattr(BOT, "runtime", None) if BOT else None
-    cfg = {}
-    try:
-        cfg = dict(BOT.config) if BOT else {}
-    except Exception:                                 # noqa: BLE001
-        cfg = {}
+def _selfcheck_env(bot=None) -> dict:
+    """把运行时事实凑成 selfcheck 的入参。
+
+    `bot` 可注入：单测要验证「has_key 到底读哪个字段」这类逻辑，
+    但它在测试进程里没有 ModelStore（服务跑在另一个进程）。
+    """
+    bot = BOT if bot is None else bot
+    rt = getattr(bot, "runtime", None) if bot else None
     # 模型
     model: dict = {}
     try:
-        act = BOT.models.active()
-        prov = BOT.models.get_provider(act.get("provider")) or {}
+        act = bot.models.active()
+        prov = bot.models.get_provider(act.get("provider")) or {}
         api = str(prov.get("api") or "")
+        # key **从不落盘**：provider 里只存 key_env（变量名），真正的值在环境变量 /
+        # .env 里。读 prov["key"] 永远是空 → 会把配好的云端模型常报成「没填密钥」。
+        key_env = str(prov.get("key_env") or "")
+        has_key = bool(os.environ.get(key_env)) if key_env else False
         model = {"provider": act.get("provider"), "model": act.get("model"),
-                 "has_key": bool(str(prov.get("key") or "").strip()),
-                 # 本地网关（127.0.0.1 / localhost）不要求 key
+                 "has_key": has_key,
+                 # 本地网关（127.0.0.1 / localhost / 内网）不要求 key
                  "local": api.startswith(("http://127.", "http://localhost", "http://192.168."))}
     except Exception as e:                            # noqa: BLE001
         model = {"error": str(e)[:120]}
@@ -2121,26 +2126,50 @@ def _selfcheck_env() -> dict:
                           "connected": bool(h.get("ok") or h.get("online")),
                           "detail": str(h.get("detail") or "")[:120]})
     stats = dict(getattr(rt, "stats", {}) or {})
-    streak = max([int(v or 0) for k, v in stats.items()
-                  if str(k).startswith("auth_streak:")] or [0])
+    # 按平台保留：把所有平台取最大值会「张冠李戴」—— 飞书被拒却让 onebot 页面
+    # 报「NapCat token 不一致」。只算**当前启用**的平台（禁用平台的旧计数不算）。
+    live = {p["name"] for p in platforms}
+    streaks = {str(k).split(":", 1)[1]: int(v or 0)
+               for k, v in stats.items() if str(k).startswith("auth_streak:")}
+    streaks = {k: v for k, v in streaks.items() if k in live and v > 0}
+    top = max(streaks.items(), key=lambda kv: kv[1], default=("", 0))
     # 会话孤儿：有显示名/置顶，但索引里一条都不剩
     labels = _session_labels()
     known = _known_chat_sessions()
     orphan = sorted(k for k in labels if known and k not in known)
     return {"state_dir": STATE_DIR,
             "features_dir": Path(__file__).with_name("bot") / "features",
-            "index": (_index().health() if BOT else {"ok": False, "error": "bot 未启动"}),
+            "index": (_index().health() if bot else {"ok": False, "error": "bot 未启动"}),
             "model": model,
-            "adapter": {"platforms": platforms, "auth_streak": streak,
-                        "name": (platforms[0]["name"] if platforms else "")},
+            "adapter": {"platforms": platforms, "auth_streak": top[1],
+                        "name": top[0] or (platforms[0]["name"] if platforms else "")},
             "workers": {k: bool(th.is_alive()) for k, th in _WORKERS.items()},
             "orphan_sessions": orphan,
             "cards_dir": STATE_DIR / "images"}
 
 
-def _selfcheck() -> dict:
-    from bot import selfcheck as sc
+_SC_ENV_CACHE: dict = {"ts": 0.0, "env": None}
+SC_ENV_TTL = 5.0          # 秒：进运维页 + 点一次修复不该各探一遍平台
+
+
+def _selfcheck_env_cached(force: bool = False) -> dict:
+    """5 秒内复用同一份环境快照。
+
+    `_selfcheck_env()` 会对每个适配器真的探一次（OneBot 的 `get_status` 带 20 秒预算）；
+    「全部修复」以前每次修一项就重算一遍，N 项就是 N+2 次探测 —— 有缓存就只探一次。
+    """
+    now = time.time()
+    if not force and _SC_ENV_CACHE["env"] is not None \
+            and now - float(_SC_ENV_CACHE["ts"]) < SC_ENV_TTL:
+        return _SC_ENV_CACHE["env"]
     env = _selfcheck_env()
+    _SC_ENV_CACHE.update(ts=now, env=env)
+    return env
+
+
+def _selfcheck(force_env: bool = False) -> dict:
+    from bot import selfcheck as sc
+    env = _selfcheck_env_cached(force_env)
     try:
         items = sc.run(env)
     except Exception as e:                            # noqa: BLE001
@@ -2152,12 +2181,17 @@ def _selfcheck() -> dict:
                        "ok": sum(1 for i in items if i["level"] == "ok")}}
 
 
-def _selfcheck_fix(action: str) -> dict:
+def _selfcheck_fix(action: str, env: dict | None = None) -> dict:
     from bot import selfcheck as sc
-    env = _selfcheck_env()
+    env = env if env is not None else _selfcheck_env_cached()
 
     def _rebuild_index():
-        return _index().sync(force=True)
+        res = _index().sync(force=True)
+        # sync() 打不开库时返回 {"error": …} 而不是抛：这里必须当成失败，
+        # 否则「重建了 0 条」会被当成修好了。
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"])[:200])
+        return res
 
     def _drop_orphans():
         orphan = set(env.get("orphan_sessions") or [])
@@ -2594,14 +2628,16 @@ def _chat_worker(name: str = "chat-worker") -> None:
 
 
 # 后台线程登记：自检要能回答「worker 还活着吗」。
-# 起线程的地方只有两处（这里和 main() 的调度循环），都登记进这张表。
+# 只登记**长驻**线程 —— 一次性的预热线程跑完就退，把它算进「已停止」是假警报
+# （自检第一版就这么误报过 cache-warm）。
 _WORKERS: "dict[str, threading.Thread]" = {}
 
 
-def _spawn_worker(name: str, target) -> threading.Thread:
+def _spawn_worker(name: str, target, *, long_lived: bool = True) -> threading.Thread:
     th = threading.Thread(target=target, daemon=True, name=name)
     th.start()
-    _WORKERS[name] = th
+    if long_lived:
+        _WORKERS[name] = th
     return th
 
 
@@ -5060,7 +5096,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:                                # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
                 return
-            self._json({"ok": True, "src": src, **data})
+            # insights() 内部把 SQL 错误吞成 from_sql=False（不抛）：这里要如实报失败，
+            # 否则前端会画一张「全是 0」的图，看起来像「这段时间没聊天」。
+            ok = bool(data.get("from_sql", True))
+            self._json({"ok": ok, "src": src, **data}, code=200 if ok else 500)
             return
         if u.path == "/api/selfcheck":
             self._json(_selfcheck())
@@ -5732,17 +5771,23 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/selfcheck/fix":
             action = str(body.get("id") or "").strip()[:32]
             if action == "all":
+                env = _selfcheck_env_cached()
                 out = []
                 for it in _selfcheck().get("items", []):
                     if it.get("fix"):
-                        out.append(_selfcheck_fix(it["fix"]))
-                self._json({"ok": True, "fixed": out, "after": _selfcheck()})
+                        out.append(_selfcheck_fix(it["fix"], env))
+                ok = bool(out) and all(r.get("ok") for r in out)
+                err = next((r.get("error") for r in out if not r.get("ok")), "")
+                self._json({"ok": ok, "fixed": out, "error": err,
+                            "after": _selfcheck(force_env=True)},
+                           code=200 if ok else 400)
                 return
             if not action:
                 self._json({"ok": False, "error": "缺 id"}, 400)
                 return
             res = _selfcheck_fix(action)
-            self._json({**res, "after": _selfcheck()} if res.get("ok") else res,
+            after = _selfcheck(force_env=True)
+            self._json({**res, "after": after} if res.get("ok") else res,
                        code=200 if res.get("ok") else 400)
             return
 
@@ -6410,10 +6455,10 @@ def main():
         print(f"[klee-studio] bot runtime: {BOT.status().get('features', {})}", flush=True)
     else:
         print(f"[klee-studio] bot runtime 启动失败：{_BOT_IMPORT_ERR}", flush=True)
-    threading.Thread(target=_alert_watcher, daemon=True, name="qq-alert-watcher").start()
+    _spawn_worker("qq-alert-watcher", _alert_watcher)
     _index_boot()          # 后台把历史补进 SQLite（第一次约 9 秒，不挡启动）
     _warm_caches()         # 预热面板首屏那几个接口，别让第一次打开撞冷计算
-    threading.Thread(target=_log_janitor, daemon=True, name="log-janitor").start()
+    _spawn_worker("log-janitor", _log_janitor)
     _start_workers()
     _spawn_worker("sched-loop", _sched_loop)
     try:

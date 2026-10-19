@@ -640,7 +640,7 @@ class ModelStore:
                 messages, model=model, provider=provider, timeout=timeout,
                 temperature=temperature, max_tokens=max_tokens, tools=tools,
                 tool_choice=tool_choice, extra_body=extra_body,
-                stream=stream, on_delta=on_delta)
+                stream=stream, on_delta=on_delta, _character=character)
         emitted = {"any": False}
 
         def _delta(txt):

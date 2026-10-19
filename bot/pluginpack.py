@@ -18,7 +18,6 @@ from __future__ import annotations
 import ast
 import io
 import json
-import os
 import re
 import shutil
 import time
@@ -26,7 +25,9 @@ import zipfile
 from pathlib import Path
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")     # 与 server.PLUGIN_NAME_RE 同口径
-MAX_FILES = 20
+# 导入入口把 **所有** 非目录条目都算进 20 个上限里（连 plugin.json / README.md 也算，
+# 它在跳过这两个之前就计数了）。而我们每个包都会写这两份说明，所以自己只能放 18 个 .py。
+MAX_FILES = 18
 MAX_BYTES = 2 * 1024 * 1024
 
 _META_ATTRS = ("NAME", "NAME_EN", "DESCRIPTION", "DESCRIPTION_EN",
@@ -165,8 +166,9 @@ def pack_backup(features_dir: Path | str) -> tuple[bytes, str]:
     不假装它是一键安装包。
     """
     root = Path(features_dir)
-    files = sorted(f for f in root.glob("*.py")
-                   if not f.name.startswith("_") and not f.stem.startswith("zz_"))
+    # 只跳过 `_` 开头的基础设施模块（_plugstore / _cardimg 之类，不是插件）。
+    # 不按别的名字过滤：备份少文件而用户看不出来，是最糟的失败方式。
+    files = sorted(f for f in root.glob("*.py") if not f.name.startswith("_"))
     if not files:
         raise PackError("没有可备份的插件")
     if len(files) > BACKUP_MAX_FILES:

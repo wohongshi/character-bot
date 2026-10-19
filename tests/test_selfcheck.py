@@ -151,6 +151,32 @@ def main():
                  {"drop_orphan_sessions": lambda: 2})
     check("7.4 孤儿会话修复报告数量", res["ok"] and "2" in res["done"][0], str(res))
 
+    section("7b. has_key 读的是 key_env 指向的变量")
+    # 模型的 key **从不落盘**：provider 里只存 key_env（变量名）。
+    # 读 prov["key"] 永远是空 → 配好的云端模型会被常报「没填密钥」。
+    import server as S
+
+    class FakeModels:
+        data = {}
+
+        def active(self):
+            return {"provider": "cloud", "model": "m1"}
+
+        def get_provider(self, pid):
+            return {"id": pid, "api": "https://api.example.com/v1", "key_env": "KLEE_FAKE_KEY"}
+
+    class FakeBot:
+        models = FakeModels()
+        runtime = None
+
+    os.environ.pop("KLEE_FAKE_KEY", None)
+    env = S._selfcheck_env(FakeBot())
+    check("7b.1 没设变量 → has_key False", env["model"]["has_key"] is False, str(env["model"]))
+    os.environ["KLEE_FAKE_KEY"] = "sk-test"
+    env = S._selfcheck_env(FakeBot())
+    check("7b.2 设了变量 → has_key True", env["model"]["has_key"] is True, str(env["model"]))
+    os.environ.pop("KLEE_FAKE_KEY", None)
+
     section("8. 活服务")
     def get(url):
         req = urllib.request.Request(url, headers=HDR)
@@ -166,6 +192,12 @@ def main():
         # 真服务上不该有「状态目录不可写」这种硬伤
         bads = [i["id"] for i in d["items"] if i["level"] == "bad"]
         check("8.5 生产环境没有 bad 项", not bads, str(bads))
+        wk = next(i for i in d["items"] if i["id"] == "workers")
+        # 一次性线程（cache-warm）跑完就退，不能算成「后台任务已停止」——
+        # 第一版就误报过它，所以这里既看等级也看数字
+        check("8.6 后台任务全绿（含一次性线程不误报）", wk["level"] == "ok", wk["detail"])
+        n_workers = int("".join(ch for ch in wk["detail"] if ch.isdigit()) or 0)
+        check("8.7 长驻线程都被数到（≥4）", n_workers >= 4, wk["detail"])
     except (urllib.error.URLError, OSError) as e:
         print(f"  · 服务没起来，跳过（{type(e).__name__}）")
 

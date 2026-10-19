@@ -487,9 +487,13 @@ class MessageIndex:
                     f" COUNT(*) FROM msg WHERE {where} GROUP BY 1, 2", (src, since)):
                 out["heat"].append({"w": (int(w) + 6) % 7, "h": int(h), "n": int(n)})
             # 角色分布（含收发拆分）
+            # 排序按「收发合计」：看板画条用的是 n，按用户条数排会让顺序和数字对不上
             for cid, u, a in con.execute(
                     "SELECT character, SUM(role='user'), SUM(role='assistant')"
-                    f" FROM msg WHERE {where} GROUP BY 1 ORDER BY 2 DESC", (src, since)):
+                    # 注意不能写 `ORDER BY 2 + 3`：SQLite 会把 2+3 当成常量 5，
+                    # 排序就变成「随便」了（测试 3.3 当场抓到）。
+                    f" FROM msg WHERE {where} GROUP BY 1"
+                    " ORDER BY SUM(role='user') + SUM(role='assistant') DESC", (src, since)):
                 out["by_character"].append({"id": cid or "", "user": int(u or 0),
                                             "assistant": int(a or 0),
                                             "n": int(u or 0) + int(a or 0)})

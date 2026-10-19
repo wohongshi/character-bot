@@ -2636,31 +2636,48 @@ async function _blobDownload(url, fallbackName){
   return {ok: true, name, bytes: blob.size};
 }
 async function plugExportOne(name, btn){
+  const label = "⬇ 导出成插件包";
   if (btn){ btn.disabled = true; btn.textContent = "打包中…"; }
-  const d = await _blobDownload("/api/plugins/export?name=" + encodeURIComponent(name), name + ".zip");
-  if (btn){ btn.disabled = false; btn.textContent = "⬇ 导出成插件包"; }
-  if (!d.ok){ flash("导出失败：" + d.error); return; }
-  flash("已导出 " + d.name + "（" + Math.round(d.bytes / 1024) + " KB）");
+  try {
+    const d = await _blobDownload("/api/plugins/export?name=" + encodeURIComponent(name), name + ".zip");
+    if (!d.ok){ flash("导出失败：" + d.error); return; }
+    flash("已导出 " + d.name + "（" + Math.round(d.bytes / 1024) + " KB）");
+  } catch(e){
+    flash("导出失败：" + e);
+  } finally {
+    if (btn){ btn.disabled = false; btn.textContent = label; }
+  }
 }
 async function plugExportAll(btn){
+  const label = "⬇ 备份全部";
   if (btn){ btn.disabled = true; btn.textContent = "打包中…"; }
-  const d = await _blobDownload("/api/plugins/export", "klee-plugins.zip");
-  if (btn){ btn.disabled = false; btn.textContent = "⬇ 备份全部"; }
-  if (!d.ok){ flash("备份失败：" + d.error); return; }
-  flash("已导出插件源码备份（" + Math.round(d.bytes / 1024) + " KB）");
+  try {
+    const d = await _blobDownload("/api/plugins/export", "klee-plugins.zip");
+    if (!d.ok){ flash("备份失败：" + d.error); return; }
+    flash("已导出插件源码备份（" + Math.round(d.bytes / 1024) + " KB）");
+  } catch(e){
+    flash("备份失败：" + e);
+  } finally {
+    if (btn){ btn.disabled = false; btn.textContent = label; }
+  }
 }
 async function plugUninstall(name, btn){
   if (!confirm("卸载「" + name + "」？\n\n文件会被移到 state/trash（不是删除），但它的命令会立刻失效。")) return;
   if (btn){ btn.disabled = true; btn.textContent = "卸载中…"; }
-  const d = await post("/api/plugins/uninstall", {name});
-  if (!d || !d.ok){
-    if (btn){ btn.disabled = false; btn.textContent = "🗑 卸载"; }
-    flash("卸载失败：" + ((d && d.error) || "未知"));
-    return;
+  try {
+    const d = await post("/api/plugins/uninstall", {name});
+    if (!d || !d.ok){
+      flash("卸载失败：" + ((d && d.error) || "未知"));
+      return;
+    }
+    flash("已卸载并重载插件");
+    closePluginDrawer();
+    setTimeout(() => { if (V === "plugins") viewPlugins(); }, 900);
+  } catch(e){
+    flash("卸载失败：" + e);
+  } finally {
+    if (btn && document.body.contains(btn)){ btn.disabled = false; btn.textContent = "🗑 卸载"; }
   }
-  flash("已卸载并重载插件");
-  closePluginDrawer();
-  setTimeout(() => { if (V === "plugins") viewPlugins(); }, 900);
 }
 
 function pickPluginZip(){ const el = $("pluginZip"); if (el){ el.value = ""; el.click(); } }
@@ -5558,8 +5575,10 @@ async function viewBoard(target){
           <button data-d="90" onclick="insSet(90)">90 天</button>
         </span>
         <span class="ins-seg" id="insSrc">
-          <button data-s="messages" class="on" onclick="insSet(0,'messages')">QQ</button>
-          <button data-s="chat" onclick="insSet(0,'chat')">网页</button>
+          <button data-s="messages" class="on" onclick="insSet(0,'messages')"
+                  title="收发的全部消息（QQ + 面板）">全部</button>
+          <button data-s="chat" onclick="insSet(0,'chat')"
+                  title="面板对话记录（只算面板里聊的）">面板</button>
         </span>
       </span>
     </div>
