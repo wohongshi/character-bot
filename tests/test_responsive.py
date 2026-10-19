@@ -53,16 +53,71 @@ if len(tiers) >= 3:
     check("档位单调递增", widths == sorted(widths), str(widths))
     check("最宽档 ≥1800（2560 屏别只占一半）", max(widths) >= 1800, str(max(widths)))
 
-print("\n· 矮窗口（手机横屏）")
+print("\n· 矮窗口（分屏小窗 / 手机横屏）")
 short = re.search(r"@media\(max-height:520px\)\{(.*?)\n\}", HTML, re.S)
 check("有 max-height:520px 分支", bool(short))
 if short:
     blk = short.group(1)
-    check("横屏收窄侧栏（--side-w:64px）", "--side-w:64px" in blk, blk[:60])
-    check("横屏隐藏侧栏文字", "display:none" in blk)
     check("横屏压缩角色卡副标题/徽章",
           ".chathero .tg" in blk and ".badges" in blk)
     check("横屏缩小正文内边距", ".content{padding:10px 14px 14px}" in blk)
+
+# 侧栏「收成图标条」只对桌面矮窗口成立：手机横屏走的是浮层侧栏，
+# 收条会把 .t/.sidefoot 全藏掉，用户只剩一排没文字的图标。
+fine = re.search(r"@media \(max-height:520px\) and \(pointer:fine\)\{(.*?)\n\}", HTML, re.S)
+check("桌面矮窗口才收条（pointer:fine）", bool(fine))
+if fine:
+    fblk = fine.group(1)
+    check("收条时侧栏 64px", "--side-w:64px" in fblk, fblk[:60])
+    check("收条时隐藏侧栏文字", "display:none" in fblk)
+check("手机横屏不收条：浮层断点含 landscape+coarse",
+      "and (orientation:landscape) and (pointer:coarse)" in HTML)
+check("浮层断点带 safe-area（刘海 / home 指示条）",
+      "env(safe-area-inset-top)" in HTML and "env(safe-area-inset-bottom)" in HTML)
+check("侧栏关闭时 inert（否则隐藏的按钮还在 tab 序里）",
+      "a.inert = hidden" in HTML and 'setAttribute("aria-hidden"' in HTML)
+check("☰ 带 aria-expanded / aria-controls",
+      'aria-controls="navAside"' in HTML and 'aria-expanded' in HTML)
+check("侧栏滚动不传导（overscroll-behavior:contain）",
+      "overscroll-behavior:contain" in HTML)
+check("横屏给导航让位：隐藏装饰性 sidefoot",
+      "aside .sidefoot{display:none}" in HTML)
+
+# 层叠：遮罩必须和 aside 在同一个层叠上下文里。
+# #app 有 position:relative + z-index:1，它自己是层叠上下文；
+# 遮罩挂在 body 下时 z-index:65 > 1，会连侧栏一起盖住 ——
+# 表现为「侧栏半透明发灰，点什么都没反应（其实是点到了遮罩）」。
+from html.parser import HTMLParser
+
+
+class _Tree(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+        self.parent = {}
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if a.get("id"):
+            self.parent[a["id"]] = self.stack[-1]["id"] if self.stack else None
+        if tag not in ("meta", "link", "br", "img", "input", "hr"):
+            self.stack.append({"tag": tag, "id": a.get("id") or ""})
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i]["tag"] == tag:
+                del self.stack[i:]
+                break
+
+
+_t = _Tree()
+_t.feed(HTML)
+check("遮罩在 #app 里（否则 z-index:65 会盖住整个侧栏）", _t.parent.get("navScrim") == "app",
+      str(_t.parent.get("navScrim")))
+check("侧栏也在 #app 里（同一个层叠上下文才能比大小）", _t.parent.get("navAside") == "app",
+      str(_t.parent.get("navAside")))
+check("打开侧栏焦点落在容器（不画按钮描边）",
+      "#navAside:focus{outline:none}" in HTML and 'a.focus({preventScroll:true})' in HTML)
 
 print("\n· 触屏可点性")
 check("有 @media(pointer:coarse) 分支", "@media(pointer:coarse)" in HTML)

@@ -389,7 +389,8 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);opacity:1}
 @media(pointer:coarse){
   #view button:not(.x),#view .btn,.drawer button:not(.x),
   #view .btn.tiny,#view button.tiny{min-height:30px}
-  nav button{min-height:40px}
+  /* 侧栏条目：41px 是 padding 撑出来的，手指按着紧；44 是 iOS/Material 的推荐下限 */
+  nav button{min-height:44px}
   #view .chatbar .btn.tiny{min-height:32px;height:auto}
   #reasonSel{height:32px}
 }
@@ -403,7 +404,7 @@ html[data-touch="1"] #view .fbtn,
 html[data-touch="1"] .cmdkitem{min-height:32px}
 html[data-touch="1"] #view .btn.tiny,
 html[data-touch="1"] #view button.tiny{min-height:30px}
-html[data-touch="1"] nav button{min-height:40px}
+html[data-touch="1"] nav button{min-height:44px}
 html[data-touch="1"] #view .chatbar .btn.tiny{min-height:32px;height:auto}
 html[data-touch="1"] #reasonSel{height:32px}
 /* 文字链（看板的「去运维 →」、供应商的「删除」、面板卡的「切换」）在触屏上
@@ -418,7 +419,7 @@ html[data-touch="1"] #view .wl{margin-top:4px}
 /* 顶栏状态胶囊（可点，跳运维）和「重载插件」在触屏上也偏矮 */
 html[data-touch="1"] header#strip .pill{min-height:30px;padding-top:3px;padding-bottom:3px}
 html[data-touch="1"] header#strip .btn{min-height:30px}
-html[data-touch="1"] .cmdkbtn{min-height:36px}
+html[data-touch="1"] .cmdkbtn{min-height:44px}   /* 侧栏里的搜索按钮，和导航同高 */
 /* 人格页：官方介绍卡 */
 .posterRow{display:flex;gap:20px;align-items:center}
 .posterRow img{width:102px;border-radius:14px;border:3px solid #fff;
@@ -499,8 +500,10 @@ html.perf-low .wcard,html.perf-low .stat{box-shadow:0 2px 6px rgba(120,70,50,.08
 /* ============ 移动端 ============ */
 @media(max-width:760px){
   #app{flex-direction:column}
-  aside{width:100%;flex-direction:row;align-items:center;padding:8px 10px;
-    border-right:0;border-bottom:2px solid var(--line);gap:6px}
+  /* 侧栏本体在文件末尾「可折叠侧栏」那一块统一写；这里只留品牌/导航的排布。
+     以前这里还有 aside{flex-direction:row;border-bottom:2px solid}，被后面的
+     浮层规则覆盖了 width/position，却**漏掉了 border-bottom** —— 手机侧栏
+     底部平白多出一条 2px 实线。 */
   .brand{border-bottom:0;padding:0;margin:0 4px 0 0;gap:7px}
   .brand img{width:38px;height:38px;border-width:2px}
   .bs{display:none}
@@ -687,15 +690,9 @@ body[data-effects="true"]::after{
 @media(min-width:1440px){ :root{--app-max:1320px} }
 @media(min-width:1800px){ :root{--app-max:1480px;--side-w:248px} }
 @media(min-width:2200px){ :root{--app-max:1840px;--side-w:268px} }
-/* 矮窗口（手机横屏 / 分屏小窗）：侧栏收成图标条，把高度留给内容 */
+/* 矮窗口（分屏小窗 / 桌面横向压缩）：把高度留给内容 */
 @media(max-height:520px){
-  :root{--app-max:100vw;--side-w:64px}
-  html aside{padding:0 4px}
-  html aside .brand{padding:8px 0 6px;justify-content:center;gap:0}
-  html aside .brand .bt,html aside .brand .bs,html aside .sidefoot{display:none!important}
-  html nav{padding:4px 2px;gap:2px}
-  html nav button{justify-content:center;padding:9px 4px}
-  html nav button .t,html nav button kbd,html nav .navlabel{display:none}
+  :root{--app-max:100vw}
   html .content{padding:10px 14px 14px}
   html h2.page{font-size:20px;margin-bottom:2px}
   html h2.page::after{width:36px;height:3px;margin-top:3px}
@@ -709,6 +706,18 @@ body[data-effects="true"]::after{
   html .chips{margin-top:6px}
   html #chatWrap{min-height:0;gap:6px}
   html .card{padding:12px 14px}
+}
+/* 侧栏收成图标条：只对「桌面/分屏矮窗口」成立。
+   手机横屏（粗指针）走的是浮层侧栏 —— 收条会把 .t/.sidefoot 全藏掉，
+   用户只能看到一排没有文字的图标。 */
+@media (max-height:520px) and (pointer:fine){
+  :root{--side-w:64px}
+  html aside{padding:0 4px}
+  html aside .brand{padding:8px 0 6px;justify-content:center;gap:0}
+  html aside .brand .bt,html aside .brand .bs,html aside .sidefoot{display:none!important}
+  html nav{padding:4px 2px;gap:2px}
+  html nav button{justify-content:center;padding:9px 4px}
+  html nav button .t,html nav button kbd,html nav .navlabel{display:none}
 }
 
 /* 侧栏 */
@@ -1047,7 +1056,6 @@ details.card>summary+.themegrid,details.card>summary+#plStat{margin-top:10px}
 }
 
 @media(max-width:760px){
-  aside{width:100%;border-right:0;box-shadow:none}
   .brand .bt{font-size:16px}
   .brand .charava{width:32px;height:32px;font-size:17px}
   nav{padding-bottom:8px}
@@ -1304,14 +1312,36 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
   body.rail .brand{justify-content:center}
   body.rail .cmdkbtn{justify-content:center;padding:9px 0}
 }
-@media(max-width:760px){
+/* 判据：窄屏 **或者** 手机横屏。
+   只写 max-width:760px 会漏掉横屏手机（844×390 这类）：它按「桌面」处理，
+   点 ☰ 得到的是 74px 图标条，而且 390px 高放不下 450px 的内容。
+   桌面窄窗口不受影响 —— 那里 pointer 是 fine。 */
+@media (max-width:760px), ((max-height:520px) and (orientation:landscape) and (pointer:coarse)){
   #app{flex-direction:row}
   aside{position:fixed;left:0;top:0;bottom:0;width:min(79vw,276px);z-index:70;
-    flex-direction:column;align-items:stretch;padding:14px 10px 8px;
+    flex-direction:column;align-items:stretch;
+    /* viewport-fit=cover + PWA standalone：不给安全区内边距，顶部会被刘海盖住、
+       底部会被 home 指示条压住（实测 sidefoot 底边就在屏幕 10px 以内）。 */
+    padding:calc(14px + env(safe-area-inset-top)) 10px calc(8px + env(safe-area-inset-bottom));
     background:linear-gradient(180deg,var(--paper),color-mix(in srgb,var(--red-soft) 55%,white));
-    border-right:1px solid var(--glass-line);box-shadow:18px 0 50px rgba(80,40,30,.28);
-    transform:translateX(-104%);transition:transform .22s cubic-bezier(.4,0,.2,1);overflow:auto}
+    border-right:1px solid var(--glass-line);border-bottom:0;box-shadow:18px 0 50px rgba(80,40,30,.28);
+    transform:translateX(-104%);transition:transform .22s cubic-bezier(.4,0,.2,1);
+    overflow:auto;overscroll-behavior:contain}
   body.nav-open aside{transform:none}
+  /* 桌面收条（body.rail）之后把窗口拉窄、或者转到横屏时，rail 类可能还挂着：
+     它会把侧栏压成 74px 并把文字全藏掉。浮层模式下必须救回来。
+     （JS 的 navSync 也会清掉 rail，这里是不依赖 JS 的兜底。） */
+  body.rail aside{width:min(79vw,276px);
+    padding:calc(14px + env(safe-area-inset-top)) 10px calc(8px + env(safe-area-inset-bottom))}
+  body.rail .brand > div,body.rail nav button .t,body.rail nav button kbd,
+  body.rail .navlabel,body.rail .sidefoot{display:block}
+  body.rail nav button{justify-content:flex-start;padding:10px 12px}
+  /* 打开侧栏时焦点落在容器本身（不是第一个按钮）：容器不画描边，
+     手指点开不会看到一个「键盘焦点框」，Tab 仍然从容器内第一项继续。 */
+  #navAside:focus{outline:none}
+  /* ☰ 就在刘海那一块：给它 40px，并让整个顶栏避开安全区 */
+  header#strip{padding-top:calc(4px + env(safe-area-inset-top))}
+  .navbtn{width:40px;height:40px;font-size:19px;border-radius:12px}
   aside .brand{border-bottom:2px dashed #f3ddc2;margin-bottom:8px;padding:2px 6px 10px}
   aside .bs{display:block}
   aside .brand .bt{font-size:18px}
@@ -1331,6 +1361,16 @@ html[data-theme="dark"] h2.page{color:#f7ecdf}
   -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
           mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
 }
+/* 横屏手机只有 ~390px 高：9 个导航项 + 大图 + 说明文字塞不下，
+   侧栏一打开就得滚。把装饰性的底部栏让出来，能少滚一半。 */
+@media ((max-height:520px) and (orientation:landscape) and (pointer:coarse)){
+  aside .sidefoot{display:none}
+  aside .brand{padding:0 6px 6px;margin-bottom:4px}
+  aside .brand .bs{display:none}
+  aside .brand .charava{width:32px;height:32px;font-size:17px;border-radius:11px}
+  aside nav{gap:0}
+}
+
 /* ============ 控件规范（最后一层） ============
    历史原因，按钮/分段/下拉有 6 种内边距、4 种圆角、2 种高度 —— 面板上到处是
    「差不多但不完全一样」的按钮，看着就像没做完。这里定一套刻度，全部指过去。 */
@@ -1376,7 +1416,7 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
 </head>
 <body>
 <div id="app">
-  <aside>
+  <aside id="navAside" tabindex="-1">
     <div class="brand">
       <div class="charava" id="brandAva" style="background:linear-gradient(135deg,#e4573d,#ffd9c9)">💥</div>
       <div>
@@ -1411,9 +1451,14 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
       <p id="sideTag">切换只在面板发生，QQ 里不会换人</p>
     </div>
   </aside>
+  <!-- 遮罩必须放在 #app 里：它要和 aside 比 z-index。
+       #app 自己是一个层叠上下文（position:relative + z-index:1），
+       放到 body 下的话，65 > 1，会连侧栏一起盖住。 -->
+  <div id="navScrim" onclick="navClose()"></div>
   <main>
     <header id="strip">
-      <button id="navBtn" class="navbtn" onclick="navToggle()" title="菜单" aria-label="菜单">☰</button>
+      <button id="navBtn" class="navbtn" onclick="navToggle()" title="菜单" aria-label="菜单"
+            aria-controls="navAside" aria-expanded="false">☰</button>
       <span class="pill" id="pGw"><span class="dot"></span>面板 …</span>
       <span class="pill" id="pQq" onclick="go('ops')" title="去运维 · 扫码登录" style="cursor:pointer"><span class="dot"></span>QQ …</span>
       <span class="pill" id="pNap" onclick="go('ops')" title="去运维看 NapCat" style="cursor:pointer"><span class="dot"></span>NapCat …</span>
@@ -1423,7 +1468,6 @@ html[data-touch="1"] .btn.btn.icon{width:32px;min-width:32px}
     <div class="content" id="view"></div>
   </main>
 </div>
-<div id="navScrim" onclick="navClose()"></div>
 <div id="bar"></div>
 <div class="cmdk" id="cmdk" onclick="if(event.target===this)cmdkClose()">
   <div class="cmdkbox">
@@ -1760,17 +1804,68 @@ if (window.matchMedia){
   }catch(e){}
 }
 /* 侧栏（替代底部 dock）：手机上是浮层，桌面可收成图标条 —— 状态记在 localStorage */
-function navOpen(){ document.body.classList.add("nav-open"); }
-function navClose(){ document.body.classList.remove("nav-open"); }
+/* 判据要和 CSS 完全一致：窄屏或手机横屏。只判 max-width 的话，横屏手机会走桌面
+   分支（得到 74px 图标条），和样式表里写的浮层规则对不上。 */
+const NAV_MQ = "(max-width:760px), ((max-height:520px) and (orientation:landscape) and (pointer:coarse))";
+function isNarrowNav(){
+  try { return !!(window.matchMedia && window.matchMedia(NAV_MQ).matches); } catch(e){ return false; }
+}
+/* 侧栏关闭时它只是被 transform 移出屏幕，**仍在 tab 序里** ——
+   键盘 tab 会跳进看不见的按钮（实测 9 个）。用 inert 真正摘掉。 */
+function navSync(){
+  const a = document.getElementById("navAside"), b = document.getElementById("navBtn");
+  if (!a) return;
+  const narrow = isNarrowNav();
+  const open = document.body.classList.contains("nav-open");
+  // 窄屏/手机横屏没有「图标条」这回事：桌面收条留下的 rail 会让侧栏变 74px、文字全没
+  if (narrow && document.body.classList.contains("rail")) document.body.classList.remove("rail");
+  const hidden = narrow && !open;       // 桌面的图标条是一直可见的，不能 inert
+  try { if ("inert" in a) a.inert = hidden; } catch(e){}
+  if (hidden) a.setAttribute("aria-hidden", "true"); else a.removeAttribute("aria-hidden");
+  if (b) b.setAttribute("aria-expanded", String(narrow ? open : false));
+}
+function navOpen(){
+  document.body.classList.add("nav-open");
+  navSync();
+  /* 焦点移进侧栏（否则 Tab 还会从被遮住的页面内容开始）。
+     落在**容器**上而不是第一个按钮：按钮会把 :focus-visible 的描边画出来，
+     手指点开侧栏时看到一个蓝色焦点框很突兀；容器有 outline:none。 */
+  const a = document.getElementById("navAside");
+  if (a) { try { a.focus({preventScroll:true}); } catch(e){} }
+}
+function navClose(){
+  const was = document.body.classList.contains("nav-open");
+  document.body.classList.remove("nav-open");
+  navSync();
+  // 用键盘关的，焦点要还回去，不然等于「焦点掉到屏幕外」
+  if (was && isNarrowNav() && document.activeElement &&
+      document.getElementById("navAside") &&
+      document.getElementById("navAside").contains(document.activeElement)){
+    const b = document.getElementById("navBtn");
+    if (b) { try { b.focus({preventScroll:true}); } catch(e){} }
+  }
+}
 function navToggle(){
-  if (window.matchMedia("(max-width:760px)").matches){
-    document.body.classList.toggle("nav-open");
+  if (isNarrowNav()){
+    document.body.classList.remove("rail");   // 转屏留下的图标条状态要清掉
+    if (document.body.classList.contains("nav-open")) navClose(); else navOpen();
     return;
   }
   const on = document.body.classList.toggle("rail");
   try { localStorage.setItem("ks_rail", on ? "1" : "0"); } catch(e){}
+  navSync();
 }
 try { if (localStorage.getItem("ks_rail") === "1") document.body.classList.add("rail"); } catch(e){}
+/* 初始状态同步一次（手机上侧栏是关着的 → 立刻 inert，别让它进 tab 序）；
+   转屏/改窗口大小时也要重算：横屏手机会从「桌面图标条」切成「浮层」。 */
+navSync();
+try {
+  const _navMq = window.matchMedia(NAV_MQ);
+  const _onNavMq = () => { if (!isNarrowNav()) document.body.classList.remove("nav-open"); navSync(); };
+  if (_navMq.addEventListener) _navMq.addEventListener("change", _onNavMq);
+  else if (_navMq.addListener) _navMq.addListener(_onNavMq);
+  window.addEventListener("orientationchange", () => setTimeout(_onNavMq, 120));
+} catch(e){}
 /* ================= 命令面板（Ctrl+K） ================= */
 const PAGES = [
   ["chat", "💬", "对话", "和当前角色聊天"],
