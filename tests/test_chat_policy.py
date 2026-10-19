@@ -108,12 +108,20 @@ def main():
 
     src = (ROOT / "bot" / "runtime.py").read_text(encoding="utf-8")
     check("7.1 有 policy_for", "def policy_for" in src)
-    check("7.2 disabled 走会话策略", 'pol["mode"] == "disabled"' in src)
+    check("7.2 disabled 走会话策略", 'pol["blocks_all"]' in src and "blocks_all" in src)
     check("7.3 @ 门槛走会话策略", 'pol["mode"] == "mention"' in src)
     check("7.4 有静默判断", 'pol["quiet"]' in src and "quiet_mention" in src)
     check("7.5 读坏了退回全局", "会话策略读取失败" in src)
     # 全局 group_policy=disabled 只该关群聊：私聊要「显式设过」才认
-    check("7.6 私聊只在显式配置时才认 disabled", 'pol["configured"] != "inherit"' in src)
+    check("7.6 私聊只在显式配置时才认 disabled", "blocks_all" in src)
+    from bot import chatpolicy as _cp
+    for pol, is_group, want in (
+            ({"mode": "disabled", "configured": "inherit"}, True, True),
+            ({"mode": "disabled", "configured": "inherit"}, False, False),   # 全局 disabled 不哑私聊
+            ({"mode": "disabled", "configured": "disabled"}, False, True),   # 私聊显式设过 → 哑
+            ({"mode": "open", "configured": "inherit"}, True, False)):
+        check(f"7.6b blocks_all {pol['mode']}/{pol['configured']}/{is_group}",
+              _cp.blocks_all(pol, is_group=is_group) is want, "")
     # 静默时不该掷彩蛋骰子（会白烧冷却）
     check("7.7 静默时不掷彩蛋", "quiet_now" in src and "_maybe_chime" in src)
 

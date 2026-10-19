@@ -40,8 +40,6 @@ import os
 import shutil
 import sys
 import threading
-
-from . import cmdpolicy as _cmdpolicy      # 权限/作用域覆盖（模块级：热路径 + 失败兜底共用）
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +47,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .ext import ExtPlugin, load_spec
 
+from . import cmdpolicy as _cmdpolicy      # 权限/作用域覆盖（热路径与失败兜底共用）
 from . import toolbox
 logger = logging.getLogger(__name__)
 
@@ -85,6 +84,23 @@ def _plugin_enabled(name: str, enabled_cfg: Any, default_on: bool = True) -> boo
         return name in {str(x) for x in enabled_cfg}
     except TypeError:
         return default_on
+
+
+def strip_prefix(text: str, chars) -> str:
+    """去掉开头的命令前缀（`./／` 或面板配置的那些）。
+
+    规则/自然语言里存的是「`.骰子 2d6`」这种带前缀的整串，运行时和模拟器
+    都必须**按同一套字符**剥 —— 一边无条件 `lstrip("./／")`、一边只看配置，
+    会造出「试跑说没这个命令、实际能跑」的假阴性。
+    """
+    s = str(text or "").strip()
+    # **并上默认三件套**：规则里存的可能是默认前缀写的示例（`.骰子 2d6`），
+    # 而面板把前缀改成了 `!` —— 只按配置剥的话这条规则就永远跑不了。
+    # 反过来，多剥几个前缀字符不会误伤（命令名不可能以这些符号开头）。
+    cs = set(str(c) for c in (chars or "") if str(c)) | {".", "/", "／"}
+    while s and s[0] in cs:
+        s = s[1:].strip()
+    return s
 
 
 def _prefix_chars(prefix: str) -> set:

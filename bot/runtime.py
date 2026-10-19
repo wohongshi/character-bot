@@ -25,7 +25,7 @@ from . import adapters as adapters_mod
 from .adapters.base import AdapterError, BaseAdapter
 from .features_ext import RuntimeFeatures
 from .characters import CharacterStore
-from .framework import FeatureContext, FeatureManager, _Command
+from .framework import strip_prefix, FeatureContext, FeatureManager, _Command
 from . import vision as vision_mod
 from . import agent as agent_mod
 from .skills import SkillHub
@@ -648,8 +648,12 @@ class BotRuntime(RuntimeFeatures):
                 data = chatpolicy.load(self.state_dir)
                 with c["lock"]:
                     c["data"], c["key"], c["ts"] = data, full_key, time.time()
-            return chatpolicy.resolve(self.state_dir, chat_id, self.group_policy,
-                                      now=now, data=data)
+            pol = chatpolicy.resolve(self.state_dir, chat_id, self.group_policy,
+                                     now=now, data=data)
+            # 调用点只有一处（_handle），那里知道 is_group；这里先按「群」算一遍，
+            # 私聊的情况由 blocks_all 自己看 configured（见 chatpolicy.blocks_all）。
+            pol["blocks_all"] = chatpolicy.blocks_all(pol, is_group=True)
+            return pol
         except Exception as e:                                     # noqa: BLE001
             logger.info("会话策略读取失败（按全局 %s）：%s", self.group_policy, e)
             return {"mode": self.group_policy, "global_mode": self.group_policy,
@@ -757,10 +761,8 @@ class BotRuntime(RuntimeFeatures):
         # 以前只看全局 group_policy；现在每个群/私聊可以单独设（state/chat_policy.json），
         # 没设的仍然跟全局，行为不变。
         pol = self.policy_for(chat_id)
-        # 群里 disabled 一直就是「连命令也不接」。私聊要**显式设过**才认：
-        # 全局 `group_policy` 的名字和文档都是「群聊策略」，把它设成 disabled
-        # 是想关掉群聊、保留私聊 —— 不能连私聊一起哑掉。
-        if pol["mode"] == "disabled" and (is_group or pol["configured"] != "inherit"):
+        # 判定在 chatpolicy.blocks_all 里（模拟器共用同一份规则）
+        if pol["blocks_all"]:
             return
 
         ctx = FeatureContext(
@@ -796,7 +798,9 @@ class BotRuntime(RuntimeFeatures):
             if hit["action"] == "ignore":
                 return
             if hit["action"] == "command":
-                cname = str(hit["command"]).lstrip("./／")
+                # 按配置的前缀字符剥（和模拟器同一套）；无条件 lstrip 会在
+                # 前缀改成 `!` 时把 `.` 也剥掉，两边判定就分叉了。
+                cname = strip_prefix(hit["command"], getattr(self.mgr, "prefix_chars", None))
                 ctx.text = self.feature_prefix + cname
                 if await self.mgr.handle_command(ctx):
                     self.stats["commands"] += 1
@@ -839,7 +843,7 @@ class BotRuntime(RuntimeFeatures):
             # NLU 拿用户原话匹配（带 [引用: …] 前缀会匹配不上）
             hit = self.mgr.nlu_match(dispatch_text.strip())
             if hit:
-                ctx.text = self.feature_prefix + hit.lstrip("./／")
+                ctx.text = self.feature_prefix + strip_prefix(hit, getattr(self.mgr, "prefix_chars", None))
                 if await self.mgr.handle_command(ctx):
                     self.stats["commands"] += 1
                     return

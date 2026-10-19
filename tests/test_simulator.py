@@ -163,6 +163,22 @@ def main():
     else:
         print("  · 这个环境没有匹配的 NLU 句子，跳过 5b.3")
 
+    section("5c. 前缀可改：规则里的命令按配置剥")
+    from bot import framework as FW
+    check("5c.1 strip_prefix 认默认三种", FW.strip_prefix("／b64e x", {".", "/", "／"}) == "b64e x")
+    check("5c.2 strip_prefix 认自定义前缀", FW.strip_prefix("!b64e x", {"!"}) == "b64e x")
+    check("5c.3 不认的字符不剥", FW.strip_prefix("!b64e", {"."}) == "!b64e")
+    # 面板把前缀改成 `!` 时，规则里存 `.b64e hi` 也要能跑（运行时无条件 lstrip 的旧行为
+    # 和模拟器只看配置会分叉，所以两边现在共用 strip_prefix）
+    old_chars = mgr.prefix_chars
+    try:
+        mgr.prefix_chars = {"!"}
+        d = sim("查", is_group=True, mentioned=True)
+        check("5c.4 前缀换成 ! 时规则仍能转命令",
+              d["action"] in ("command", "ignore"), str(d)[:100])
+    finally:
+        mgr.prefix_chars = old_chars
+
     section("6. 只读：不发消息、不执行、不动冷却")
     sent = []
 

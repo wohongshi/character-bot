@@ -57,7 +57,9 @@ _page_ids = re.findall(r'\["([a-z]+)", "[^"]+", "[^"]+", "[^"]*"\]', HTML)
 need = [f"nav.{v}" for v in dict.fromkeys(_page_ids)]
 check("页面清单非空", len(need) >= 8, str(need))
 need += [f"filter.{v}" for v in ("all", "limited", "general", "system", "on", "off", "err")]
-need += [f"page.{v}" for v in ("chat", "chars", "board", "persona", "plugins", "reminders", "ops", "custom")]
+# 页面标题也从 PAGES 里取：新增一页忘了补 page.* 时，英文界面下
+# 导航是英文、标题还是中文（applyChrome 只在 key 存在时才覆盖）
+need += [f"page.{v}" for v in dict.fromkeys(_page_ids)]
 lack = [k for k in need if k not in zh or k not in en]
 check("1.8 导航 / 筛选 / 页面标题都有中英", not lack, str(lack[:6]))
 

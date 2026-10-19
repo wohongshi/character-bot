@@ -68,7 +68,7 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
     表示「真实场景里这条消息最后会走到哪」。
     """
     from . import chatpolicy, rules as rules_mod
-    from .framework import FeatureContext
+    from .framework import FeatureContext, strip_prefix
 
     raw = str(text or "")[:MAX_TEXT]
     steps: list[dict] = []
@@ -96,8 +96,9 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
         steps.append(_step("policy", "会话策略", "info", f"{label}（{pol['why']}）"))
     else:
         steps.append(_step("policy", "会话策略", "info", f"{label}（跟全局）"))
-    if pol["mode"] == "disabled":
-        # runtime 现在对私聊也生效（面板允许单独给私聊设「完全不理」）
+    if chatpolicy.blocks_all(pol, is_group=bool(is_group)):
+        # 判定在 chatpolicy.blocks_all（runtime 共用）：群里 disabled 一律不接；
+        # 私聊只在**显式设过** disabled 时才不接（全局「群聊策略」不该连私聊一起哑）。
         return done("ignore", "这个会话被设成「完全不理」，连命令也不接",
                     {"policy": pol})
     if pol["quiet"]:
@@ -145,9 +146,7 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
                                f"命中「{hit.get('name') or hit.get('id')}」→ 不回"))
             return done("ignore", "命中关键词规则，选择不回", {"rule": hit.get("id"), "policy": pol})
         if act == "command":
-            full = str(hit.get("command") or "").strip()
-            if full[:1] and full[0] in _prefix_chars(mgr):
-                full = full[1:].strip()
+            full = strip_prefix(hit.get("command"), _prefix_chars(mgr))
             # 运行时是把整串（含参数）塞回 handle_command 让它自己解析的。
             # 这里也走同一个 explain_command —— 作用域/权限/冷却同样生效，
             # 否则会报「会执行 .仅主人命令」，而真实场景被拦下。

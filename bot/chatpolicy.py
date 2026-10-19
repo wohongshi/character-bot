@@ -168,6 +168,20 @@ def in_quiet(quiet, now: float | None = None) -> bool:
     return cur >= a or cur < b        # 跨零点：23:30 → 07:00
 
 
+def blocks_all(pol: dict, *, is_group: bool) -> bool:
+    """这条消息是否**完全不处理**（连命令都不接）。
+
+    规则只有一条，容器（runtime）和面板（simulator）共用：
+    - 群里：`disabled` 就是完全不理；
+    - 私聊：只有**显式**给这个会话设过 `disabled` 才认 ——
+      全局 `group_policy` 的名字和文档都是「群聊策略」，把它设成 disabled
+      是想关掉群聊、保留私聊，不能连私聊一起哑掉。
+    """
+    if pol.get("mode") != "disabled":
+        return False
+    return bool(is_group) or pol.get("configured", "inherit") != "inherit"
+
+
 def resolve(state_dir: Path | str, chat_id: str, base_mode: str = "mention",
             now: float | None = None, data: dict | None = None) -> dict:
     """这个会话现在该用什么策略。

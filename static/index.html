@@ -1628,7 +1628,7 @@ const I18N = {
     "brand.sub": "角色聊天室",
     "nav.chat": "对话", "nav.chars": "角色", "nav.board": "看板",
     "nav.persona": "人格 · 知识库", "nav.plugins": "插件", "nav.reminders": "提醒",
-    "nav.control": "管控",
+    "nav.control": "管控", "page.control": "🎚 管控",
     "nav.ops": "运维", "nav.custom": "自定义", "nav.search": "搜索",
     "page.chat": "💬 对话", "page.chars": "🎭 角色", "page.board": "📊 看板",
     "page.persona": "🌸 人格 · 知识库", "page.plugins": "🧩 插件",
@@ -1654,7 +1654,7 @@ const I18N = {
     "brand.sub": "Character chat",
     "nav.chat": "Chat", "nav.chars": "Characters", "nav.board": "Board",
     "nav.persona": "Persona · Knowledge", "nav.plugins": "Plugins", "nav.reminders": "Reminders",
-    "nav.control": "Control",
+    "nav.control": "Control", "page.control": "🎚 Control",
     "nav.ops": "Operations", "nav.custom": "Appearance", "nav.search": "Search",
     "page.chat": "💬 Chat", "page.chars": "🎭 Characters", "page.board": "📊 Board",
     "page.persona": "🌸 Persona · Knowledge", "page.plugins": "🧩 Plugins",
@@ -5955,14 +5955,20 @@ async function selfFix(id, btn){
 /* ================= 管控：命令权限 / 会话策略 / 模拟器 ================= */
 let ctlData = null, ctlFilter = "all", ctlQuery = "";
 function ctlNormChat(raw, isGroup){
-  // 已经带前缀的原样用；裸数字按「场景」决定是群号还是 QQ 号 ——
-  // QQ 号也是 5~11 位，一律当群号会让「私聊 + 填 QQ」变成 group:<qq>，
-  // 同一次模拟里出现两套会话身份（策略按 group:<qq> 查、判定却按私聊）。
+  // 裸数字按「场景」决定是群号还是 QQ 号 —— QQ 号也是 5~11 位，
+  // 一律当群号会让「私聊 + 填 QQ」变成 group:<qq>（策略按 A 查、判定按 B 走）。
+  // 已经带前缀的原样用；但调用方要用 ctlChatKind 把场景一起校准。
   const s = String(raw || "").trim();
   if (!s) return "";
   if (/^(group|private):/.test(s)) return s;
-  if (/^\d{4,}$/.test(s)) return (isGroup ? "group:" : "private:") + s;
   return (isGroup ? "group:" : "private:") + s;
+}
+function ctlChatKind(raw, isGroup){
+  // 显式前缀优先：粘了 `group:123` 却还选着「私聊」会让 chat_id 与 is_group 打架
+  const s = String(raw || "").trim();
+  if (s.startsWith("group:")) return true;
+  if (s.startsWith("private:")) return false;
+  return !!isGroup;
 }
 function chatLabel(id){
   const s = String(id || "");
@@ -6094,6 +6100,10 @@ async function ctlResetCmd(name){
   ctlData = d.after; ctlRenderCmds(); flash("已回到插件默认：" + name);
 }
 let ctlExtra = [];          // 刚「加」进来、还没设任何项的会话（只在页面上挂着）
+function ctlChatMetaText(){
+  const n = Object.keys((ctlData && ctlData.chats) || {}).length;
+  return n ? `· 设了 ${n} 个` : "· 都跟随全局";
+}
 function ctlRenderChats(){
   const box = $("ctlChats"), meta = $("ctlChatMeta");
   if (!box || !ctlData) return;
@@ -6104,7 +6114,7 @@ function ctlRenderChats(){
   // 设过的排前面，然后是新加的，最后补上「最近聊过的」（方便直接挑）
   ctlExtra.forEach(id => { if (!ids.includes(id)) ids.push(id); });
   known.forEach(k => { if (!ids.includes(k.id)) ids.push(k.id); });
-  if (meta) meta.textContent = ids.length ? `· 设了 ${Object.keys(saved).length} 个` : "· 都跟随全局";
+  if (meta) meta.textContent = ctlChatMetaText();
   const opt = (cur) => Object.keys(modes).map(k =>
     `<option value="${esc(k)}"${k === (cur || "inherit") ? " selected" : ""}>${esc(modes[k])}</option>`).join("");
   if (!ids.length){
@@ -6127,8 +6137,8 @@ function ctlRenderChats(){
       <input data-k="note" value="${esc(r.note || "")}" placeholder="备注" style="width:90px"
              onchange="ctlSaveChat(${jsq(id)})">
       ${Object.keys(saved).includes(id)
-        ? `<button class="btn tiny" onclick="ctlClearChat(${jsq(id)})">删</button>`
-        : `<button class="btn tiny" onclick="ctlForget(${jsq(id)})">移除</button>`}
+        ? `<button class="btn tiny" data-act="del" onclick="ctlClearChat(${jsq(id)})">删</button>`
+        : `<button class="btn tiny" data-act="drop" onclick="ctlForget(${jsq(id)})">移除</button>`}
     </div>`;
   }).join("");
 }
@@ -6148,17 +6158,22 @@ async function ctlSaveChat(id){
   // 请求回来后把正在输入的框整个换掉会丢焦点、吞字符。只刷新 meta 与这一行的
   // 删除按钮。
   const meta = $("ctlChatMeta");
-  if (meta) meta.textContent = `· 设了 ${Object.keys(ctlData.chats || {}).length} 个`;
+  if (meta) meta.textContent = ctlChatMetaText();
+  const keep = Object.keys(ctlData.chats || {}).includes(id);
   const rowEl = document.querySelector(`[data-chat="${CSS.escape(id)}"]`);
-  if (rowEl && Object.keys(ctlData.chats || {}).includes(id)
-      && ![...rowEl.querySelectorAll("button")].some(b => b.textContent === "删")){
+  if (rowEl){
+    const old = rowEl.querySelector("button[data-act]");
     const btn = document.createElement("button");
     btn.className = "btn tiny";
-    btn.textContent = "删";
-    btn.onclick = () => ctlClearChat(id);
-    rowEl.appendChild(btn);
+    btn.dataset.act = keep ? "del" : "drop";
+    btn.textContent = keep ? "删" : "移除";
+    btn.onclick = keep ? () => ctlClearChat(id) : () => ctlForget(id);
+    // 替换而不是追加：刚「加」进来的行第一次保存后会变成「移除 + 删」两个按钮
+    if (old) old.replaceWith(btn); else rowEl.appendChild(btn);
   }
-  flash("已保存：" + chatLabel(id));
+  // 全默认的条目会被服务端规范化掉 —— 这时的「已保存」会误导人
+  flash(keep ? ("已保存：" + chatLabel(id))
+             : ("这一行没设任何项，已恢复成跟随全局：" + chatLabel(id)));
 }
 async function ctlClearChat(id){
   const d = await post("/api/control/chat", {chat_id: id, mode: "inherit", quiet: [],
@@ -6192,7 +6207,9 @@ async function ctlSim(){
   if (!text.trim()){ flash("先打一句要试的话"); return; }
   const where = ($("simWhere") || {}).value || "dm";
   const role = ($("simRole") || {}).value || "member";
-  const isGroup = where === "group";
+  // 显式写了 `group:` / `private:` 时以它为准，并同步下拉框，避免两套身份
+  const isGroup = ctlChatKind(($("simChat") || {}).value || "", where === "group");
+  if (isGroup !== (where === "group") && $("simWhere")) $("simWhere").value = isGroup ? "group" : "dm";
   // 「主人自己」要真的用配置里的主人 QQ —— 拿别的号去试，权限判定会完全不一样
   const owner = String((ctlData && ctlData.owner_id) || "");
   const body = {text, is_group: isGroup, mentioned: !!($("simAt") || {}).checked,
