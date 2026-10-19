@@ -499,6 +499,7 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
     # 没有角色就写不了「长期记忆」（它按角色分文件）——这本身也算没写进去，
     # 不能因为「没进 if」就默认成功。
     mem_ok = bool(ctx.character)
+    mem_reason = "" if mem_ok else "no_character"
     if not mem_ok:
         log.warning("长期记忆没写：ToolContext 没有 character")
     try:
@@ -511,9 +512,11 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
             # add() 写失败是**返回 None**，不抛异常 —— 只 except 是接不住的
             mem_ok = ent is not None
             if not mem_ok:
+                mem_reason = "write_failed"
                 log.warning("长期记忆写入失败（%s）：磁盘写不进去", ctx.character)
     except Exception as e:                                   # noqa: BLE001
         mem_ok = False
+        mem_reason = "write_failed"
         log.warning("长期记忆写入失败：%s", e)
     with _notes_lock(path):
         try:
@@ -533,9 +536,12 @@ def tool_remember(args: dict, ctx: ToolContext) -> str:
         except OSError as e:
             return f"记不下来：{e}"
     if not mem_ok:
-        # 别让模型对用户说「记住了」：面板和下一条消息里都不会有这条
-        return ("笔记记下了，但长期记忆没写进磁盘（可能只读或满了）——"
-                "这条下一条消息不会自动带出来，跟主人说一声。")
+        # 别让模型对用户说「记住了」：面板和下一条消息里都不会有这条。
+        # 两种原因分开说 —— 没有角色的时候压根没试过写盘，别让人去查磁盘。
+        why = ("这次没有关联角色，长期记忆存不了（笔记本身记下了）"
+               if mem_reason == "no_character"
+               else "长期记忆没写进磁盘（可能只读或满了，笔记本身记下了）")
+        return f"{why}——这条下一条消息不会自动带出来，跟主人说一声。"
     return f"记住了（{ctx.scope}）：{text[:80]}"
 
 

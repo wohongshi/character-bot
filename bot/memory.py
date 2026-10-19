@@ -154,13 +154,14 @@ def _merge_scope(old: str, new: str) -> str:
             parts.append(x)
     # 按**整条**作用域丢，不要按字符截：截出个 `web:studio-ma` 半截，
     # 那个会话就永远匹配不上了 —— 又变回「记下了但注入不到」。
-    out, used = [], 0
-    for x in parts:
-        if used + len(x) + (1 if out else 0) > 120:
+    # 而且要从**最新**的一头开始留：丢老的不影响新加的这条生效。
+    keep, used = [], 0
+    for x in reversed(parts):
+        if used + len(x) + (1 if keep else 0) > 120:
             break
-        out.append(x)
-        used += len(x) + (1 if len(out) > 1 else 0)
-    return ",".join(out)
+        keep.append(x)
+        used += len(x) + (1 if len(keep) > 1 else 0)
+    return ",".join(reversed(keep))
 
 
 def _scope_hit(entry: dict, want: str) -> bool:

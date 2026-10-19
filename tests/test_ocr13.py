@@ -129,7 +129,7 @@ def main() -> int:
     sc = str(M.all_items(td, "many")[0].get("scope") or "")
     check("2.12 作用域按整条丢，不留半截", all(len(x) > 0 and not x.endswith("会话-")
                                               for x in sc.split(",")), sc)
-    check("2.13 第一条作用域完整保留", sc.startswith("web:会话-0"), sc)
+    check("2.13 最新加进去的作用域一定保得住", "web:会话-5" in sc.split(","), sc)
     # 写失败不能把「没落盘的 ts」留在缓存里
     blocked2 = M.path_for(td, "ghost")
     blocked2.mkdir(parents=True, exist_ok=True)
@@ -147,6 +147,8 @@ def main() -> int:
     ctx2 = AG.ToolContext(state_dir=td2, character="", scope="group:1")
     msg2 = AG.tool_remember({"text": "没有角色的情况"}, ctx2)
     check("2b.2 没有角色（记忆无处可写）也不谎报", "记住了" not in msg2, msg2[:120])
+    check("2b.3 原因说对（不是「磁盘满了」）",
+          "没有关联角色" in msg2 and "磁盘" not in msg2, msg2[:120])
     import shutil
     shutil.rmtree(td2, ignore_errors=True)
 
@@ -170,6 +172,15 @@ def main() -> int:
         check("3.3d client_secret 这类参数名也认",
               "q" not in str(S._scrub_secrets({"u": "https://a.com/x?client_secret=q&b=2"})),
               "")
+        check("3.3f userinfo 里的密码也要抹（哪怕没有 query）",
+              "pw" not in str(S._scrub_secrets({"u": "https://user:pw@host/x"})),
+              str(S._scrub_secrets({"u": "https://user:pw@host/x"})))
+        # ntfy 的路径本身就是 topic（https://ntfy.sh/<topic>），没法从形状上认出来；
+        # 但配置里这类地址都在 webhook_url 下，那个键是整值抹掉的。
+        # 这里只保证 query 形式的 topic 不残留。
+        masked = str(S._scrub_secrets({"u": "https://ntfy.sh/x?topic=mytopic"}))
+        check("3.3g ntfy 的 ?topic= 也算凭据", "topic=***" in masked and "mytopic" not in masked,
+              masked)
         check("3.3e 没有 scheme 的 URL 也洗",
               "zzz" not in str(S._scrub_secrets({"u": "127.0.0.1:9000/hook?token=zzz"})), "")
         check("3.3b webhook_url 里的 access_token 也被抹掉",

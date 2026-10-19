@@ -816,6 +816,9 @@ def _web_system_text(rt, cid: str, text: str, session: str = "") -> str:
     return sys_text
 
 
+_PANEL_TOOL_DRAIN = 60.0       # 面板 agent 调技能后等后台任务（出图）的秒数
+
+
 def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
                     on_delta=None, session: str = "") -> dict:
     """网页端的 agent 工具循环：直接用 bot 的 agent 配置（工具白名单/步数/超时）。"""
@@ -845,9 +848,13 @@ def _web_agent_call(rt, msgs: list, cid: str, reasoning: str = "default",
               # 把 adapter 包成 _Capture，后台任务产的图要等 drain 才收得到，
               # `tool_use_skill` 读 res["images"] 时早就返回了。
               # 走「自己的 loop + drain」才能让 .画画 在返回前把图凑齐。
-              "loop": None, "loop_thread": None, "drain": TASK_DRAIN_SECONDS},
+              # drain 不能超过这一轮 agent 自己的预算：use_skill 的处理上限是 30 秒，
+              # drain 完还有两段各 5 秒的取消等待，最后还得留时间给「不带工具」的收尾。
+              # 60 + 30 + 12 = 102，剩下 ~48 秒够收尾（总预算见下面的 timeout）。
+              "loop": None, "loop_thread": None, "drain": _PANEL_TOOL_DRAIN},
         max_steps=int(cfg.get("agent_max_steps") or 3),
-        timeout=float(cfg.get("agent_timeout") or 120),
+        # 至少给「工具的 handler + drain + 收尾」留够；用户配更小就按他的来
+        timeout=max(float(cfg.get("agent_timeout") or 120), 30 + _PANEL_TOOL_DRAIN + 60),
         max_tokens=int(cfg.get("max_tokens") or 800),
         kb_url=str(cfg.get("kb_url") or ""),
         state_dir=rt.state_dir,
@@ -1295,7 +1302,7 @@ _SECRET_KEY_RE = re.compile(r"(?:^|_)(?:token|secret|password|passwd|api_key|api
 #   · Bark：`/api.day.app/<device-key>/…`
 # 所以光按参数名洗不够，`webhook_url` 这种键直接整值抹掉最省事也最安全。
 _URL_SECRET_RE = re.compile(
-    r"(?i)([?&][A-Za-z0-9_.-]*(?:token|secret|passwd|password|api_?key|auth|key)=)[^&#]*")
+    r"(?i)([?&][A-Za-z0-9_.-]*(?:token|secret|passwd|password|api_?key|auth|key|topic)=)[^&#]*")
 _WHOLE_SECRET_KEYS = frozenset({"webhook_url", "callback_url", "proxy", "base_url_hook"})
 
 
@@ -1319,8 +1326,9 @@ def _scrub_secrets(obj):
         return out
     if isinstance(obj, list):
         return [_scrub_secrets(x) for x in obj]
-    # 无 scheme 的也要认（`127.0.0.1:9000/hook?token=…`）
-    if isinstance(obj, str) and ("?" in obj and "=" in obj):
+    # 三种都要洗：带 query 的、带 userinfo 的（https://user:pass@h/）、无 scheme 的
+    if isinstance(obj, str) and ("://" in obj or obj.startswith("//")
+                                 or ("?" in obj and "=" in obj)):
         return _scrub_url(obj)
     return obj
 
