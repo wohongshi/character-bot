@@ -318,7 +318,8 @@ class ModelStore:
             try:
                 # 迁移会改用户的文件：留一份原样备份，手滑了还能捞回来
                 bak = self.path.with_suffix(self.path.suffix + ".bak")
-                if self.path.exists() and not bak.exists():
+                if self.path.exists():
+                    # 每次迁移都覆盖：留着上一版备份等于这次没备份
                     bak.write_bytes(self.path.read_bytes())
                 self.save()
             except OSError as e:
@@ -361,13 +362,22 @@ class ModelStore:
         这两条伪值的特征都一样：**等于该 provider 模型清单的第一项**。
         真·用户选择（比如专挑 `glm-5.3`）不会被误删。
         """
-        if d.get("_schema") == SCHEMA:
+        try:
+            ver = int(d.get("_schema") or 0)
+        except (TypeError, ValueError):
+            ver = 0
+        # 用 >= 而不是 ==：未来版本写下的更高 _schema 不能被当成老配置重跑一遍
+        # 破坏性迁移（还会把版本号降回去）；非整数（手改的 "2"）按 0 处理。
+        if ver >= SCHEMA:
             return d
         first: dict = {}
+        counts: dict = {}
         for p in d.get("providers") or []:
             ms = p.get("models") if isinstance(p.get("models"), list) else []
             if ms:
-                first[str(p.get("id"))] = str(ms[0])
+                pid = str(p.get("id"))
+                first[pid] = str(ms[0])
+                counts[pid] = len(ms)
         act = d.get("active") if isinstance(d.get("active"), dict) else {}
         act_prov = str(act.get("provider") or "")
         act_model = str(act.get("model") or "")
@@ -388,14 +398,18 @@ class ModelStore:
             #      `agent()` 的解析结果。看图卡片不会写这个形状，而「聊天和看图
             #      用同一个多模态模型」是很常见的正当配置，清掉会让图片理解
             #      悄悄失效（`vision()` 空 = 未配置），所以 b 只对 agent 生效。
-            bad = model == first.get(provider) or (
+            # 「等于清单第一项」只有在**清单不止一项**时才是伪值特征：
+            # 单模型供应商（本机/自建端点很常见）任何合法选择都等于第一项，
+            # 照删会把真正配好的看图模型清掉（进而让图片理解静默失效）。
+            bad = (counts.get(provider, 0) > 1 and model == first.get(provider)) or (
                 sec == "agent" and provider == act_prov and model == act_model)
             if bad:
                 v["model"] = ""
                 cleared.append(f"{sec}={model}")
         if cleared:
             log.warning("模型配置迁移（schema<2）：清掉面板回填写死的 %s —— "
-                        "这两项现在「空 = 跟聊天同一个模型」", "、".join(cleared))
+                        "agent 空 = 跟聊天同一个模型；vision 空 = 关闭图片理解"
+                        "（要用图需要重新配一个能看图的模型）", "、".join(cleared))
         d["_schema"] = SCHEMA
         self._migrated = True
         return d

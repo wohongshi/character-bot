@@ -4395,7 +4395,7 @@ async function mountAgentCard(){
         <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
         ${optList(agProv.models, agModel.model).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
-      <span class="kv" style="margin:0">实际在用：${esc(agEff.model || "—")}</span>
+      <span class="kv" style="margin:0" id="agEff">实际在用：${esc(agEff.model || "—")}</span>
     </div>
     <div class="kv" style="margin-top:10px">可用工具 ${(agentCfg.available_tools||[]).length} 个
       <span style="font-weight:400">· 开关在插件页（工具就是插件）</span></div>
@@ -4801,7 +4801,10 @@ function botFillVisionModels(){
   // 「跟聊天同一个」时服务端仍可能钉着一个模型（provider 空 + model 非空）。
   // 新主 provider 的清单里没它也不能当成「关着」—— providers[].models 只是
   // 面板勾选清单，不是白名单（`vision()` 还会报 not_in_list）。
-  if (!cur && !$("mvProv").value && (window.__mvSaved || "")) cur = window.__mvSaved;
+  // 只在「用户根本没动过下拉」时才兜底：他明确选了「不启用」就必须尊重
+  // （否则切个供应商又自动选回那个模型，一点保存就把它重新启用）
+  if (!cur && !$("mvProv").value && window.__mvSel === null && (window.__mvSaved || ""))
+    cur = window.__mvSaved;
   $("mvModel").innerHTML = `<option value="" ${cur?"":"selected"}>（不启用图片理解）</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
@@ -4853,6 +4856,8 @@ async function botSaveAgent(){
   if (d.ok){          // 同上：保存成功后基线必须是服务端现在这个值
     window.__agSaved = ((d.model || {}).model) || "";
     window.__agSel = null;
+    const effEl = $("agEff");     // 这行存在的意义就是「现在到底用哪个」，保存后要跟着变
+    if (effEl) effEl.textContent = "实际在用：" + (((d.model_eff || {}).model) || "—");
   }
   const eff = (d.model_eff || {}).model || "";
   $("agOut").textContent = d.ok

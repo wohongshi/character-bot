@@ -120,11 +120,24 @@ def main():
           st6b.vision()["configured"] and st6b.vision()["model"] == "m2",
           str(st6b.vision()))
 
+    # 单模型供应商：任何选择都等于「第一项」，不能靠这个判伪值
+    p7 = mkfile({"active": {"provider": "p1", "model": "only"},
+                 "providers": [{"id": "p1", "name": "P1", "api": "http://127.0.0.1:1/v1",
+                                "key_env": "K", "models": ["only"]}],
+                 "vision": {"provider": "p1", "model": "only"}})
+    check("4b.5 单模型供应商的看图配置不能清（分不清是不是手选的）",
+          ModelStore(p7).vision()["configured"] is True, str(ModelStore(p7).vision()))
+
     section("5. 已经迁移过的文件不再动")
     p3 = mkfile({**base(agent={"provider": "p1", "model": "m1"}), "_schema": SCHEMA})
     st4 = ModelStore(p3)
     check("5.1 schema 已是 2 → 不动（用户后来真选了第一项也不删）",
           st4.agent_raw()["model"] == "m1", str(st4.agent_raw()))
+    p8 = mkfile({**base(agent={"provider": "p1", "model": "m1"}), "_schema": 99})
+    check("5.2 未来的更高版本不能被当成老配置重跑迁移",
+          ModelStore(p8).agent_raw()["model"] == "m1"
+          and json.loads(p8.read_text())["_schema"] == 99,
+          str(json.loads(p8.read_text()).get("_schema")))
 
     section("6. 改供应商别把正在用的模型删出清单")
     st5 = ModelStore(mkfile(base(agent={"provider": "p1", "model": "m2"})))

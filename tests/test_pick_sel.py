@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,10 @@ CASES = [
 
 
 def main():
+    # 和仓库里其它吃 node 的用例保持一致：没装就跳过，别让整轮 rc=1
+    if not shutil.which("node"):
+        print("SKIP（没有 node，跳过 pickSel 检查）")
+        return 0
     if not HTML.exists():
         print("找不到 static/index.html")
         return 1
