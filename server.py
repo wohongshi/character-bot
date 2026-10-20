@@ -2872,7 +2872,9 @@ def _messages_rows() -> list:
     if start > 0:                      # 起读位置 > 0 时第一行可能是半截
         nl = text.find("\n")
         text = text[nl + 1:] if nl >= 0 else ""
-    for line in text.splitlines():
+    # 只按 "\n" 切：JSONL 的换行就是它，而 str.splitlines() 还会在 \x85/\u2028
+    # 处断行（这两个字符在 ensure_ascii=False 下是原样写进字符串的）
+    for line in text.split("\n"):
         line = line.strip()
         if not line:
             continue

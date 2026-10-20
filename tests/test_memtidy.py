@@ -162,6 +162,17 @@ def main():
     check("7b.2 主线没被改（时间戳不变）", f3.stat().st_mtime_ns == before_mtime,
           f"{before_mtime} → {f3.stat().st_mtime_ns}")
     check("7b.3 主线内容还在", len(M._read(f3)) == 2, str(len(M._read(f3))))
+    # 计划已过期（文件被别的进程整理过）：不能再写一遍，尤其不能覆盖 .bak
+    f3.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in
+                            [{"ts": now - 60, "text": "新的", "scope": ""}]) + "\n",
+                  encoding="utf-8")
+    bak_before = (tmp3 / "memories" / "atri.jsonl.bak").read_bytes() \
+        if (tmp3 / "memories" / "atri.jsonl.bak").exists() else b""
+    res2 = M.apply(tmp3, "atri", p)          # p 里那条老的早就不在了
+    check("7b.4 计划过期时不报删掉一堆", res2["merged"] == 0, str(res2))
+    bak_after = (tmp3 / "memories" / "atri.jsonl.bak").read_bytes() \
+        if (tmp3 / "memories" / "atri.jsonl.bak").exists() else b""
+    check("7b.5 过期计划不会覆盖上一次的 .bak", bak_after == bak_before)
 
     section("8. 幂等 / 空数据")
     p0 = M.plan([], threshold=0.45)

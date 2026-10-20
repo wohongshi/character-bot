@@ -88,7 +88,9 @@ def load(state_dir: Path | str) -> dict:
             raw = _path(state_dir).read_text(encoding="utf-8")
         except FileNotFoundError:
             return dict(DEFAULTS)
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError 不是 OSError：文件被写坏（崩溃/掉电截断）时
+            # 会抛它，不接住就会一路冒到 _budget_init 把启动搞挂
             log.warning("用量预算配置读不出来（按默认值=关闭）：%s", e)
             return dict(DEFAULTS)
     try:

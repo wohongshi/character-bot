@@ -5890,7 +5890,7 @@ async function viewBoard(target){
     <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
       <span class="kv" style="margin:0">👥 群友画像 <span id="ppMeta" class="kv" style="margin:0"></span></span>
       <span class="row" style="gap:6px">
-        <select id="ppChat" style="max-width:220px" onchange="ppChat(this.value)"></select>
+        <select id="ppChat" style="max-width:220px" onchange="ppPick(this.value)"></select>
         <span class="ins-seg" id="ppDays">
           <button data-d="7" onclick="ppSet(7)">7 天</button>
           <button data-d="30" class="on" onclick="ppSet(30)">30 天</button>
@@ -5947,14 +5947,19 @@ async function viewBoard(target){
 let insDays = 30, insSrc = "messages";
 /* ================= 群友画像 ================= */
 let ppDays = 30, ppCache = null, ppChatSel = "";   // 选中项要跨重绘保留
-function ppChat(v){ ppChatSel = v || ""; ppCache = null; ppLoad(1); }
+/* 名字不能叫 ppChat：那个 id 的元素在 document 上有同名属性，
+   内联处理器里 `ppChat(...)` 会先解析成 <select> 元素 → TypeError */
+function ppPick(v){ ppChatSel = v || ""; ppCache = null; ppLoad(1); }
 function ppSet(d){ ppDays = d;
   document.querySelectorAll("#ppDays button").forEach(b => b.classList.toggle("on", +b.dataset.d === d));
   ppLoad(1); }
 async function ppLoad(force){
   const box = $("ppBox"), sel = $("ppChat");
   if (!box) return;
-  const chat = sel ? sel.value : ppChatSel;
+  // 以模块变量为准：viewBoard 重绘时 #ppChat 是空的（还没填 option），
+  // 那时 sel.value 一定是 "" —— 发出去的请求就会变成「全部会话」，
+  // 而下拉随后被恢复成群 X，数字和下拉对不上
+  const chat = ppChatSel || (sel ? sel.value : "");
   // 缓存要带请求参数：否则切了群但 5 秒内会直接拿上一次的结果重画
   if (ppCache && !force && Date.now() - ppCache.t < 5000
       && ppCache.key === ppDays + "|" + chat){ ppRender(ppCache.d); return; }
@@ -5970,7 +5975,7 @@ async function ppLoad(force){
     if (sel.value !== ppChatSel) sel.value = "";      // 那个群已经不在列表里了
     ppChatSel = sel.value;
   }
-  ppCache = {t: Date.now(), key: ppDays + "|" + ppChatSel, d};
+  ppCache = {t: Date.now(), key: ppDays + "|" + chat, d};   // key 用真正发出去的参数
   ppRender(d);
 }
 function ppRender(d){

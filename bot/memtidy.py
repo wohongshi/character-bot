@@ -234,9 +234,11 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         for d in g.get("drop") or []:
             drop_ts.add(float(d.get("ts") or 0))
     stale_ts = {float(r.get("ts") or 0) for r in (p or {}).get("stale") or []}
+    total = int(((p or {}).get("counts") or {}).get("total") or 0)
     if not drop_ts and not stale_ts:
-        return {"before": 0, "after": 0, "merged": 0, "archived": 0, "dropped": 0,
-                "noop": True}
+        # before/after 报真实条数：报 0→0 会被面板读成「记忆被清空了」
+        return {"before": total, "after": total, "merged": 0, "archived": 0,
+                "dropped": 0, "noop": True}
 
     merged_by_keep = {}
     for g in (p or {}).get("groups") or []:
@@ -260,11 +262,15 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
                 continue
             out.append({**merged_by_keep[ts]} if ts in merged_by_keep else r)
 
+        # 计划是锁外算的：并发的第二次 apply、或者计划已过期时，这里可能根本没变化。
+        # 那种情况下**一个字节都不写**（否则会拿已经整理过的内容覆盖掉第一轮留的 .bak）
+        if len(out) == len(rows) and not archived:
+            return {"before": len(rows), "after": len(rows), "merged": 0,
+                    "archived": 0, "dropped": 0, "noop": True}
         if path.exists():
-            try:
-                path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
-            except OSError:
-                pass
+            # 备份写不进去就整体作废：没有 .bak 的破坏性整理不能做
+            # （整理会让文件变小，磁盘满时「拷贝成 .bak」会 ENOSPC 而重写却能成功）
+            path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
         if archived:                    # 先归档：失败就整体作废，别丢条目
             ap = path.with_name(f"{character}.archive.jsonl")
             ap.parent.mkdir(parents=True, exist_ok=True)
