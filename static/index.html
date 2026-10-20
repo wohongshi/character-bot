@@ -4375,6 +4375,8 @@ async function mountAgentCard(){
   const agModel = agentCfg.model || {};
   const agEff = agentCfg.model_eff || (md && md.agent) || {};
   const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || provs[0] || {models: []};
+  window.__agSaved = (agModel.model || "");
+  window.__agTouched = 0;
   slot.innerHTML = `
   <div class="card">
     <h3>🛠️ 工具能力 <span class="kv" style="font-family:var(--font-body)">常开 · 她自己查资料、记事</span></h3>
@@ -4389,7 +4391,7 @@ async function mountAgentCard(){
       <select id="agProv" onchange="botFillAgentModels()" style="min-width:190px">
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===(agModel.provider||act.provider)?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
       </select>
-      <select id="agModel" style="min-width:240px">
+      <select id="agModel" onchange="window.__agTouched=1" style="min-width:240px">
         <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
         ${optList(agProv.models, agModel.model).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
@@ -4566,10 +4568,13 @@ async function viewModels(target){
   // 拿它回填会把「不启用」显示成「启用了某个模型」，一保存就钉死。
   const vis = Object.assign({}, (md && md.vision_raw) || (md && md.vision) || {});
   vis.configured = !!((md && md.vision) || {}).configured;
-  // 未配置时 provider 只是上次留下的残值：不清掉的话下拉显示「跟聊天同一个」，
-  // 下面列出的却是那个残留 provider 的模型 —— 选了会把别的 provider 的模型带过去
-  if (!vis.configured) vis.provider = "";
+  // 未配置时 provider/model 都只是上次留下的残值：不清掉的话下拉显示「跟聊天同一个」，
+  // 下面列出的却是那个残留 provider 的模型，而且残留 model 会以 selected 身份
+  // 盖掉「不启用」—— 不动下拉直接保存就把那个模型重新登记进来了
+  if (!vis.configured){ vis.provider = ""; vis.model = ""; }
   window.__vis = vis;                     // botSaveVision 用它判断「是不是在清空」
+  window.__mvSaved = vis.model || "";     // 换供应商绕一圈回来时用它恢复选择
+  window.__mvTouched = 0;                 // 用户手动动过下拉就不再替他恢复
   const visProv = provs.find(p => p.id === (vis.provider || act.provider)) || cur;
   const visModels = visProv.models || [];
   $(T).innerHTML = `
@@ -4594,7 +4599,7 @@ async function viewModels(target){
         <option value="">跟聊天同一个</option>
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===vis.provider&&vis.configured?"selected":""}>${esc(p.name||p.id)}</option>`).join("")}
       </select>
-      <select id="mvModel" style="min-width:240px">
+      <select id="mvModel" onchange="window.__mvTouched=1" style="min-width:240px">
         <option value="" ${vis.configured?"":"selected"}>（不启用图片理解）</option>
         ${optList(visModels, vis.model).map(m=>`<option ${m===vis.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
@@ -4736,6 +4741,9 @@ async function botSaveModel(){
       providers: d.providers || (window.__md || {}).providers, vision: d.vision,
       vision_raw: d.vision_raw, agent: d.agent, agent_raw: d.agent_raw});
     window.__provs = d.providers || window.__provs;
+    // 看图下拉的候选是按主 provider 算的：主模型换了就得重画，
+    // 否则它还在列旧 provider 的模型，选一个保存就把别家的模型塞过去
+    if ($("mvProv") && $("mvModel")) botFillVisionModels();
   }
 }
 async function botTestModel(){
@@ -4752,8 +4760,12 @@ function botFillVisionModels(){
   // 选中的值以**当前下拉**为准（换供应商时保留用户已经选的那个），没选过才用配置
   // 只在新供应商真的提供时才保留当前选择：否则 optList 会把它塞进新清单，
   // 保存时 set_vision → _ensure_model 就把「别的供应商的模型」永久写进这家
+  // 选择优先：当前下拉里合法 → 用它；否则（换供应商绕回来）用挂载时的原值；
+  // 用户自己动过下拉就尊重他（包括选了「不启用」）
   const now = $("mvModel").value;
-  const cur = (now && ms.includes(now)) ? now : "";
+  const saved = window.__mvSaved || "";
+  const cur = ms.includes(now) ? now
+            : ((!window.__mvTouched && ms.includes(saved)) ? saved : "");
   $("mvModel").innerHTML = `<option value="" ${cur?"":"selected"}>（不启用图片理解）</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
@@ -4774,7 +4786,9 @@ function botFillAgentModels(){
   // 换供应商时保留用户已经选的（以前重建成第一项 —— 一保存就把工具模型钉死）；
   // 但只保留新供应商真的有的，否则会把别家的模型永久塞进这家的清单
   const now = $("agModel").value;
-  const cur = (now && ms.includes(now)) ? now : "";
+  const saved = window.__agSaved || "";
+  const cur = ms.includes(now) ? now
+            : ((!window.__agTouched && ms.includes(saved)) ? saved : "");
   $("agModel").innerHTML = `<option value="" ${cur ? "" : "selected"}>跟聊天同一个模型</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
