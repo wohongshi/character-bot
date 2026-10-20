@@ -4729,6 +4729,14 @@ async function botSaveModel(){
   const d = await post("/api/models", {active: {provider: $("mpProv").value, model: $("mpModel").value}});
   $("mpOut").textContent = d.ok ? "✓ 已保存：" + d.active.provider + " / " + d.active.model
                                 : "✗ " + (d.error || "保存失败");
+  if (d.ok){
+    // 视图里的主模型快照必须跟着更新：看图/工具卡片的「跟聊天同一个」要按**新的**
+    // 主 provider 列清单，否则这里还按旧 provider 校验，保存就把旧家的模型塞过去
+    window.__md = Object.assign({}, window.__md || {}, {active: d.active,
+      providers: d.providers || (window.__md || {}).providers, vision: d.vision,
+      vision_raw: d.vision_raw, agent: d.agent, agent_raw: d.agent_raw});
+    window.__provs = d.providers || window.__provs;
+  }
 }
 async function botTestModel(){
   $("mpOut").textContent = "测试中…（最长 90 秒）";
