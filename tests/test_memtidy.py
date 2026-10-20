@@ -190,6 +190,23 @@ def main():
     check("7c.2 不相干的那句还在", any("不相干" in t for t in left), str(left))
     check("7c.3 返回的条数对", res4["before"] == 3 and res4["after"] == 2, str(res4))
 
+    section("7d. 整组都陈旧时不能只剩 .bak")
+    tmp5 = Path(tempfile.mkdtemp(prefix="klee-memtidy7-"))
+    (tmp5 / "memories").mkdir()
+    f5 = tmp5 / "memories" / "atri.jsonl"
+    old_rows = [{"ts": now - 100 * 86400, "text": "主人怕黑", "scope": ""},
+                {"ts": now - 100 * 86400 + 1, "text": "主人怕黑。", "scope": ""},
+                {"ts": now - 60, "text": "最近的一条", "scope": ""}]
+    f5.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in old_rows) + "\n",
+                  encoding="utf-8")
+    p5 = M.plan(M._read(f5), threshold=0.45, stale_days=30, now=now)
+    M.apply(tmp5, "atri", p5)
+    left = [r["text"] for r in M._read(f5)]
+    arch = [r["text"] for r in M._read(tmp5 / "memories" / "atri.archive.jsonl")]
+    # 这一组要么完整留在主线、要么完整进归档，不能出现「主线没有、归档也没有」
+    kept = [t for t in ("主人怕黑", "主人怕黑。") if t in left or t in arch]
+    check("7d.1 被归档组的内容一定还在（主线或归档里）", len(kept) >= 1, str((left, arch)))
+
     section("8. 幂等 / 空数据")
     p0 = M.plan([], threshold=0.45)
     check("8.1 空列表不炸", p0["counts"]["total"] == 0)

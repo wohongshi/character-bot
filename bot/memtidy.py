@@ -273,9 +273,10 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         present = {_key(r) for r in rows}
         by_key = {_key(r): r for r in rows}
         for kk, drops in list(keep_drops.items()):
-            if kk not in present:
-                # keep 那条被别处删了：别用计划里那份（它已经把 drops 的 hits/scope
-                # 加进去了），也别把 drops 删掉 —— 否则这组内容凭空消失
+            if kk not in present or kk in stale_ts:
+                # keep 那条被别处删了、或者它自己被判成「陈旧要归档」：
+                # 两种情况都不能再删 drops（否则这组内容只剩 .bak）、
+                # 也不能用计划里那份（它已经把 drops 的 hits/scope 加进去了）
                 merged_by_keep.pop(kk, None)
                 for d in drops:
                     drop_ts.discard(d)
