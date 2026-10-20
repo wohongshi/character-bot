@@ -441,6 +441,14 @@ class BotRuntime(RuntimeFeatures):
                         chat_id, cid, self._character)
         return self._character
 
+    def _event_chat_id(self, ev: dict) -> str:
+        """notice / request 事件属于哪个会话（群事件 → group:id，其余 → private:uid）。"""
+        gid = str(ev.get("group_id") or "")
+        if gid:
+            return f"group:{gid}"
+        uid = str(ev.get("user_id") or (ev.get("sender") or {}).get("user_id") or "")
+        return f"private:{uid}" if uid else ""
+
     def _persona(self) -> str:
         name = self.active_character_info.get("name") or "角色"
         fallback = f"你是{name}，用自然的短句聊天，像在手机上发消息。"
@@ -449,15 +457,20 @@ class BotRuntime(RuntimeFeatures):
             m = path.stat().st_mtime
         except OSError:
             return fallback
-        # 缓存 key 必须带路径：两个角色的 SOUL 若 mtime 相同（复制出来的文件），
-        # 只比 mtime 会把上一个人的 SOUL 喂给这个人。
-        key = (str(path), m)
-        if key != self._persona_cache.get("key"):
+        # 按路径分槽（不是一个槽）：两个角色的会话交替时，单槽会每条消息都
+        # stat + read 一遍 SOUL；读失败时也不能拿上一个人的缓存顶上。
+        slot = self._persona_cache.setdefault("by_path", {})
+        ent = slot.get(str(path))
+        if ent is None or ent[0] != m:
             try:
-                self._persona_cache = {"key": key, "text": path.read_text(encoding="utf-8")}
+                ent = (m, path.read_text(encoding="utf-8"))
             except OSError:
-                pass
-        return self._persona_cache.get("text") or fallback
+                slot.pop(str(path), None)      # 读失败就清掉这一格，别喂旧人格
+                return fallback
+            if len(slot) > 16:                 # 长跑防膨胀
+                slot.clear()
+            slot[str(path)] = ent
+        return ent[1] or fallback
 
     async def start(self) -> None:
         """在 bot 事件循环里启动插件看护（目录/config.json/.reload 变化 → 热重载）。"""
@@ -768,13 +781,19 @@ class BotRuntime(RuntimeFeatures):
     async def _handle(self, ev: dict) -> None:
         if not isinstance(ev, dict):
             return
-        if ev.get("post_type") == "notice":
-            await self._run_event_hooks("notice", ev)
-            await self._handle_notice(ev)
-            return
-        if ev.get("post_type") == "request":
-            await self._run_event_hooks("request", ev)
-            await self._handle_request(ev)
+        # notice / request 也要先定「这个会话的角色」：戳一戳的回复、入群欢迎语
+        # 读的都是 active_character_info，不定角色的话绑了胡桃的群会被「可莉」
+        # 回一句；角色限定插件的 notice 钩子也永远只在全局角色下才触发。
+        if ev.get("post_type") in ("notice", "request"):
+            chat_id = self._event_chat_id(ev)
+            if chat_id:
+                chat_char.set_value(self.char_for(chat_id))
+            if ev.get("post_type") == "notice":
+                await self._run_event_hooks("notice", ev)
+                await self._handle_notice(ev)
+            else:
+                await self._run_event_hooks("request", ev)
+                await self._handle_request(ev)
             return
         if ev.get("post_type") != "message":
             return

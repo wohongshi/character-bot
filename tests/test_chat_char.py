@@ -205,11 +205,11 @@ soul = rt._persona()
 check("人格是胡桃的 SOUL", "胡桃" in soul and "可莉" not in soul[:200], soul[:60])
 chat_char.pop(tok)
 check("退出后回到全局角色", rt.active_character == rt._character)
-# 缓存 key 必须带路径：两个角色的 SOUL 如果 mtime 一样（复制出来的文件），
+# 缓存按**路径**分槽：两个角色的 SOUL 如果 mtime 一样（复制出来的文件），
 # 只比 mtime 会把上一个人的 SOUL 喂给这个人
-_cache_key = (rt._persona_cache.get("key") or ("", 0))[0]
-check("人格缓存 key 带路径（mtime 撞了也不会串）",
-      _cache_key.endswith("SOUL.md") and "/hutao/" in _cache_key, _cache_key)
+_slots = rt._persona_cache.get("by_path") or {}
+check("人格缓存按路径分槽", any(k.endswith("SOUL.md") and "/hutao/" in k for k in _slots),
+      str(list(_slots)))
 
 # 真走一遍 handle_event：系统提示词里的人得是胡桃
 chat_char.set_binding(STATE, "private:1000000001", "hutao", valid_ids=["klee", "hutao"])
@@ -483,6 +483,92 @@ check("技能检索不串角色",
       str([(round(x[0], 2), x[1]["name"]) for x in sr1])[:100])
 r4 = run_skill("atri", "hutao_only_nonexistent", "x")
 check("不存在的技能仍是普通错误", r4.get("ok") is False and "没有技能" in str(r4.get("error")), str(r4)[:100])
+
+# ============ 3c) 评审补的几处 ============
+print("[3c] 边界")
+# 通用命令 + 角色限定命令同名：两条都要留着（限定那条只在自己角色里被挑中）
+FEAT2 = TMP / "feat_coexist"
+FEAT2.mkdir()
+(FEAT2 / "gen.py").write_text(
+    'NAME = "通用同名"\n\n\ndef register(api):\n'
+    '    api.on_command("撞名", lambda ctx: "通用")\n', encoding="utf-8")
+(FEAT2 / "lock.py").write_text(
+    'NAME = "限定同名"\nCHARACTERS = ("hutao",)\n\n\ndef register(api):\n'
+    '    api.on_command("撞名", lambda ctx: "限定")\n', encoding="utf-8")
+
+
+class A2:
+    features_dir = str(FEAT2)
+    feature_prefix = "."
+    active_character = "klee"
+    active_character_info = {}
+    owner_id = "1"
+    state_dir = str(TMP / "state_x")
+
+
+fm2 = FeatureManager(A2())
+fm2.load()
+check("通用 + 限定同名：两条都在", len(fm2._cmd_all.get("撞名") or []) == 2,
+      str(len(fm2._cmd_all.get("撞名") or [])))
+v_k = fm2.explain_command(ctx_for(".撞名", "klee"))
+v_h = fm2.explain_command(ctx_for(".撞名", "hutao"))
+check("普通角色用通用那条", v_k["action"] == "run" and v_k["cmd"].plugin == "gen", str(v_k))
+check("限定角色用自己那条", v_h["action"] == "run" and v_h["cmd"].plugin == "lock", str(v_h))
+
+# prune 在「角色库读不出来」时不能假装删了
+S9 = TMP / "s9"
+S9.mkdir()
+chat_char.set_binding(S9, "group:1", "klee", valid_ids=["klee"])
+check("空 valid_ids → 不删也不谎报", chat_char.prune(S9, []) == []
+      and chat_char.get(S9, "group:1") == "klee")
+
+# 权限覆盖按「插件:命令」隔离：同名命令互不牵连
+from bot import cmdpolicy as CP                            # noqa: E402
+
+FEAT3 = TMP / "feat_pol"
+FEAT3.mkdir()
+data = CP.set_override(FEAT3, command="撞名", plugin="lock", permission="owner")
+check("按 插件:命令 写进覆盖表", (data["commands"].get("lock:撞名") or {}).get("permission")
+      == "owner", str(data))
+c_lock = next(c for c in fm2.all_commands() if c.plugin == "lock")
+c_gen = next(c for c in fm2.all_commands() if c.plugin == "gen")
+check("只影响那一条（限定）",
+      CP.effective(c_lock, data)["permission"] == "owner", str(CP.effective(c_lock, data)))
+check("另一条同名命令不受影响",
+      CP.effective(c_gen, data)["permission"] == "all", str(CP.effective(c_gen, data)))
+
+# 人格缓存按路径分槽：两个角色交替不会互相串
+tok_a = chat_char.push("hutao")
+p_h = rt._persona()
+tok_b = chat_char.push("klee")
+p_k = rt._persona()
+chat_char.pop(tok_b)
+p_h2 = rt._persona()
+chat_char.pop(tok_a)
+check("人格按角色各自正确（胡桃）", "胡桃" in p_h and p_h == p_h2)
+check("人格按角色各自正确（可莉）", "可莉" in p_k and p_k != p_h)
+check("人格缓存按路径分槽", len((rt._persona_cache.get("by_path") or {})) >= 2)
+
+# notice 事件也要按会话定角色（戳一戳 / 入群欢迎语读的是 active_character_info）
+seen_notice = {}
+_orig_notice = rt._handle_notice
+
+
+async def _fake_notice(ev):
+    seen_notice["char"] = rt.active_character
+    seen_notice["name"] = (rt.active_character_info or {}).get("name")
+
+
+rt._handle_notice = _fake_notice
+try:
+    chat_char.set_binding(STATE, "group:777", "hutao", valid_ids=["klee", "hutao"])
+    asyncio.run(rt._handle({"post_type": "notice", "notice_type": "notify",
+                            "group_id": "777", "user_id": "1000000009"}))
+finally:
+    rt._handle_notice = _orig_notice
+check("notice 事件里角色是这个群的", seen_notice.get("char") == "hutao", str(seen_notice))
+check("notice 里 active_character_info 也对", seen_notice.get("name") == "胡桃",
+      str(seen_notice))
 
 # ============ 4) 命令插件 chatrole ============
 print("[4] .角色 命令")

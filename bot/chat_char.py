@@ -212,6 +212,10 @@ def clear(state_dir: Path | str, chat) -> bool:
 def prune(state_dir: Path | str, valid_ids) -> list:
     """删掉指向已不存在角色的绑定；返回被删掉的会话 id 列表。"""
     ok = {str(x).strip().lower() for x in (valid_ids or [])}
+    if not ok:
+        # 角色库读失败时「没有一个合法 id」不等于「所有绑定都失效」：
+        # 这时删了就是真丢数据，而且返回值会撒谎（说删了、其实没写盘）。
+        return []
     with _LOCK:
         chats = load(state_dir)
         dead = [c for c, r in chats.items() if str(r.get("id") or "") not in ok]

@@ -1168,8 +1168,11 @@ class FeatureManager:
         # 相交（都是通用的 / 同角色重名）才按老规矩丢弃并告警。
         if any(k in self.commands for k in keys):
             clash = [self._cmd_all.get(k) or [self.commands.get(k)] for k in keys if k in self.commands]
+            # 只要**有一方**是角色限定、且两边的角色集合不相交，就都留下：
+            # 通用 + 限定（.抱抱 这种别名撞车）也算 —— 限定那条只在自己的
+            # 角色里被挑中，通用那条兜住其它角色。两条都是通用才叫真重名。
             coexist = all(
-                other.characters and cmd.characters
+                (other.characters or cmd.characters)
                 and not (set(other.characters) & set(cmd.characters))
                 for group in clash for other in group if other is not None
             )

@@ -92,8 +92,9 @@ def main():
     check("1.4 写进去能读回来", CP.load(tmp)["commands"]["b64e"] == {"permission": "owner"})
     CP.set_override(tmp, command="b64e", scope="", permission="")
     check("1.5 两项显式清空 = 删掉这条", CP.load(tmp)["commands"] == {})
-    for kwargs, why in (({"command": "a", "plugin": "p"}, "命令和插件同时给"),
-                        ({}, "都不给"),
+    # 命令 + 插件**同时给**现在是合法的：表示「就这一条」（同名命令共存之后
+    # 按名字写会一改两行）。只给空名字才拒。
+    for kwargs, why in (({}, "都不给"),
                         ({"command": "x", "scope": "sideways"}, "非法作用域"),
                         ({"command": "x", "permission": "root"}, "非法权限")):
         try:
@@ -101,6 +102,11 @@ def main():
             check(f"1.6 拒绝{why}", False)
         except CP.PolicyError:
             check(f"1.6 拒绝{why}", True)
+    CP.set_override(tmp, command="a", plugin="p", permission="owner")
+    check("1.6b 命令+插件 → 存成 插件:命令",
+          CP.load(tmp)["commands"].get("p:a") == {"permission": "owner"},
+          str(CP.load(tmp)))
+    CP.set_override(tmp, command="a", plugin="p", scope="", permission="")
 
     section("1b. 按字段合并（改一项不能把另一项冲掉）")
     CP.set_override(tmp, command="x", permission="owner")

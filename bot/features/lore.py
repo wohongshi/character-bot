@@ -66,14 +66,18 @@ LORE = {
 
 
 def register(api):
-    cid = str(getattr(api, "character_id", "") or "klee")
-    data = LORE.get(cid) or LORE["klee"]
+    # 不能在 register 时把角色定死：`register()` 跑在装载阶段（没有会话上下文），
+    # 那样所有会话都会拿到「装载时那个角色」的台词 —— 会话绑定另一个角色时
+    # `.语录` 会说出别人的话。每次调用按当前会话的角色取。
+    def _data(ctx=None):
+        cid = str(getattr(ctx, "character", "") or api.character_id or "klee")
+        return LORE.get(cid) or LORE["klee"]
 
     def quote(ctx):
-        return random.choice(data["lines"])
+        return random.choice(_data(ctx)["lines"])
 
     def intro(ctx):
-        return data["intro"]
+        return _data(ctx)["intro"]
 
     api.on_command("语录", quote, aliases=(), help=".语录 —— 随机来一句本角色的台词")
     api.on_command("角色介绍", intro, aliases=("介绍",), help=".角色介绍 —— 本角色是谁")

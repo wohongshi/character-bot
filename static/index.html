@@ -5038,7 +5038,10 @@ async function ucLoad(){
   const max = Math.max(...rows.map(r => r.total || 0), 1);
   box.innerHTML = rows.map(r => {
     const pct = Math.round(100 * (r.total || 0) / max);      // 条宽按最高那个会话算
-    const share = tot ? Math.round(100 * (r.total || 0) / tot) : 0;   // 占比按总量算
+    // 占比按总量算：小会话四舍五入成 0% 会被读成「没花钱」，所以 <0.1% 单独标
+    const rawShare = tot ? 100 * (r.total || 0) / tot : 0;
+    const share = rawShare > 0 && rawShare < 0.1 ? "<0.1"
+                : (rawShare < 10 ? rawShare.toFixed(1) : String(Math.round(rawShare)));
     const label = r.chat ? prChatLabel(r.chat) : "未记录（老数据）";
     return `<div class="urow">
       <div class="utop"><b class="ulb">${esc(label)}</b>
@@ -5046,7 +5049,9 @@ async function ucLoad(){
       <div class="prbar"><i class="pb-c" style="width:${pct}%"></i></div>
       <div class="kv usub">占 ${share}%</div>
     </div>`;
-  }).join("");
+  }).join("") + ((d.chat_kinds || 0) > rows.length
+    ? `<div class="kv" style="margin-top:8px">还有 ${d.chat_kinds - rows.length} 个会话没列出（按花费只排前 8）</div>`
+    : "");
 }
 
 async function botSaveModel(){
@@ -5564,7 +5569,8 @@ function ccRender(d){
   const rows = (d.bindings || []).map(b => `
     <div class="opsline" style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
       <b style="flex:none;min-width:104px">${esc(prChatLabel(b.chat))}</b>
-      ${b.ok ? "" : `<span class="tag ccbad">角色已不在</span>`}
+      ${b.ok ? "" : `<span class="tag ccbad">角色已不在</span>
+        <button class="btn tiny" style="flex:none" onclick="ccSet(${jsq(b.chat)}, '')">清除</button>`}
       <span class="kv" style="flex:1;margin:0;min-width:78px">${b.who ? "最近：" + esc(b.who) : (b.n ? b.n + " 条消息" : "还没说过话")}</span>
       <select onchange="ccSet(${jsq(b.chat)}, this.value)" style="min-width:132px">
         <option value="">（跟随当前角色）</option>
@@ -5574,16 +5580,22 @@ function ccRender(d){
   box.innerHTML = rows || `<div class="kv">还没有固定任何会话 —— 所有群和私聊都跟着当前角色。</div>`;
 }
 async function ccSet(chat, id){
-  const d = await post("/api/characters/bind", {chat, id});
+  const m = $("ccMsg");
+  let d = null;
+  try {
+    d = await post("/api/characters/bind", {chat, id});
+  } catch (e) {
+    // fetch 被中断时是 reject，不是 {ok:false}：不接住就成了未处理的 rejection
+    d = {ok: false, error: String((e && e.message) || e)};
+  }
   if (!d || !d.ok){
-    const m = $("ccMsg");
     if (m) m.textContent = "✗ " + ((d && d.error) || "没保存上");
-    return;
+    return false;
   }
   ccRender(d);
-  const m = $("ccMsg");
   if (m) m.textContent = id ? "✓ 已固定（下一条消息就按它回）" : "✓ 已取消固定";
   flash(id ? "✓ 已固定" : "✓ 已取消");
+  return true;
 }
 async function ccAdd(){
   const c = $("ccChat"), k = $("ccChar"), t = $("ccChatId");
@@ -5594,8 +5606,8 @@ async function ccAdd(){
     if (m) m.textContent = "先选（或填）一个会话，再挑一个角色";
     return;
   }
-  await ccSet(chat, k.value);
-  if (t) t.value = "";
+  const ok = await ccSet(chat, k.value);
+  if (ok && t) t.value = "";          // 失败时留着，别让人重敲一遍
 }
 
 /* ================= 开发规范 ================= */
@@ -7061,19 +7073,19 @@ function ctlRenderCmds(){
     `<option value="${esc(k)}"${k === cur ? " selected" : ""}>${esc(map[k])}</option>`).join("");
   // 只渲染前 400 条（115 条命令 × 每行 2 个 select，全量渲染在手机上会卡）
   box.innerHTML = rows.slice(0, 400).map(r => `<div class="ctl-cmd ${r.override ? "ctl-ov" : ""}"
-      title="${esc(r.help || "")}">
+      data-plugin="${esc(r.plugin || "")}" title="${esc(r.help || "")}">
       <code>.${esc(r.name)}</code>
       <span class="pl">${esc(r.title || r.plugin || "")}</span>
       <span class="h">${esc((r.help || "").replace(/^\.[^\s]+\s*/, "").slice(0, 40))}</span>
-      <select data-k="scope" onchange="ctlSetCmd(${jsq(r.name)}, 'scope')">
+      <select data-k="scope" onchange="ctlSetCmd(${jsq(r.name)}, 'scope', ${jsq(r.plugin || "")})">
         ${opt(scopes, r.scope_eff || "both")}</select>
-      <select data-k="permission" onchange="ctlSetCmd(${jsq(r.name)}, 'permission')">
+      <select data-k="permission" onchange="ctlSetCmd(${jsq(r.name)}, 'permission', ${jsq(r.plugin || "")})">
         ${opt(perms, r.permission_eff || "all")}</select>
-      ${r.override ? `<button class="btn tiny" onclick="ctlResetCmd(${jsq(r.name)})">默认</button>`
+      ${r.override ? `<button class="btn tiny" onclick="ctlResetCmd(${jsq(r.name)}, ${jsq(r.plugin || "")})">默认</button>`
                    : '<span class="kv" style="flex:none;min-width:44px"></span>'}
     </div>`).join("");
 }
-async function ctlSetCmd(name, field){
+async function ctlSetCmd(name, field, plugin){
   // 只提交被改动的那一项：服务端是**按字段合并**的，两个字段一起发会把
   // 「没动的那一项」从「跟随插件默认」变成一条显式覆盖 —— 以后插件默认值
   // 放宽或收紧都不再生效（那正是这个设计要避免的静默覆盖）。
@@ -7082,7 +7094,9 @@ async function ctlSetCmd(name, field){
   if (!row){ flash("找不到这一行"); return; }
   const sel = row.querySelector(`[data-k="${field}"]`);
   if (!sel) return;
+  // 带上插件名：同名命令（通用 + 角色专属）只改这一行，不连带另一行
   const body = {command: name};
+  if (plugin) body.plugin = plugin;
   body[field] = sel.value;
   const d = await post("/api/control/cmd", body);
   if (!d || !d.ok){ flash("没保存：" + ((d && d.error) || "未知")); return; }
@@ -7090,9 +7104,11 @@ async function ctlSetCmd(name, field){
   ctlRenderCmds();
   flash("已生效：" + name);
 }
-async function ctlResetCmd(name){
+async function ctlResetCmd(name, plugin){
   // 显式给空串才是「清掉这两项」（不给 = 不动，服务端分得很清楚）
-  const d = await post("/api/control/cmd", {command: name, scope: "", permission: ""});
+  const body = {command: name, scope: "", permission: ""};
+  if (plugin) body.plugin = plugin;
+  const d = await post("/api/control/cmd", body);
   if (!d || !d.ok){ flash("没恢复：" + ((d && d.error) || "未知")); return; }
   ctlData = d.after; ctlRenderCmds(); flash("已回到插件默认：" + name);
 }

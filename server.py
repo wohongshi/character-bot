@@ -2114,7 +2114,9 @@ def _usage_summary(days: int = 7, *, today: bool = False) -> dict:
     series = sorted(by_day.values(), key=lambda x: x["date"])
     return {"ok": True, "days": days, "today": bool(today), "rows": len(rows),
             "totals": {**tot, "avg_ms": round(tot["ms"] / tot["requests"], 1) if tot["requests"] else 0},
-            "models": models, "characters": chars, "chats": chats, "daily": series,
+            "models": models, "characters": chars, "chats": chats,
+            # 只给前 8 个：面板要能说「还有 N 个没列」，否则合计对不上会像漏账
+            "chat_kinds": len(by_chat), "daily": series,
             "hint": "数字来自模型返回的 usage；网关不返回时按字符估算（标 est）"}
 
 
@@ -3953,13 +3955,27 @@ def _char_bind_view() -> dict:
     # 补上「有过事件但最近没说话」的会话（群策略/主动消息那边记着的），
     # 否则刚建好的群在绑定时根本选不到。
     try:
-        for cid in (_control_snapshot().get("known_chats") or []):
-            cid = str(cid if not isinstance(cid, dict) else cid.get("id") or "")
-            if cid and cid not in label:
-                chats.append({"chat": cid, "n": 0, "last": 0.0, "who": ""})
-                label[cid] = chats[-1]
-    except Exception:                                              # noqa: BLE001
-        pass
+        known = _control_snapshot().get("known_chats") or []
+    except Exception as e:                                         # noqa: BLE001
+        # 静默吞掉的话，新群会从下拉里消失而日志里一个字都没有
+        logger.info("会话绑定：读管控快照失败，已知会话补不全：%s", e)
+        known = []
+    for row in known:
+        # 管控快照里的 known_chats 自带宽窄信息（索引统计出来的条数/最近时间）
+        row = row if isinstance(row, dict) else {"id": str(row)}
+        cid = str(row.get("id") or "")
+        if not cid or cid in label:
+            continue
+        try:
+            n = int(row.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        try:
+            last = float(row.get("last") or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        chats.append({"chat": cid, "n": n, "last": last, "who": ""})
+        label[cid] = chats[-1]
     rows = []
     for chat, rec in binds.items():
         c = by_id.get(str(rec.get("id") or "")) or {}
@@ -4681,7 +4697,8 @@ def _commands_list() -> dict:
             name = str(getattr(cmd, "name", "") or "").strip()
             if not name:
                 continue
-            if not mgr._char_ok(getattr(cmd, "characters", ()), cid):
+            ok_fn = getattr(mgr, "_char_ok", None)
+            if callable(ok_fn) and not ok_fn(getattr(cmd, "characters", ()), cid):
                 continue                        # 别的角色的专属命令
             if name.lower() in seen:
                 continue
@@ -7285,7 +7302,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/characters/bind":
             from bot import chat_char
             chat = chat_char.clean_chat(body.get("chat"))
-            cid = chat_char.clean_id(body.get("id"))
+            raw_id = str(body.get("id") or "").strip()
+            cid = chat_char.clean_id(raw_id)
+            if raw_id and not cid:
+                # 「没给 id」= 解绑；「id 写错了」必须 400，否则一次手滑就把绑定删了
+                self._json({"ok": False, "error": f"角色 id 不合法：{raw_id[:32]!r}"}, 400)
+                return
             if not chat:
                 self._json({"ok": False, "error": "会话 id 不合法"}, 400)
                 return

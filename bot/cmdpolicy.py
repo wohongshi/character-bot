@@ -98,8 +98,8 @@ def set_override(features_dir: Path | str, *, command: str = "", plugin: str = "
     """
     command = str(command or "").strip()
     plugin = str(plugin or "").strip()
-    if bool(command) == bool(plugin):
-        raise PolicyError("要么给命令名，要么给插件名（二选一）")
+    if not command and not plugin:
+        raise PolicyError("要么给命令名，要么给插件名")
     scope = None if scope is None else str(scope).strip().lower()
     permission = None if permission is None else str(permission).strip().lower()
     if scope and scope not in SCOPES:
@@ -110,8 +110,10 @@ def set_override(features_dir: Path | str, *, command: str = "", plugin: str = "
     # 后写的会覆盖先写的（丢的是权限规则，属于用户可见的配置丢失）。
     with _LOCK:
         data = load(features_dir)
+        # 命令 + 插件都给 = 指定「这一条」（同名命令不会串）；
+        # 只给命令 = 老写法，作用于所有同名命令（向后兼容）。
         kind = "commands" if command else "plugins"
-        key = command or plugin
+        key = f"{plugin}:{command}" if (command and plugin) else (command or plugin)
         # **按字段合并**，不是整条替换：面板每次只提交改动的那个字段
         # （改权限时只发 permission），整条替换会把上一步设的作用域冲掉 ——
         # 更糟的是「先设仅主人、再改作用域」会把权限悄悄恢复成所有人可用。
@@ -135,7 +137,10 @@ def effective(cmd: object, data: dict) -> dict:
     """命令的**实际**作用域与权限（插件级 < 命令级 < 插件声明）。"""
     name = str(getattr(cmd, "name", "") or "")
     plugin = str(getattr(cmd, "plugin", "") or "")
-    cmd_ov = (data.get("commands") or {}).get(name) or {}
+    cmds = data.get("commands") or {}
+    # 先查「插件:命令」：跨角色同名命令共存之后（通用 .抱抱 vs 亚托莉 .抱抱），
+    # 只按名字查会让两行互相串——收紧一行，另一行跟着变。
+    cmd_ov = cmds.get(f"{plugin}:{name}") or cmds.get(name) or {}
     plug_ov = (data.get("plugins") or {}).get(plugin) or {}
     scope = str(cmd_ov.get("scope") or plug_ov.get("scope") or "") \
         or str(getattr(cmd, "scope", "all") or "all")

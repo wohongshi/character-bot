@@ -286,9 +286,11 @@ def register(api):
             logger.warning("帮助：卡片目录不可用（%s）→ 回退文本", e)
             out = None
         if out is not None:
-            key = _cardimg.rcache_key("help", HELP_CACHE_V, *cmds)
+            key = _cardimg.rcache_key("help", HELP_CACHE_V, me, *cmds)
+            # 角色名要一起进缓存键：两个角色的命令表碰巧一样时（比如都没有
+            # 专属插件），不带名字会让第二个群拿到写着别人名字的图
             if await asyncio.to_thread(_cardimg.rcache_render, settings, BASE, "help", key, out,
-                                       lambda: render_help(blocks, out)):
+                                       lambda: render_help(blocks, out, me)):
                 if await _cardimg.send_card(ctx, out, f"🌸 {me}的小本领（点点它们就好，不用 @）",
                                             pattern="help-*.png"):
                     return
