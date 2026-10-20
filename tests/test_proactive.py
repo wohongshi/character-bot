@@ -306,6 +306,15 @@ def main():
               issubclass(PV.UnknownResult, RuntimeError))
         check("11.5 SendTimeout 是 UnknownResult 的子类（面板只认前者）",
               issubclass(PV.SendTimeout, PV.UnknownResult))
+
+        def _hard(chat_id, **k):
+            raise RuntimeError("发送超时（传输层）")     # 传输层真失败：要计失败
+        SV._proactive_send = _hard
+        PV.mark_unknown(st3, "group:zz", "清掉上次占位", now=0)   # 让间隔闸放行
+        SV._proactive_tick(now=now + 10, rng=Rng(0.0))
+        check("11.6 传输层超时要计失败（和「结果未知」区分开）",
+              int(PV.get_chat(st3, "group:zz").get("fails") or 0) == 1,
+              str(PV.get_chat(st3, "group:zz")))
     finally:
         SV.BOT, SV.STATE_DIR, SV.MSG_JSONL = old_bot, old_state, old_msg
         SV._proactive_send = old_send

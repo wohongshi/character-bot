@@ -6303,6 +6303,7 @@ async function pvTest(chat, btn){
   const d = await post("/api/proactive/test", {chat_id: chat});
   btn.disabled = false; btn.textContent = "现在发一条";
   if (!d || !d.ok) flash("发不出去：" + ((d && d.error) || "未知"));
+  else if (d.unknown) flash("结果未知：" + (d.error || "") + "（已占名额，别马上再点）");
   else flash("已发送：" + (d.text || ""));
   pvLoad(true);
 }

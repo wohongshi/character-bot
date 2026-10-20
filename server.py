@@ -2614,19 +2614,23 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
         try:
             return await asyncio.wait_for(task, timeout=90)
         except asyncio.TimeoutError:
-            # 区分「我们等超时了」和「send 自己抛了 TimeoutError」：
-            # 后者 task 已经结束（异常是它抛的），前者被 wait_for 取消
+            # 3.11 起 asyncio.TimeoutError 就是内置 TimeoutError（OSError 子类），
+            # 按类型分不出「我们等超时」和「send 自己被 socket 超时打回来」。
+            # 用 task 状态分：wait_for 超时会 cancel task；send 自己抛的则 task 已结束。
             if task.done() and not task.cancelled():
-                raise
+                # 真·发送失败：换成外层不会误判的类型，让它走 mark_fail
+                raise RuntimeError("发送超时（传输层）") from None
             raise pv.SendTimeout("发送超时（90 秒）") from None
 
     fut = asyncio.run_coroutine_threadsafe(_do(), BOT.loop)
     try:
         res = fut.result(timeout=95)
+    except pv.SendTimeout:
+        # 结果未知：按「已发」占住名额（宁可不重复，也不刷屏），但不算失败
+        pv.mark_unknown(_state_dir(), chat_id, "发送超时，不确定是否已送达", now=now)
+        raise
     except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
-        # 不知道发没发出去：按「已发」占住名额（宁可不重复，也不刷屏）。
-        # 抛专用异常，让 _proactive_tick 不去 mark_fail —— 否则「未知」又被
-        # 记成失败，三次之后自动暂停。
+        # 只有 fut.result 自己的 95 秒到点（= loop 卡住）才走到这里
         pv.mark_unknown(_state_dir(), chat_id, "发送超时，不确定是否已送达", now=now)
         raise pv.UnknownResult("发送超时（结果未知，已按已发记账）") from None
     if not getattr(res, "success", True):
