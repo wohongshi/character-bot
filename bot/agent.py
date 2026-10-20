@@ -780,6 +780,12 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
                        max_tokens=max_tokens,
                        timeout=min(60.0, max(2.0, left)))
         except Exception as e:                                   # noqa: BLE001
+            from .llm import BudgetExceeded
+            # 预算拦下要一路冒到最外层（那里会发一句人话）；在这里吞掉会让
+            # 上层把它当成「agent 没给出回复」—— 一次正常限流就被记成故障
+            if isinstance(e, BudgetExceeded) or isinstance(getattr(e, "__cause__", None),
+                                                           BudgetExceeded):
+                raise
             log.info("收尾回答失败：%s", e)
             return ""
         return _strip_tool_markup(str(r.get("text") or "")).strip()

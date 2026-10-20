@@ -178,7 +178,9 @@ def decide(cfg: dict, *, used_day: int, used_hour: int) -> dict:
         out["allow"] = False
         out["action"] = "stop"
         out["reason"] = f"{what}已用 {used}/{lim} token，到上限了，先歇一会儿"
-    elif c["action"] == "cheap" and c["cheap_model"]:
+    elif c["action"] == "cheap" and c["cheap_model"] and c["cheap_provider"]:
+        # provider 也必须配上：只有模型名时 llm 那边会「跳过降级」按全价继续，
+        # 而面板却显示「这轮换便宜模型」—— 两边的说法会打架
         out["action"] = "cheap"
         out["reason"] = f"{what}已用 {used}/{lim} token，到上限了，这轮换成 {c['cheap_model']}"
     else:

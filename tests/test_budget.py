@@ -91,12 +91,16 @@ def main():
     check("4.2 stop 拦下", r["allow"] is False and r["action"] == "stop")
     check("4.3 stop 的原因是中文人话", "上限" in r["reason"] and "token" in r["reason"],
           r["reason"])
-    r = B.decide({**cfg, "action": "cheap", "cheap_model": "flash"},
-                 used_day=1000, used_hour=0)
+    r = B.decide({**cfg, "action": "cheap", "cheap_provider": "p1",
+                  "cheap_model": "flash"}, used_day=1000, used_hour=0)
     check("4.4 cheap 放行且标 cheap", r["allow"] and r["action"] == "cheap")
     r = B.decide({**cfg, "action": "cheap", "cheap_model": ""},
                  used_day=1000, used_hour=0)
     check("4.5 cheap 但没配模型 → 退化成 warn", r["action"] == "warn", r["action"])
+    r = B.decide({**cfg, "action": "cheap", "cheap_model": "flash"},
+                 used_day=1000, used_hour=0)
+    check("4.6 cheap 缺 provider 也退化成 warn（llm 那边会跳过降级）",
+          r["action"] == "warn", r["action"])
 
     section("5. 小时线优先")
     r = B.decide(cfg, used_day=100, used_hour=400)

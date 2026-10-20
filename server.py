@@ -2925,7 +2925,7 @@ def _messages_rows() -> list:
 def _budget_view() -> dict:
     from bot import budget as B
     dec = _budget_decision()
-    cfg = BUDGET if BUDGET is not None else B.load(STATE_DIR)
+    cfg = _budget_cfg()
     return {"ok": True, "config": cfg, "defaults": B.DEFAULTS, "limits": B.LIMITS,
             "actions": {k: B.ACTIONS_CN[k] for k in B.ACTIONS},
             "used_day": dec["used_day"], "used_hour": dec["used_hour"],
@@ -3195,9 +3195,9 @@ def _run_job_body(job: dict, cid: str) -> None:
     except Exception as e:                                 # noqa: BLE001
         ok, err = False, f"{type(e).__name__}: {e}"[:300]
         # 只有「预算拦下」把原因写进气泡：其它失败可能已经流式吐了一半，
-        # 那半句留在 text 里会被导出成她说过的话（markdown 导出不标错误）
-        from bot.llm import BudgetExceeded
-        text = f"（{e}）" if isinstance(e, BudgetExceeded) else ""
+        # 那半句留在 text 里会被导出成她说过的话（markdown 导出不标错误）。
+        # 用模块级别名：在 except 里再 import 一次，万一它失败会把原异常顶掉
+        text = f"（{e}）" if isinstance(e, _BudgetStop) else ""
     if ok:
         # 心情按「这一轮真的说了什么」记 —— 失败的那轮不算（她没真正回应）
         _note_mood(cid, job.get("text"), text)

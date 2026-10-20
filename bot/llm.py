@@ -53,6 +53,20 @@ def set_budget_hook(fn) -> None:
     _BUDGET_HOOK = fn
 
 
+def _has_tool_turn(messages: list) -> bool:
+    """这条请求是不是「工具循环中途那一轮」。
+
+    `agent.final_answer()` 收尾时故意不带 tools，但对话里还留着 `role: "tool"`
+    和带 `tool_calls` 的 assistant 消息 —— 这种请求交给便宜文本模型同样会 4xx。
+    """
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("role") or "") == "tool" or m.get("tool_calls"):
+            return True
+    return False
+
+
 def _has_image_parts(messages: list) -> bool:
     """这条请求里有没有图片（OpenAI 的 content 数组里带 image_url）。"""
     for m in messages or []:
@@ -809,7 +823,7 @@ class ModelStore:
                 if not cheap_ok:
                     log.warning("用量已超但便宜供应商不可用（%s），按主模型继续",
                                 cheap_pid or "(未配置)")
-                elif tools or _has_image_parts(messages):
+                elif tools or _has_image_parts(messages) or _has_tool_turn(messages):
                     # 只在**纯文字对话**时降级：带图片内容段（看图）或带 tools（工具循环）
                     # 的请求交给便宜文本模型会直接 4xx，然后还会按全价重试一轮 —— 比不降级更亏
                     log.info("用量已超：这次请求带工具/图片，跳过降级（按 %s/%s 继续）",

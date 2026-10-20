@@ -174,6 +174,22 @@ def main():
         if (tmp3 / "memories" / "atri.jsonl.bak").exists() else b""
     check("7b.5 过期计划不会覆盖上一次的 .bak", bak_after == bak_before)
 
+    section("7c. 没有 ts 的行不能一删一片")
+    tmp4 = Path(tempfile.mkdtemp(prefix="klee-memtidy5-"))
+    (tmp4 / "memories").mkdir()
+    f4 = tmp4 / "memories" / "atri.jsonl"
+    rows4 = [{"text": "主人怕黑"},
+             {"text": "主人怕黑。"},          # 和上一条近似 → 会被合并
+             {"text": "完全不相干的一句"}]
+    f4.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows4) + "\n",
+                  encoding="utf-8")
+    p4 = M.plan(M._read(f4), threshold=0.45)
+    res4 = M.apply(tmp4, "atri", p4)
+    left = [r["text"] for r in M._read(f4)]
+    check("7c.1 合并只删掉该删的那条", len(left) == 2, str(left))
+    check("7c.2 不相干的那句还在", any("不相干" in t for t in left), str(left))
+    check("7c.3 返回的条数对", res4["before"] == 3 and res4["after"] == 2, str(res4))
+
     section("8. 幂等 / 空数据")
     p0 = M.plan([], threshold=0.45)
     check("8.1 空列表不炸", p0["counts"]["total"] == 0)

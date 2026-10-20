@@ -176,7 +176,13 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
 
 
 def _path(state_dir: Path | str, character: str) -> Path:
-    return Path(state_dir) / "memories" / f"{character}.jsonl"
+    """复用 memory 的路径规则（它会归一化角色名）。
+
+    自己拼 `memories/<character>.jsonl` 的话，`Klee` / `klee.v2` / `../x` 会去操作
+    一个 `memory.add()` 根本不认的文件（整理静默变成 no-op，最坏写到 state 之外）。
+    """
+    from .memory import path_for
+    return path_for(state_dir, character)
 
 
 def _read(path: Path) -> list:
@@ -231,11 +237,15 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
     from . import memory as mem_mod
     path = _path(state_dir, character)
 
+    def _key(r: dict) -> tuple:
+        # 只用 ts 当身份会把「没有 ts 的老行」全折成 0.0 —— 删一条就删一片
+        return (float(r.get("ts") or 0), str(r.get("text") or ""))
+
     drop_ts = set()
     for g in (p or {}).get("groups") or []:
         for d in g.get("drop") or []:
-            drop_ts.add(float(d.get("ts") or 0))
-    stale_ts = {float(r.get("ts") or 0) for r in (p or {}).get("stale") or []}
+            drop_ts.add(_key(d))
+    stale_ts = {_key(r) for r in (p or {}).get("stale") or []}
     total = int(((p or {}).get("counts") or {}).get("total") or 0)
     if not drop_ts and not stale_ts:
         # before/after 报真实条数：报 0→0 会被面板读成「记忆被清空了」
@@ -245,7 +255,7 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
     merged_by_keep = {}
     for g in (p or {}).get("groups") or []:
         k = g.get("keep") or {}
-        merged_by_keep[float(k.get("ts") or 0)] = k
+        merged_by_keep[_key(k)] = k
 
     lock = getattr(mem_mod, "_LOCK", None)
     ctx = lock if lock is not None else _NullLock()
@@ -256,14 +266,14 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
                     "noop": True}
         out, archived = [], []
         for r in rows:
-            ts = float(r.get("ts") or 0)
-            if ts in drop_ts:
+            k = _key(r)
+            if k in drop_ts:
                 continue
-            if ts in stale_ts:
+            if k in stale_ts:
                 archived.append(r)
                 continue
-            if ts in merged_by_keep:
-                rec = dict(merged_by_keep[ts])
+            if k in merged_by_keep:
+                rec = dict(merged_by_keep[k])
                 rec.pop("merged", None)      # 预演用的计数，不该落进记忆文件
                 out.append(rec)
             else:
@@ -279,11 +289,16 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             # （整理会让文件变小，磁盘满时「拷贝成 .bak」会 ENOSPC 而重写却能成功）
             path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
         if archived:                    # 先归档：失败就整体作废，别丢条目
-            ap = path.with_name(f"{character}.archive.jsonl")
+            ap = path.with_name(f"{path.stem}.archive.jsonl")
             ap.parent.mkdir(parents=True, exist_ok=True)
-            with open(ap, "a", encoding="utf-8") as f:
-                for r in archived:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            # 幂等：主文件写失败后重跑会再算一遍同样的计划，直接 append 会堆重复
+            seen = {_key(r) for r in _read(ap)}
+            merged = list(_read(ap))
+            for r in archived:
+                if _key(r) not in seen:
+                    merged.append(r)
+                    seen.add(_key(r))
+            _write(ap, merged)
         _write(path, out)
     return {"before": len(rows), "after": len(out), "merged": len(drop_ts),
             "archived": len(archived), "dropped": len(drop_ts)}
