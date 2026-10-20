@@ -113,6 +113,13 @@ def main():
     check("4b.3 迁移前留了备份", p5.with_suffix(".json.bak").exists(),
           str(sorted(x.name for x in p5.parent.iterdir())))
 
+    # c) 看图模型故意跟聊天用同一个（多模态）—— 这是正当配置，不能清
+    p6 = mkfile(base(active="m2", vision={"provider": "p1", "model": "m2"}))
+    st6b = ModelStore(p6)
+    check("4b.4 看图模型跟聊天同一个要保留（多模态常见配法）",
+          st6b.vision()["configured"] and st6b.vision()["model"] == "m2",
+          str(st6b.vision()))
+
     section("5. 已经迁移过的文件不再动")
     p3 = mkfile({**base(agent={"provider": "p1", "model": "m1"}), "_schema": SCHEMA})
     st4 = ModelStore(p3)

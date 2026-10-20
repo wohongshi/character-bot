@@ -384,10 +384,13 @@ class ModelStore:
                 provider = act_prov
             # 伪值的两种形状：
             #   a) 等于该 provider 清单第一项（看图下拉默认选第一项）；
-            #   b) 等于当前主模型（工具卡片把 `agent()` 的解析结果回填后保存）。
-            # b 对 agent 尤其常见 —— 且清掉它行为完全不变（跟随 = 用主模型），
-            # 所以不会误伤「我就想让它跟主模型一样」的人。
-            if model == first.get(provider) or (provider == act_prov and model == act_model):
+            #   b) 等于当前主模型 —— **只可能是 agent**：工具卡片回填的是
+            #      `agent()` 的解析结果。看图卡片不会写这个形状，而「聊天和看图
+            #      用同一个多模态模型」是很常见的正当配置，清掉会让图片理解
+            #      悄悄失效（`vision()` 空 = 未配置），所以 b 只对 agent 生效。
+            bad = model == first.get(provider) or (
+                sec == "agent" and provider == act_prov and model == act_model)
+            if bad:
                 v["model"] = ""
                 cleared.append(f"{sec}={model}")
         if cleared:

@@ -4736,7 +4736,10 @@ async function botTestModel(){
   $("mpOut").textContent = d.ok ? `✓ ${d.ms}ms —— ${d.reply}` : `✗ ${d.error}`;
 }
 function botFillVisionModels(){
-  const p = (window.__provs || []).find(x => x.id === $("mvProv").value);
+  // 「跟聊天同一个」时列出的应该是**主 provider** 的模型，不是列表第一家的
+  const act = ((window.__md || {}).active || {}).provider || "";
+  const pid = $("mvProv").value || act;
+  const p = (window.__provs || []).find(x => x.id === pid);
   const ms = p ? (p.models || []) : (((window.__provs || [])[0] || {}).models || []);
   // 选中的值以**当前下拉**为准（换供应商时保留用户已经选的那个），没选过才用配置
   // 只在新供应商真的提供时才保留当前选择：否则 optList 会把它塞进新清单，
