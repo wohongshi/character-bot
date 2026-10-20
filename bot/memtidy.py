@@ -260,26 +260,29 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         if not rows:
             return {"before": 0, "after": 0, "merged": 0, "archived": 0,
                     "dropped": 0, "noop": True}
-        present = {_key(r) for r in rows}
+        # 只算一次 key（每行都要 float + 截断字符串，2000 行重扫几十遍太浪费，
+        # 而且这段全程持 memory._LOCK，聊天那边会被一起挡住）
+        pairs = [(_key(r), r) for r in rows]
+        present = {k for k, _ in pairs}
         stale_ts = {_key(r) for r in (p or {}).get("stale") or []}
 
-        # 逐组核账：keep 还在、且组里至少还有一条别的行，这一组才生效
-        groups = []          # [(keep, [本组现存的所有行])]
+        # 逐组核账：keep 还在（且不是「要被归档」）且组里至少还有一条别的行才生效
+        groups = []          # [(keep_key, keep_row, [本组现存的所有行])]
         group_of = {}        # 行 key → 组下标
         for g in (p or {}).get("groups") or []:
-            keep = g.get("keep") or {}
-            kk = _key(keep)
+            kk = _key(g.get("keep") or {})
             if kk not in present or kk in stale_ts:
                 # keep 被删 / 它自己要被归档：这一组不动（否则 drops 只剩 .bak）
                 continue
             keys = {kk} | {_key(d) for d in (g.get("drop") or [])}
-            alive = [r for r in rows if _key(r) in keys]
+            alive = [r for k, r in pairs if k in keys]
             if len(alive) <= 1:
                 continue
             gi = len(groups)
-            groups.append((keep, alive))
+            keep_row = next(r for k, r in pairs if k == kk)
+            groups.append((kk, keep_row, alive))
             for r in alive:
-                group_of[_key(r)] = gi
+                group_of.setdefault(_key(r), gi)
 
         if not groups and not stale_ts:
             return {"before": len(rows), "after": len(rows), "merged": 0,
@@ -288,21 +291,22 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         out, archived = [], []
         written: set = set()
         merged_rows = 0
-        for r in rows:
-            k = _key(r)
+        for k, r in pairs:
             gi = group_of.get(k)
             if gi is not None:
+                kk, keep_row, alive = groups[gi]
+                if k != kk:
+                    continue        # 组内其余行（含重复行）全部并进 keep 那条
                 if gi in written:
-                    continue                    # 同组其余行（含重复行）都并进第一条
+                    continue        # keep 自身在文件里重复：只写一份
                 written.add(gi)
-                keep, alive = groups[gi]
-                rec = dict(keep)
+                # 以**文件里现在这条** keep 为底（计划是锁外算的，ts/source 可能已经变）
+                rec = dict(keep_row)
                 merged_rows += len(alive) - 1
                 rec["hits"] = sum(int(x.get("hits") or 0) for x in alive)
                 # `_merge_scope(old, new)` 让第二个参数优先（截断从尾部保）：
                 # 先把 keep 自己放进去，再一条条并 drop —— keep 的会话最不容易被截掉
-                kk = _key(keep)
-                scope = str(keep.get("scope") or "")
+                scope = str(keep_row.get("scope") or "")
                 for x in alive:
                     if _key(x) == kk:
                         continue
