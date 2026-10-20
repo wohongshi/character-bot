@@ -352,6 +352,8 @@ def main():
           SV._send_succeeded(_NS(success=False)) is False)
     check("12.3 没有 success 字段按成功算（老适配器）",
           SV._send_succeeded(_NS()) is True)
+    check("12.3b 直接返回 bool 的适配器也认", SV._send_succeeded(False) is False
+          and SV._send_succeeded(True) is True)
 
     st4 = Path(tempfile.mkdtemp(prefix="klee-proact-note-"))
     mj = st4 / "messages.jsonl"

@@ -2583,6 +2583,8 @@ def _send_succeeded(res) -> bool:
     限流和适配器失败都是**正常返回 success=False**（不抛异常），
     所以调用方必须先问这里再补记账。
     """
+    if isinstance(res, bool):        # 有些适配器/假实现直接返回 bool（插件里也是这么兼容的）
+        return res
     return bool(getattr(res, "success", True))
 
 
@@ -2700,7 +2702,7 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
         # 只有 fut.result 自己的 95 秒到点（= loop 卡住）才走到这里
         pv.mark_unknown(_state_dir(), chat_id, "发送超时，不确定是否已送达", now=now)
         raise pv.UnknownResult("发送超时（结果未知，已按已发记账）") from None
-    if not getattr(res, "success", True):
+    if not _send_succeeded(res):      # 和上面补记账用同一份判定，别让两处语义漂移
         raise RuntimeError("发送失败（限流，或适配器没连上）")
     pv.mark_sent(_state_dir(), chat_id, text, now=now, intent=intent["key"])
     return {"text": text, "intent": intent["key"], "chat_id": chat_id}
