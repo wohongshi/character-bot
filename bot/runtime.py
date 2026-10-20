@@ -369,13 +369,22 @@ class BotRuntime(RuntimeFeatures):
         while len(self._own_ids) > 200:
             self._own_ids.popitem(last=False)
 
-    def _log_msg(self, chat_id: str, role: str, text: str) -> None:
-        """写面板消息流（QQ 端）。失败静默，别影响收发。"""
+    def _log_msg(self, chat_id: str, role: str, text: str, *,
+                 user_id: str = "", name: str = "") -> None:
+        """写面板消息流（QQ 端）。失败静默，别影响收发。
+
+        带上说话人（`user_id` / `name`）：「群友画像」要按人统计，
+        光有 chat_id 是分不出谁在说话的。老行没有这两个字段，按「未记录」处理。
+        """
         try:
+            row = {"ts": time.time(), "chat_id": chat_id, "role": role,
+                   "text": str(text)[:800]}
+            if user_id:
+                row["user_id"] = str(user_id)[:24]
+            if name:
+                row["name"] = str(name)[:40]
             with open(self.msg_log, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"ts": time.time(), "chat_id": chat_id,
-                                    "role": role, "text": str(text)[:800]},
-                                   ensure_ascii=False) + "\n")
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except OSError:
             pass
 
@@ -788,7 +797,10 @@ class BotRuntime(RuntimeFeatures):
         if src:
             self._routes[chat_id] = src
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
-        self._log_msg(chat_id, "user", chat_text)
+        # 注意：ctx 在下面几行才建（日志要早于策略判定，才能记下被拦的消息），
+        # 所以这里直接取事件里的昵称，不能读 ctx
+        self._log_msg(chat_id, "user", chat_text, user_id=user_id,
+                      name=str(sender.get("card") or sender.get("nickname") or ""))
 
         # 会话策略 disabled = 完全不理（连命令也不接，和面板/INSTALL 的措辞一致）。
         # 以前只看全局 group_policy；现在每个群/私聊可以单独设（state/chat_policy.json），
@@ -1304,7 +1316,11 @@ class BotRuntime(RuntimeFeatures):
             except Exception as e:                                 # noqa: BLE001
                 self.stats["errors"] += 1
                 logger.warning("聊天失败: %s", e)
-                await self.send(chat_id, "呜……脑袋卡住了，等等再试好不好～", reply_to=ctx.message_id)
+                # 预算拦下要说话（不然群里就是「她忽然不理我」）；
+                # 其它失败保持原来那句，别把技术细节甩到群里
+                msg = (f"（{e}）" if type(e).__name__ == "BudgetExceeded"
+                       else "呜……脑袋卡住了，等等再试好不好～")
+                await self.send(chat_id, msg, reply_to=ctx.message_id)
                 return
         reply = await self.mgr.run_reply_hooks(chat_id, ctx.is_group, reply)
         # 表情标记 → 真的发图。洗在「写历史」之前：历史里只留那句人话，

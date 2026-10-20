@@ -508,6 +508,18 @@ html[data-touch="1"] .cmdkbtn{min-height:44px}   /* 侧栏里的搜索按钮，�
 .route.stop{color:var(--red)}
 .say{display:flex;gap:9px;align-items:flex-start;margin-top:7px}
 .ava.sm{width:28px;height:28px;border-width:2px}
+/* ============ 记忆整理 ============ */
+.tidygrp{border-left:3px solid var(--line);padding:4px 0 4px 8px;margin-bottom:8px}
+.tidyold{opacity:.6;font-size:max(11px, calc(11px * var(--fx)));text-decoration:line-through}
+/* ============ 群友画像 ============ */
+.pprow{display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px dashed var(--line);
+  font-size:12.5px;flex-wrap:wrap}
+.pprow:last-child{border-bottom:0}
+.pprow .nm{flex:none;min-width:76px;max-width:150px;font-weight:600;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.pprow .bar{flex:1;min-width:60px;height:8px;border-radius:5px;background:var(--line);overflow:hidden}
+.pprow .bar i{display:block;height:100%;background:var(--red);opacity:.55}
+.pprow .ct{flex:none;color:var(--dim);font-size:max(11px, calc(11px * var(--fx)))}
 /* ============ 提示词调试 ============ */
 .prbar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--line);margin:8px 0 6px}
 .prbar i{display:block;height:100%}
@@ -4059,6 +4071,24 @@ async function viewPersona(){
     </div>
     <div id="memOut"><div class="kv">读取中…</div></div>
   </div>
+  <div class="card">
+    <h3>🧹 整理记忆 <span class="kv" style="font-family:var(--font-body)">把说过好几遍的同一件事并成一条</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="memTidyPreview(this)">先看看能并哪些</button></h3>
+    <div class="kv" style="margin:6px 0 8px;line-height:1.7">
+      记忆每条消息都会拼进提示词 —— 重复的既费 token 又让模型反复念叨同一件事。
+      这里是按「字面有多像」合并的（不需要模型），<b>保留最新那条</b>，作用域取并集，
+      写盘前会先留一份 <code>.bak</code>。
+    </div>
+    <div class="row" style="gap:10px;flex-wrap:wrap">
+      <label class="kv" style="margin:0">相像到 <input type="number" id="memTh" value="0.45" min="0.3"
+        max="0.95" step="0.05" style="width:70px"> 就合并</label>
+      <label class="kv" style="margin:0">超过 <input type="number" id="memStale" value="0" min="0"
+        max="3650" style="width:70px"> 天没更新的归档（0=不归档）</label>
+      <button class="btn primary tiny" id="memTidyGo" style="display:none" onclick="memTidyApply(this)">确认整理</button>
+      <span class="kv" id="memTidyMsg"></span>
+    </div>
+    <div id="memTidyOut" style="margin-top:8px"></div>
+  </div>
   </div>`;
   $("pChars").textContent = p.chars ?? "—";
   $("pTok").textContent = p.est_tokens ?? "—";
@@ -4140,6 +4170,64 @@ async function stkSend(name){
 }
 
 /* ---------- 长期记忆 ---------- */
+/* ---------- 记忆整理 ---------- */
+let memPlan = null;
+async function memTidyPreview(btn){
+  btn = btn || {};
+  const out = $("memTidyOut"), go = $("memTidyGo");
+  if (out) out.innerHTML = `<div class="kv">比对中…（${ACTIVE.id} 的记忆）</div>`;
+  btn.disabled = true;
+  const d = await api("/api/memories/tidy?character=" + encodeURIComponent(ACTIVE.id) +
+    "&threshold=" + ($("memTh") ? $("memTh").value : 0.45) +
+    "&stale_days=" + ($("memStale") ? $("memStale").value : 0));
+  btn.disabled = false;
+  if (!d || !d.ok){
+    if (out) out.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  memPlan = d;
+  const c = d.counts || {};
+  if (!c.groups && !c.stale){
+    if (out) out.innerHTML = `<div class="kv">没有可以合并的（${c.total} 条记忆里没有近似重复）。</div>`;
+    if (go) go.style.display = "none";
+    return;
+  }
+  if (out) out.innerHTML = `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="tag">${c.total} 条</span>
+      <span class="tag">合并 ${c.merged} 条</span>
+      ${c.stale ? `<span class="tag">归档 ${c.stale} 条</span>` : ""}
+      <span class="tag">整理后 ${c.keep} 条</span></div>`
+    + (d.groups || []).map(g => `<div class="tidygrp">
+        <div class="kv" style="margin:0">保留：${esc(g.text)}</div>
+        ${(g.texts || []).map(t => `<div class="kv tidyold">合并：${esc(t)}</div>`).join("")}
+      </div>`).join("")
+    + (c.stale ? `<details><summary class="kv">要归档的 ${c.stale} 条</summary>
+        ${(d.stale || []).map(x => `<div class="kv tidyold">${esc(String(x.text || "").slice(0, 100))}</div>`).join("")}
+      </details>` : "");
+  if (go) go.style.display = "";
+}
+async function memTidyApply(btn){
+  if (!memPlan){ flash("先预演一次"); return; }
+  if (!confirm("确认整理？会写盘（先备份 .bak），合并掉的句子只保留最新那条。")) return;
+  btn.disabled = true; btn.textContent = "整理中…";
+  const d = await post("/api/memories/tidy", {
+    character: ACTIVE.id,
+    threshold: Number(($("memTh") || {}).value || 0.45),
+    stale_days: Number(($("memStale") || {}).value || 0),
+    apply: true});
+  btn.disabled = false; btn.textContent = "确认整理";
+  const msg = $("memTidyMsg");
+  if (!d || !d.ok){
+    if (msg) msg.textContent = "✗ " + ((d && d.error) || "整理失败");
+    return;
+  }
+  if (msg) msg.textContent = `✓ ${d.result.before} → ${d.result.after} 条（合并 ${d.result.merged}，归档 ${d.result.archived}）`;
+  memPlan = null;
+  $("memTidyGo").style.display = "none";
+  $("memTidyOut").innerHTML = "";
+  loadMemories();
+}
+
 async function loadMemories(){
   const box = $("memOut");
   if (!box) return;
@@ -4592,6 +4680,10 @@ async function viewModels(target){
     </div>
     <div id="mpOut" class="kv" style="margin-top:8px"></div>
   </div>
+  <div class="card" id="bgCard">
+    <h3>💰 用量预算 <span class="kv" style="font-family:var(--font-body)">到上限就提醒 / 换便宜模型 / 直接停</span></h3>
+    <div id="bgBox" class="kv">读取中…</div>
+  </div>
   <div class="card">
     <h3>👀 看图模型 <span class="kv" style="font-family:var(--font-body)">留空 = 不看图</span></h3>
     <div class="row">
@@ -4630,6 +4722,7 @@ async function viewModels(target){
   </div>`;
   fbRender((md && md.fallbacks) || []);
   cmRender((md && md.characters) || {});
+  bgLoad();                       // 预算卡片挂在这张页里，渲染完才有 DOM
 }
 
 /* ---- 备用模型 ---- */
@@ -4730,6 +4823,69 @@ function botFillModels(){
   const p = (window.__provs || []).find(x => x.id === $("mpProv").value) || {models: []};
   $("mpModel").innerHTML = (p.models || []).map(m=>`<option>${esc(m)}</option>`).join("");
 }
+/* ---------- 用量预算 ---------- */
+/* 注意：`d.action` 是**这一次判定**的结果（ok/near/warn/cheap/stop），
+   不是配置里那个策略；两套词分开映射，别拿策略表去查判定值。 */
+const BG_NOW = {ok: "正常", near: "快到上限了", warn: "超了（只提醒）",
+                cheap: "超了（这轮用便宜模型）", stop: "超了（已停止调用）"};
+async function bgLoad(){
+  const box = $("bgBox");
+  if (!box) return;
+  const d = await api("/api/budget");
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  const c = d.config || {};
+  const pct = Math.max(d.pct_day || 0, d.pct_hour || 0);
+  const cls = d.action === "stop" ? "bad" : (pct >= 0.8 ? "warn" : "ok");
+  const pctText = c.daily_tokens || c.hourly_tokens
+    ? `${Math.round((d.pct_day || 0) * 100)}%`
+    : "不限";
+  box.innerHTML = `
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <label class="check"><input type="checkbox" id="bgOn" ${c.on ? "checked" : ""}> 启用</label>
+      <label class="kv" style="margin:0">每天 <input type="number" id="bgDay" value="${c.daily_tokens || 0}"
+        min="0" step="10000" style="width:100px"> token</label>
+      <label class="kv" style="margin:0">每小时 <input type="number" id="bgHour" value="${c.hourly_tokens || 0}"
+        min="0" step="5000" style="width:90px"> token</label>
+      <label class="kv" style="margin:0">超了
+        <select id="bgAct" style="min-width:120px">
+          ${Object.entries(d.actions || {}).map(([k, v]) =>
+            `<option value="${k}" ${k === c.action ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select></label>
+      <label class="kv" style="margin:0">便宜模型
+        <select id="bgCheap" style="min-width:180px">
+          <option value="">（没配 · 「换便宜模型」会退化成只提醒）</option>
+          ${((window.__provs || []).flatMap(p => (p.models || []).map(m => [p.id, m])))
+            .map(([pid, m]) => `<option value="${esc(pid + "|" + m)}"
+              ${(c.cheap_provider === pid && c.cheap_model === m) ? "selected" : ""}>${esc(m)}</option>`).join("")}
+        </select></label>
+      <button class="btn primary tiny" onclick="bgSave(this)">保存</button>
+      <span class="kv" id="bgMsg"></span>
+    </div>
+    <div class="prbar" style="margin:6px 0 4px">
+      <i class="pb-${cls === "bad" ? "k" : (cls === "warn" ? "b" : "c")}"
+         style="width:${Math.min(100, Math.round(pct * 100))}%"></i>
+    </div>
+    <div class="kv" style="margin:0">
+      今天 <b>${d.used_day}</b>${c.daily_tokens ? " / " + c.daily_tokens : ""} token
+      · 这一小时 <b>${d.used_hour}</b>${c.hourly_tokens ? " / " + c.hourly_tokens : ""}
+      · 现在：<b>${esc(BG_NOW[d.action] || d.action || "正常")}</b>
+      ${d.reason ? `<span class="tag ${cls === "bad" ? "bad" : ""}">${esc(d.reason)}</span>` : ""}
+    </div>`;
+}
+async function bgSave(btn){
+  btn.disabled = true;
+  const cheap = (($("bgCheap") || {}).value || "").split("|");
+  const d = await post("/api/budget", {
+    on: !!($("bgOn") || {}).checked,
+    daily_tokens: Number(($("bgDay") || {}).value || 0),
+    hourly_tokens: Number(($("bgHour") || {}).value || 0),
+    action: ($("bgAct") || {}).value || "warn",
+    cheap_provider: cheap[0] || "", cheap_model: cheap[1] || ""});
+  btn.disabled = false;
+  if (!d || !d.ok){ flash("保存失败：" + ((d && d.error) || "未知")); return; }
+  bgLoad();
+}
+
 async function botSaveModel(){
   const d = await post("/api/models", {active: {provider: $("mpProv").value, model: $("mpModel").value}});
   $("mpOut").textContent = d.ok ? "✓ 已保存：" + d.active.provider + " / " + d.active.model
@@ -5733,6 +5889,21 @@ async function viewBoard(target){
     <div class="kv" style="margin:0 0 6px">💛 好感度 Top5</div>
     ${affs || '<div class="kv">还没有人说过话</div>'}
   </div>
+  <div class="card" style="margin-top:14px" id="ppCard">
+    <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <span class="kv" style="margin:0">👥 群友画像 <span id="ppMeta" class="kv" style="margin:0"></span></span>
+      <span class="row" style="gap:6px">
+        <select id="ppChat" style="max-width:220px" onchange="ppLoad()"></select>
+        <span class="ins-seg" id="ppDays">
+          <button data-d="7" onclick="ppSet(7)">7 天</button>
+          <button data-d="30" class="on" onclick="ppSet(30)">30 天</button>
+          <button data-d="90" onclick="ppSet(90)">90 天</button>
+        </span>
+        <button class="btn tiny" onclick="ppLoad(1)">⟳ 刷新</button>
+      </span>
+    </div>
+    <div id="ppBox" class="kv" style="margin-top:6px">读取中…</div>
+  </div>
   <div class="card" style="margin-top:14px" id="insCard">
     <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
       <span class="kv" style="margin:0">📈 对话洞察 <span id="insMeta" class="kv" style="margin:0"></span></span>
@@ -5767,6 +5938,7 @@ async function viewBoard(target){
   $(T).scrollTop = st;                    // 重绘也保住滚动位置
   loadIndexInfo();                        // 索引规模（顺手验证 /api/search/stats 可用）
   renderInsights();                       // 洞察卡片（热力图/角色/常用字）
+  ppCache = null; ppLoad();               // 群友画像
   await viewFeed("feedSlot");
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
   boardTimer = setInterval(() => {
@@ -5776,6 +5948,50 @@ async function viewBoard(target){
 }
 
 let insDays = 30, insSrc = "messages";
+/* ================= 群友画像 ================= */
+let ppDays = 30, ppCache = null;
+function ppSet(d){ ppDays = d;
+  document.querySelectorAll("#ppDays button").forEach(b => b.classList.toggle("on", +b.dataset.d === d));
+  ppLoad(1); }
+async function ppLoad(force){
+  const box = $("ppBox"), sel = $("ppChat");
+  if (!box) return;
+  if (ppCache && !force && Date.now() - ppCache.t < 5000){ ppRender(ppCache.d); return; }
+  const chat = sel ? sel.value : "";
+  const d = await api("/api/people?days=" + ppDays + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  if (sel && !sel.options.length){
+    sel.innerHTML = `<option value="">全部会话</option>` +
+      (d.chats || []).map(c => `<option value="${esc(c.id)}">${esc(prChatLabel(c.id))}（${c.n}）</option>`).join("");
+    if (d.chat_id) sel.value = d.chat_id;
+  }
+  ppCache = {t: Date.now(), d};
+  ppRender(d);
+}
+function ppRender(d){
+  const box = $("ppBox"), meta = $("ppMeta");
+  if (!box) return;
+  if (meta) meta.textContent = d.total_msgs ? `${d.total} 人 · ${d.total_msgs} 条` : "";
+  if (!d.total){
+    box.innerHTML = `<div class="kv">这个范围里还没有 QQ 消息。老记录没存说话人，只有新消息才有名字。</div>`;
+    return;
+  }
+  const max = Math.max(1, ...(d.people || []).map(p => p.n));
+  box.innerHTML = (d.people || []).map(p => {
+    const w = Math.max(4, Math.round(p.n * 100 / max));
+    const idle = p.silent_h >= 24 ? ` · ${Math.round(p.silent_h / 24)} 天没说话`
+                                 : (p.silent_h >= 1 ? ` · ${p.silent_h.toFixed(0)} 小时前` : "");
+    const nm = p.name || p.user_id || "—";
+    const sub = (nm === "未记录" && p.chat) ? "（" + prChatLabel(p.chat) + "）" : "";
+    return `<div class="pprow">
+      <span class="nm" title="${esc(p.user_id || p.chat || "")}">${esc(nm)}${esc(sub)}</span>
+      <span class="bar"><i style="width:${w}%"></i></span>
+      <span class="ct">${p.n} 条 · 平均 ${p.avg_len} 字 · 她回了 ${p.replied} 次${idle}</span>
+    </div>`;
+  }).join("") + (d.total > (d.people || []).length
+    ? `<div class="kv" style="margin-top:4px">……还有 ${d.total - d.people.length} 人（只显示前 ${d.people.length}）</div>` : "");
+}
+
 function insSet(days, src){
   if (days) insDays = days;
   if (src) insSrc = src;

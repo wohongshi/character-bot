@@ -34,6 +34,37 @@ def _require_text(res: dict) -> None:
         raise RuntimeError("模型返回空内容（正文和工具调用都是空的）")
 
 
+class BudgetExceeded(RuntimeError):
+    """用量到上限、且策略是「直接停」：这一次调用不发出去了。"""
+
+
+_BUDGET_HOOK = None
+
+
+def set_budget_hook(fn) -> None:
+    """装一个「这次能不能调」的闸（server 侧用 `bot/budget.py` 实现）。
+
+    钩子返回 `{allow, action, reason, provider, model}`：
+    - `allow=False` → 抛 `BudgetExceeded`，上层给一句人话；
+    - `action="cheap"` → 用返回的 provider/model 顶替这一次的主模型。
+    钩子抛异常一律当成「没装」——预算坏了不能把聊天一起弄死。
+    """
+    global _BUDGET_HOOK
+    _BUDGET_HOOK = fn
+
+
+def _budget_gate():
+    """问一次预算。返回 None（没装/坏了）或决定。"""
+    if _BUDGET_HOOK is None:
+        return None
+    try:
+        d = _BUDGET_HOOK()
+    except Exception as e:                                        # noqa: BLE001
+        log.warning("用量预算钩子出错（忽略这次）：%s", e)
+        return None
+    return d if isinstance(d, dict) else None
+
+
 def set_usage_hook(fn) -> None:
     """注册一个回调：每次模型调用结束都会被叫一次（失败不影响主流程）。"""
     global _USAGE_HOOK
@@ -751,6 +782,15 @@ class ModelStore:
         - 流式已经吐过字了 —— 换模型把前半句再念一遍，比直接报错更糟；
         - 报的是「配置错」（没有 provider / 没有模型）：换一个也救不了。
         """
+        # 预算闸放在最前面：一次调用只问一次，降级链里的重试不再问
+        # （否则「stop」会被 fallback 绕过去，等于没拦）
+        dec = _budget_gate()
+        if dec is not None:
+            if not dec.get("allow", True):
+                raise BudgetExceeded(str(dec.get("reason") or "用量到上限了"))
+            if str(dec.get("action") or "") == "cheap" and dec.get("model"):
+                provider = str(dec.get("provider") or provider or "") or None
+                model = str(dec.get("model") or "") or model
         if not allow_fallback:
             return self._complete_once(
                 messages, model=model, provider=provider, timeout=timeout,
@@ -766,6 +806,7 @@ class ModelStore:
 
         act = self.active()
         first = {"provider": provider or act["provider"], "model": model or act["model"]}
+        # 上面可能被预算改成了便宜模型：`first` 跟着改，失败信息才不会指错
         fails: list = []
         t0 = time.monotonic()
         try:

@@ -1988,6 +1988,12 @@ def _usage_record(rec: dict) -> None:
     except Exception as e:                                       # noqa: BLE001
         logger.info("用量记录失败：%s", e)
         return
+    # 预算计数器：只加一个数，不重读整个 jsonl
+    if _BUDGET_METER is not None:
+        try:
+            _BUDGET_METER.add(int(rec.get("total_tokens") or 0))
+        except Exception:                                         # noqa: BLE001
+            pass
     # 每 500 条检查一次文件大小，别每次都去 stat
     _usage_lines[0] += 1
     if _usage_lines[0] % 500 == 0:
@@ -2778,6 +2784,105 @@ def _proactive_view() -> dict:
             "tick_s": pv.TICK_S, "fail_stop": pv.FAIL_STOP}
 
 
+# ---------- 用量预算 ----------
+BUDGET = None                 # bot/budget.py 的配置（启动时载入）
+_BUDGET_METER = None          # 增量计数器：今天是/这一小时用了多少 token
+
+
+def _budget_init() -> None:
+    """启动时把今天/这一小时的用量从 usage.jsonl 汇总出来做初值。"""
+    global BUDGET, _BUDGET_METER
+    from bot import budget as B
+    BUDGET = B.load(STATE_DIR)
+    _BUDGET_METER = B.Meter()
+    try:
+        roll = B.rollup(_usage_rows(0), now=time.time())
+        _BUDGET_METER.seed(roll["used_day"], roll["used_hour"])
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("预算初值汇总失败（从 0 开始）：%s", e)
+
+
+def _budget_numbers() -> dict:
+    from bot import budget as B
+    if _BUDGET_METER is None:
+        return {"used_day": 0, "used_hour": 0}
+    return _BUDGET_METER.snapshot()
+
+
+def _budget_decision() -> dict:
+    from bot import budget as B
+    cfg = BUDGET if BUDGET is not None else B.load(STATE_DIR)
+    used = _budget_numbers()
+    return B.decide(cfg, now=time.time(), used_day=used["used_day"],
+                    used_hour=used["used_hour"])
+
+
+def _budget_hook() -> dict:
+    """给 `llm.set_budget_hook` 的那个闸：把 decide 的结果翻译成「这次怎么调」。"""
+    dec = _budget_decision()
+    out = {"allow": bool(dec.get("allow", True)), "action": dec.get("action"),
+           "reason": dec.get("reason") or ""}
+    if dec.get("action") == "cheap":
+        cfg = BUDGET or {}
+        out["provider"] = str(cfg.get("cheap_provider") or "")
+        out["model"] = str(cfg.get("cheap_model") or "")
+    return out
+
+
+_MSG_ROWS_CACHE = {"sig": None, "rows": []}
+
+
+def _mem_cid(q) -> str:
+    cid = re.sub(r"[^a-z0-9_\-]", "", str((q.get("character") or [""])[0] or "").strip().lower())[:32]
+    return cid or _active_cid()
+
+
+def _mem_items(cid: str) -> list:
+    """某个角色的全部记忆条目（直接从文件读，不走 memory 的缓存 —— 整理要看到真实磁盘）。"""
+    from bot import memtidy as MT
+    return MT._read(MT._path(_state_dir(), cid))     # noqa: SLF001（同包内部工具）
+
+
+def _messages_rows() -> list:
+    """读 messages.jsonl（按 mtime+size 缓存：画像会连着问好几次）。"""
+    try:
+        st = MSG_JSONL.stat()
+    except OSError:
+        return []
+    sig = (st.st_mtime_ns, st.st_size)
+    if _MSG_ROWS_CACHE["sig"] == sig:
+        return _MSG_ROWS_CACHE["rows"]
+    rows = []
+    try:
+        with open(MSG_JSONL, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+    except OSError:
+        return []
+    _MSG_ROWS_CACHE["sig"], _MSG_ROWS_CACHE["rows"] = sig, rows
+    return rows
+
+
+def _budget_view() -> dict:
+    from bot import budget as B
+    dec = _budget_decision()
+    cfg = BUDGET if BUDGET is not None else B.load(STATE_DIR)
+    return {"ok": True, "config": cfg, "defaults": B.DEFAULTS, "limits": B.LIMITS,
+            "actions": {k: B.ACTIONS_CN[k] for k in B.ACTIONS},
+            "used_day": dec["used_day"], "used_hour": dec["used_hour"],
+            "pct_day": dec["pct_day"], "pct_hour": dec["pct_hour"],
+            "action": dec["action"], "allow": dec["allow"],
+            "reason": dec["reason"], "limit_hit": dec.get("limit_hit", "")}
+
+
 # ---------- 提示词调试台 ----------
 def _prompt_store():
     """运行时里那块只在内存里的环形缓冲；bot 没起来就返回 None。"""
@@ -2923,6 +3028,7 @@ def _run_job_body(job: dict, cid: str) -> None:
         budget = int((rt.config or {}).get("context_budget", CTX_BUDGET) or 0) if rt else 0
         hist = [e for e in _read_jsonl(CHAT_JSONL)
                 if e.get("session") == job["session"] and e.get("text")
+                and not e.get("error")          # 失败那行（比如预算拦下）不是她说过的话
                 and str(e.get("character") or "klee") == cid][-(CTX_SCAN if budget else 12):]
         # 当前这轮已在入队时落盘：按入队时生成的 entry id 精确移除。
         # （以前按文本从后往前找，连发两条相同消息时会删错别人的那条）
@@ -3037,13 +3143,18 @@ def _run_job_body(job: dict, cid: str) -> None:
                                   "role": "assistant", "text": text[:800]})
     except Exception as e:                                 # noqa: BLE001
         ok, err = False, f"{type(e).__name__}: {e}"[:300]
+        # 用量被拦：把原因直接写进气泡，别给一个空气泡让人以为坏了
+        if type(e).__name__ == "BudgetExceeded":
+            text = f"（{e}）"
     if ok:
         # 心情按「这一轮真的说了什么」记 —— 失败的那轮不算（她没真正回应）
         _note_mood(cid, job.get("text"), text)
     try:
         _append_jsonl(CHAT_JSONL, {
             "ts": time.time(), "session": job["session"], "character": cid,
-            "role": "assistant", "text": text if ok else "", "error": err,
+            # 失败的行也带上 text（目前只有「预算拦下」会把原因放进去）；
+            # 读上下文时按 `error` 过滤，所以它不会被当成她说过的话
+            "role": "assistant", "text": text or "", "error": err,
             "elapsed": round(time.time() - t0, 1),
         })
         if ok and job.get("images"):
@@ -4991,7 +5102,8 @@ _SENSITIVE_GET = frozenset({
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
-    "/api/control", "/api/prompt", "/api/proactive",
+    "/api/control", "/api/prompt", "/api/proactive", "/api/budget", "/api/people",
+    "/api/memories/tidy",
 })
 
 
@@ -5535,6 +5647,41 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/lock":
             self._json({"ok": True, "lock": _lock.info(), "queue": _chat_q.qsize(),
                         "busy": _chat_q.busy(), "runs": _run_all()})
+            return
+        if u.path == "/api/budget":
+            self._json(_budget_view())
+            return
+        if u.path == "/api/memories/tidy":
+            from bot import memtidy as MT
+            cid = _mem_cid(q)
+            try:
+                th = float((q.get("threshold") or ["0.45"])[0] or 0.45)
+                sd = int(float((q.get("stale_days") or ["0"])[0] or 0))
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "参数不对"}, 400)
+                return
+            try:
+                items = _mem_items(cid)
+                p = MT.plan(items, threshold=th, stale_days=sd)
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("记忆整理预演失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json({"ok": True, "character": cid, **p})
+            return
+        if u.path == "/api/people":
+            from bot import people as P
+            days = _int_param(q, "days", 30, lo=0, hi=365)
+            chat = str((q.get("chat") or [""])[0] or "").strip()
+            try:
+                rows = _messages_rows()
+                data = P.summarize(rows, days=days, chat_id=chat, top=30)
+                data["chats"] = P.chats(rows)[:40]
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("统计群友画像失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json({"ok": True, **data})
             return
         if u.path == "/api/proactive":
             self._json(_proactive_view())
@@ -6441,6 +6588,52 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({**out, "character": cid})
             return
+        if u.path == "/api/memories/tidy":
+            if not self._guard():
+                return
+            from bot import memtidy as MT
+            cid = re.sub(r"[^a-z0-9_\-]", "", str(body.get("character") or "").strip().lower())[:32]
+            cid = cid or _active_cid()
+            if _char_store().get(cid) is None:
+                self._json({"ok": False, "error": f"没有这个角色：{cid}"}, 400)
+                return
+            try:
+                th = float(body.get("threshold") or 0.45)
+                sd = int(float(body.get("stale_days") or 0))
+                items = _mem_items(cid)
+                p = MT.plan(items, threshold=th, stale_days=sd)
+                if body.get("apply") is not True:
+                    self._json({"ok": True, "character": cid, **p})
+                    return
+                res = MT.apply(_state_dir(), cid, p)
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("记忆整理失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json({"ok": True, "character": cid, "result": res, **p})
+            return
+        if u.path == "/api/budget":
+            if not self._guard():
+                return
+            from bot import budget as B
+            global BUDGET
+            try:
+                BUDGET = B.set_field(_state_dir(),
+                                     on=body.get("on"),
+                                     daily_tokens=(None if body.get("daily_tokens") is None
+                                                   else int(body["daily_tokens"])),
+                                     hourly_tokens=(None if body.get("hourly_tokens") is None
+                                                    else int(body["hourly_tokens"])),
+                                     action=body.get("action"),
+                                     cheap_provider=body.get("cheap_provider"),
+                                     cheap_model=body.get("cheap_model"),
+                                     warn_at=(None if body.get("warn_at") is None
+                                              else float(body["warn_at"])))
+            except (TypeError, ValueError) as e:
+                self._json({"ok": False, "error": f"参数不对：{e}"}, 400)
+                return
+            self._json(_budget_view())
+            return
         if u.path in ("/api/proactive/chat", "/api/proactive/remove",
                       "/api/proactive/test", "/api/proactive/tick"):
             if not self._guard():
@@ -7118,9 +7311,11 @@ def main():
     _start_workers()
     _spawn_worker("sched-loop", _sched_loop)
     _spawn_worker("proactive-loop", _proactive_loop)
+    _budget_init()                              # 预算：今天用了多少先汇总出来
     try:
         from bot import llm as _llm
         _llm.set_usage_hook(_usage_record)      # 每次模型调用都记一笔（失败不影响对话）
+        _llm.set_budget_hook(_budget_hook)      # 超预算的闸（warn/cheap/stop）
     except Exception as e:                                       # noqa: BLE001
         print(f"[klee-studio] 用量钩子挂不上：{e}", flush=True)
     srv = Server((BIND, PORT), Handler)
