@@ -52,6 +52,9 @@ from . import chat_char                    # 会话绑定的「此刻是谁」�
 from . import toolbox
 logger = logging.getLogger(__name__)
 
+# 按需装载失败后的退避（秒）：失败一次就每条消息重试会刷日志、也拖慢消息
+RETRY_COOLDOWN = 300.0
+
 
 # ---- 常量 / 哨兵 ----
 class _Block:
@@ -715,6 +718,7 @@ class FeatureManager:
         self._loaded_chars: set[str] = set()
         self._dormant: Dict[str, Path] = {}         # 未装载的角色插件：name → 文件
         self._char_touch: Dict[str, float] = {}      # LRU：角色 → 上次用到的时间
+        self._retry_at: Dict[str, float] = {}         # 装载失败的角色 → 什么时候再试
         self._enabled_cfg: Any = []
         self._settings: dict = {}
 
@@ -1092,12 +1096,16 @@ class FeatureManager:
         cid = str(cid or "").strip().lower()
         if not cid:
             return False
-        self._char_touch[cid] = time.time()
-        if not self.lazy_characters or cid in self._loaded_chars:
+        if not self.lazy_characters:
+            with self._lock:
+                self._char_touch[cid] = time.time()
             return False
         with self._lock:
+            self._char_touch[cid] = time.time()      # 面板会并发遍历它，必须持锁写
             if cid in self._loaded_chars:
                 return False
+            if time.time() < float(self._retry_at.get(cid) or 0):
+                return False                         # 刚失败过，退避一会儿再试
             self._loaded_chars.add(cid)
             todo = []
             for name, path in list(self._dormant.items()):
@@ -1114,11 +1122,15 @@ class FeatureManager:
                     continue
                 info = self.plugins.get(name) or {}
                 if info.get("error") or not info.get("registered"):
-                    # exec/register 失败：`_load_one` 只在 info 里记 error 就返回，
-                    # 不放进待命的话这个角色整轮进程都再也装不上它
-                    logger.warning("OneBot: 按需装载插件 %s 失败（%s），留待下次重试",
-                                   name, str(info.get("error"))[:80] or "未注册")
+                    # 失败：放回待命 + 把角色从「已加载」里摘掉，否则下次 ensure
+                    # 会在 `cid in _loaded_chars` 那行直接返回，这个角色整轮进程
+                    # 都再也装不上它（日志说「留待重试」但永远不重试）。
+                    logger.warning("OneBot: 按需装载插件 %s 失败（%s），%d 秒后再试",
+                                   name, str(info.get("error"))[:80] or "未注册",
+                                   int(RETRY_COOLDOWN))
                     self._dormant[name] = path
+                    self._loaded_chars.discard(cid)
+                    self._retry_at[cid] = time.time() + RETRY_COOLDOWN
                 else:
                     self._dormant.pop(name, None)
             return bool(todo)
@@ -1230,7 +1242,14 @@ class FeatureManager:
             if spec is None or spec.loader is None:
                 raise RuntimeError("无法为插件文件建立 import spec")
             module = _ilu.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            # 登记进 sys.modules：插件里 `import` 兄弟模块/自引用时才找得到，
+            # 卸载时 `_drop_modules` 也才有东西可摘（不登记的话那个函数是空转）。
+            sys.modules[mod_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(mod_name, None)      # 半截模块别留在表里
+                raise
         except Exception as e:                                # noqa: BLE001
             info["error"] = f"{type(e).__name__}: {e}"
             self.plugins[name] = info

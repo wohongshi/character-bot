@@ -2561,7 +2561,7 @@ def _kb_ingest(text: str, *, filename: str = "", character: str = "",
         payload = {"text": chunk["text"],
                    "title": (ctitle or title)[:120],
                    "source": f"import:{title or '粘贴'}"[:160],
-                   "character": cid}
+                   "character": cid, "strict": True}
         req = urllib.request.Request(
             KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
@@ -5967,12 +5967,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "bot 未启动"}, 503)
                 return
             cid_q = (q.get("character") or [""])[0].strip().lower()
-            # GET 只读：不 pin（pin 会改「必须保留」名单）。真要看别的角色的
-            # 技能，先让它装上，且只认真的存在的角色（防止脏 query 占名额）。
-            if cid_q and _char_store().get(cid_q) is not None:
-                BOT.runtime.mgr.ensure_character(cid_q)
             hub = getattr(BOT.runtime, "skills", None)
-            self._json({"ok": True, "skills": hub.skills() if hub else []})
+            want_cid = cid_q if (cid_q and _char_store().get(cid_q) is not None) else ""
+            if want_cid:
+                # 先装上（GET 不 pin：pin 会改「必须保留」名单），
+                # 再同步一次，让 max_loaded_characters 对这条路径也生效
+                BOT.runtime.mgr.ensure_character(want_cid)
+                if hasattr(BOT.runtime, "_sync_loaded"):
+                    BOT.runtime._sync_loaded()
+            from bot import chat_char as _cc
+            tok = _cc.push(want_cid)
+            try:
+                # `skills()` 读 ContextVar：HTTP 线程里是空的，不压一下就永远按
+                # 全局角色出清单 —— `?character=` 会变成「只装插件、清单不变」的假参数
+                items = hub.skills() if hub else []
+            finally:
+                _cc.pop(tok)
+            self._json({"ok": True, "character": want_cid, "skills": items})
             return
         if u.path == "/api/agent":
             if not BOT:
@@ -7445,7 +7456,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # 切换后才失效缓存：POST 开头清过一次，但并发 GET 可能在切换过程中把旧值又缓存上
             _CHAR_CACHE.update(ts=0.0, data=None)
-            _PLUG_CACHE.update(ts=0.0, data=None)   # snapshot 里的 enabled 是按角色算的
+            _PLUG_CACHE.clear()   # snapshot 里的 enabled 是按角色算的
             _CMD_CACHE.update(ts=0.0, data=None, key="")   # 命令清单也随角色变
             self._json({"ok": True, "active": info["id"], "character": info,
                         "note": "已切换（人格 / 知识库 / 角色插件一起生效）"})
@@ -7494,7 +7505,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
                     return
                 _OVERVIEW_CACHE.update(ts=0.0, data=None)
-                _PLUG_CACHE.update(ts=0.0, data=None)
+                _PLUG_CACHE.clear()
                 rest = {k: v for k, v in setmap.items() if k not in sys_names}
                 body = {k: v for k, v in body.items() if k != "set"}
                 if rest:
@@ -7519,7 +7530,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 os.replace(tmp, cfg_path)
-                _PLUG_CACHE.update(ts=0.0, data=None)
+                _PLUG_CACHE.clear()
                 RELOAD_MARK.touch()
             except OSError as e:
                 try:

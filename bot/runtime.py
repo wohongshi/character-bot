@@ -1744,19 +1744,22 @@ class BotRuntime(RuntimeFeatures):
                 except Exception as e:                             # noqa: BLE001
                     logger.warning("适配器 %s 重配置失败：%s", ad.platform, e)
         self.setup_extras(cfg, preserve_buckets=True)
+        # 两个键变了 → 真重载插件。**放线程里**：这段跑在事件循环线程上
+        # （`loop.call_soon_threadsafe`），load() 要 exec/注册上百个插件、还要
+        # 起外部进程，直接在循环里做会把心跳和所有群的消息一起卡几秒。
+        if _old is not None and _old != _new:
+            def _reload_lazy() -> None:
+                try:
+                    self.mgr.load()
+                    self._sync_loaded()
+                    logger.info("按需装载已重新生效：lazy=%s max=%s", _new[0], _new[1])
+                except Exception as e:                              # noqa: BLE001
+                    logger.warning("按需装载重载失败（插件可能只装了一半，"
+                                   "去面板点一次「重载」或重启）：%s", e)
+
+            threading.Thread(target=_reload_lazy, name="lazy-reload", daemon=True).start()
 
     # ---------- 状态 ----------
-
-        # 两个键变了 → 重载插件（同步，几秒；配置保存是低频操作）
-        if _old is not None and _old != _new:
-            try:
-                self.mgr.load()
-                self._sync_loaded()
-                logger.info("按需装载已重新生效：lazy=%s max=%s", _new[0], _new[1])
-            except Exception as e:                                  # noqa: BLE001
-                logger.warning("按需装载重载失败（沿用旧状态）：%s", e)
-
-
 
     def metrics(self) -> dict:
         """面板用运行时指标：速率 / 插件命中 / 错误 / 限流。"""
