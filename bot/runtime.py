@@ -615,9 +615,14 @@ class BotRuntime(RuntimeFeatures):
         except Exception:                                          # noqa: BLE001
             logger.debug("%s 钩子链异常（已忽略）", kind)
 
-    def policy_for(self, chat_id: str, *, is_group: bool = True,
+    def policy_for(self, chat_id: str, *, is_group: bool,
                    now: float | None = None) -> dict:
         """这个会话此刻生效的策略（含静默时段）。见 bot/chatpolicy.py。
+
+        `is_group` **必须显式传**：群/私聊的 disabled 语义不同（全局 disabled
+        只关群、不哑私聊），给它一个「默认按群」的值会让漏传静默退化成
+        那个 bug —— 宁可调用时报错。
+        
 
         失败按全局策略处理：策略文件坏了不该让消息完全不处理。
 
