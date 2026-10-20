@@ -1317,8 +1317,10 @@ class BotRuntime(RuntimeFeatures):
                 self.stats["errors"] += 1
                 logger.warning("聊天失败: %s", e)
                 # 预算拦下要说话（不然群里就是「她忽然不理我」）；
-                # 其它失败保持原来那句，别把技术细节甩到群里
-                msg = (f"（{e}）" if type(e).__name__ == "BudgetExceeded"
+                # 其它失败保持原来那句，别把技术细节甩到群里。
+                # 用 isinstance 而不是比类名：改名/包一层之后按名字判断会静默失效
+                from .llm import BudgetExceeded
+                msg = (f"（{e}）" if isinstance(e, BudgetExceeded)
                        else "呜……脑袋卡住了，等等再试好不好～")
                 await self.send(chat_id, msg, reply_to=ctx.message_id)
                 return

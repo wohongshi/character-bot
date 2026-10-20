@@ -226,6 +226,16 @@ def main():
               len(calls) - n1 == 1, str(len(calls) - n1))
         L._open_url = fake_open
 
+        # 便宜供应商被删/改名：不能降级（否则 allow_fallback=False 会让每次调用都失败）
+        L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
+                                   "provider": "ghost", "model": "cheap"})
+        seen_g = []
+        L._open_url = lambda req, timeout=0: (seen_g.append(req.data) or fake_open(req))
+        out_g = st.chat([{"role": "user", "content": "hi"}])
+        check("9.8b 便宜供应商不存在就按主模型继续（不能直接失败）", out_g == "ok", out_g)
+        check("9.8c 用的还是主模型",
+              b'"model": "m1"' in (seen_g[0] if seen_g else b""), str(seen_g[:1])[:120])
+
         # 带 tools / 图片的请求不降级（便宜文本模型会 4xx，再按全价重试更亏）
         L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
                                    "provider": "p1", "model": "cheap"})

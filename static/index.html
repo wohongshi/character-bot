@@ -4223,8 +4223,10 @@ async function memTidyApply(btn){
   }
   if (msg) msg.textContent = `✓ ${d.result.before} → ${d.result.after} 条（合并 ${d.result.merged}，归档 ${d.result.archived}）`;
   memPlan = null;
-  $("memTidyGo").style.display = "none";
-  $("memTidyOut").innerHTML = "";
+  // 整理要几秒，用户可能已经切页（DOM 被重绘掉）→ 别在这里 TypeError
+  const goEl = $("memTidyGo"), outEl = $("memTidyOut");
+  if (goEl) goEl.style.display = "none";
+  if (outEl) outEl.innerHTML = "";
   loadMemories();
 }
 
@@ -4851,9 +4853,15 @@ async function bgLoad(){
       <label class="kv" style="margin:0">便宜模型
         <select id="bgCheap" style="min-width:180px">
           <option value="">（没配 · 「换便宜模型」会退化成只提醒）</option>
-          ${((window.__provs || []).flatMap(p => (p.models || []).map(m => [p.id, m])))
-            .map(([pid, m]) => `<option value="${esc(pid + "|" + m)}"
-              ${(c.cheap_provider === pid && c.cheap_model === m) ? "selected" : ""}>${esc(m)}</option>`).join("")}
+          ${(() => {
+            const pairs = (window.__provs || []).flatMap(p => (p.models || []).map(m => [p.id, m]));
+            // 已配置但已经不在任何清单里的组合也要列出来：否则浏览器落到占位项，
+            // 下次保存就把配置悄悄清空了
+            const cur = c.cheap_model ? [c.cheap_provider || "", c.cheap_model] : null;
+            if (cur && !pairs.some(([pid, m]) => pid === cur[0] && m === cur[1])) pairs.unshift(cur);
+            return pairs.map(([pid, m]) => `<option value="${esc(pid + "|" + m)}"
+              ${(c.cheap_provider === pid && c.cheap_model === m) ? "selected" : ""}>${esc(m)}${pid ? "" : "（未指定供应商）"}</option>`).join("");
+          })()}
         </select></label>
       <button class="btn primary tiny" onclick="bgSave(this)">保存</button>
       <span class="kv" id="bgMsg"></span>
@@ -5892,9 +5900,9 @@ async function viewBoard(target){
       <span class="row" style="gap:6px">
         <select id="ppChat" style="max-width:220px" onchange="ppPick(this.value)"></select>
         <span class="ins-seg" id="ppDays">
-          <button data-d="7" onclick="ppSet(7)">7 天</button>
-          <button data-d="30" class="on" onclick="ppSet(30)">30 天</button>
-          <button data-d="90" onclick="ppSet(90)">90 天</button>
+          <button data-d="7" class="${ppDays === 7 ? "on" : ""}" onclick="ppSet(7)">7 天</button>
+          <button data-d="30" class="${ppDays === 30 ? "on" : ""}" onclick="ppSet(30)">30 天</button>
+          <button data-d="90" class="${ppDays === 90 ? "on" : ""}" onclick="ppSet(90)">90 天</button>
         </span>
         <button class="btn tiny" onclick="ppLoad(1)">⟳ 刷新</button>
       </span>

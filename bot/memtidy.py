@@ -260,7 +260,12 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             if ts in stale_ts:
                 archived.append(r)
                 continue
-            out.append({**merged_by_keep[ts]} if ts in merged_by_keep else r)
+            if ts in merged_by_keep:
+                rec = dict(merged_by_keep[ts])
+                rec.pop("merged", None)      # 预演用的计数，不该落进记忆文件
+                out.append(rec)
+            else:
+                out.append(r)
 
         # 计划是锁外算的：并发的第二次 apply、或者计划已过期时，这里可能根本没变化。
         # 那种情况下**一个字节都不写**（否则会拿已经整理过的内容覆盖掉第一轮留的 .bak）

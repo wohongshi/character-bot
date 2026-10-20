@@ -425,7 +425,7 @@ def _read_jsonl(path: Path) -> list:
             start = max(0, size - JSONL_TAIL_BYTES)
             f.seek(start)
             data = f.read().decode("utf-8", "replace")
-        lines = data.splitlines()
+        lines = _jsonl_lines(data)         # 只按 \n 切（splitlines 会被 \u2028 断开）
         if start > 0 and lines:
             lines = lines[1:]              # 第一条多半被截断，丢掉
         for line in lines:
@@ -1994,8 +1994,9 @@ def _usage_record(rec: dict) -> None:
     if _BUDGET_METER is not None:
         try:
             _BUDGET_METER.add(int(rec.get("total_tokens") or 0))
-        except Exception:                                         # noqa: BLE001
-            pass
+        except Exception as e:                                    # noqa: BLE001
+            # 静默吞掉的话，预算会永久少计，面板上只看到「今天 0」——闸失效都没线索
+            logger.debug("预算计数失败（这条不计入）：%s", e)
     # 每 500 条检查一次文件大小，别每次都去 stat
     _usage_lines[0] += 1
     if _usage_lines[0] % 500 == 0:
@@ -3170,9 +3171,10 @@ def _run_job_body(job: dict, cid: str) -> None:
                                   "role": "assistant", "text": text[:800]})
     except Exception as e:                                 # noqa: BLE001
         ok, err = False, f"{type(e).__name__}: {e}"[:300]
-        # 用量被拦：把原因直接写进气泡，别给一个空气泡让人以为坏了
-        if type(e).__name__ == "BudgetExceeded":
-            text = f"（{e}）"
+        # 只有「预算拦下」把原因写进气泡：其它失败可能已经流式吐了一半，
+        # 那半句留在 text 里会被导出成她说过的话（markdown 导出不标错误）
+        from bot.llm import BudgetExceeded
+        text = f"（{e}）" if isinstance(e, BudgetExceeded) else ""
     if ok:
         # 心情按「这一轮真的说了什么」记 —— 失败的那轮不算（她没真正回应）
         _note_mood(cid, job.get("text"), text)
@@ -5430,6 +5432,13 @@ class Handler(BaseHTTPRequestHandler):
                     lines.append(f"**{who}**（{when}）：![图片]({e.get('img')})")
                     continue
                 txt = str(e.get("text") or "").strip()
+                if e.get("error"):
+                    # 出错的那一轮要标出来（HTML 导出一直是这么做的）：
+                    # 否则「（今天已用 … 到上限了）」会被当成她本人说的话
+                    why = str(e.get("error"))[:120]
+                    lines.append(f"**{who}**（{when}）：⚠️ 这一轮出错 —— {why}")
+                    lines.append("")
+                    continue
                 refs = [str(r) for r in (e.get("images") or []) if str(r).strip()]
                 if not txt and not refs:
                     continue
@@ -6627,6 +6636,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 th = float(body.get("threshold") or 0.45)
                 sd = int(float(body.get("stale_days") or 0))
+            except (TypeError, ValueError) as e:
+                self._json({"ok": False, "error": f"参数不对：{e}"}, 400)
+                return
+            try:
                 items = _mem_items(cid)
                 p = MT.plan(items, threshold=th, stale_days=sd)
                 if body.get("apply") is not True:

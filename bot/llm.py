@@ -800,15 +800,22 @@ class ModelStore:
         if dec is not None:
             if not dec.get("allow", True):
                 raise BudgetExceeded(str(dec.get("reason") or "用量到上限了"))
+            cheap_pid = str(dec.get("provider") or "")
+            # 只有「provider 真的存在 + 模型名非空」才降级：
+            # 便宜供应商被删/改名后仍然降级的话，`allow_fallback=False` 会让
+            # 每一次聊天都直接失败（连回复都没有），比不降级糟得多
+            cheap_ok = bool(cheap_pid and self.get_provider(cheap_pid))
             if str(dec.get("action") or "") == "cheap" and dec.get("model"):
-                # 只在**纯文字对话**时降级：带图片内容段（看图）或带 tools（工具循环）
-                # 的请求交给便宜文本模型会直接 4xx，然后还会按全价重试一轮 —— 比不降级更亏
-                if tools or _has_image_parts(messages):
-                    # 不降级，但要留痕：不然面板说「换便宜模型」而实际一直按全价跑
+                if not cheap_ok:
+                    log.warning("用量已超但便宜供应商不可用（%s），按主模型继续",
+                                cheap_pid or "(未配置)")
+                elif tools or _has_image_parts(messages):
+                    # 只在**纯文字对话**时降级：带图片内容段（看图）或带 tools（工具循环）
+                    # 的请求交给便宜文本模型会直接 4xx，然后还会按全价重试一轮 —— 比不降级更亏
                     log.info("用量已超：这次请求带工具/图片，跳过降级（按 %s/%s 继续）",
                              provider or "主模型", model or "(active)")
                 else:
-                    provider = str(dec.get("provider") or provider or "") or None
+                    provider = cheap_pid or provider
                     model = str(dec.get("model") or "") or model
                     # 降级期间不走降级链：`fallbacks()` 只排除当前 active，
                     # 便宜模型一失败就会用全价模型重试，等于预算没生效

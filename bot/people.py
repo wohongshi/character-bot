@@ -134,7 +134,10 @@ def chats(rows: list, *, include_web: bool = False) -> list:
             continue
         ts = _num(r.get("ts"))
         cur = seen.get(cid) or {"id": cid, "last": 0.0, "n": 0}
-        cur["n"] += 1
+        # n 只数**用户**消息：面板把它显示成「群 X（N）」，而画像里那个「条」
+        # 也是用户消息数 —— 口径不一致会在同一页上出现两个不同的「条」
+        if str(r.get("role") or "") == "user":
+            cur["n"] += 1
         if ts > cur["last"]:
             cur["last"] = ts
         seen[cid] = cur
