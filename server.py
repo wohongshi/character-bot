@@ -5970,11 +5970,16 @@ class Handler(BaseHTTPRequestHandler):
             hub = getattr(BOT.runtime, "skills", None)
             want_cid = cid_q if (cid_q and _char_store().get(cid_q) is not None) else ""
             if want_cid:
-                # 先装上（GET 不 pin：pin 会改「必须保留」名单），
-                # 再同步一次，让 max_loaded_characters 对这条路径也生效
+                # 先装上（GET 不 pin：pin 会改「必须保留」名单），再同步一次让
+                # max_loaded_characters 生效。同步时**把 want_cid 算进必须保留** ——
+                # 否则「必需角色已经等于上限」时，刚装上的它会立刻被当「额外」卸掉。
                 BOT.runtime.mgr.ensure_character(want_cid)
-                if hasattr(BOT.runtime, "_sync_loaded"):
-                    BOT.runtime._sync_loaded()
+                mgr = BOT.runtime.mgr
+                if hasattr(BOT.runtime, "loaded_characters") and hasattr(mgr, "update_loaded"):
+                    try:
+                        mgr.update_loaded(set(BOT.runtime.loaded_characters) | {want_cid})
+                    except Exception as e:                          # noqa: BLE001
+                        logger.info("技能清单：同步按需装载失败（继续）：%s", e)
             from bot import chat_char as _cc
             tok = _cc.push(want_cid)
             try:

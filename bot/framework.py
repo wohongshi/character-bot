@@ -812,6 +812,7 @@ class FeatureManager:
         settings = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
         self._enabled_cfg, self._settings = enabled_cfg, settings
         self._dormant = {}
+        self._retry_at.clear()          # 加载/重载 = 「这次算数」：别让旧退避挡住
         self._loaded_chars = self._want_characters()
 
         self._register_builtin()
@@ -1119,6 +1120,9 @@ class FeatureManager:
                 except Exception as e:                            # noqa: BLE001
                     logger.warning("OneBot: 按需装载插件 %s 失败 — %s", name, e)
                     self._dormant[name] = path
+                    self._loaded_chars.discard(cid)
+                    self._retry_at[cid] = time.time() + RETRY_COOLDOWN
+                    self._drop_modules(name)
                     continue
                 info = self.plugins.get(name) or {}
                 if info.get("error") or not info.get("registered"):
@@ -1142,6 +1146,7 @@ class FeatureManager:
             return []
         with self._lock:
             self._loaded_chars.discard(cid)
+            self._retry_at.pop(cid, None)      # 手动卸载后再装要立刻能装上
             freed = []
             for name, info in list(self.plugins.items()):
                 chars = {str(x).strip().lower() for x in (info.get("characters") or ())}
@@ -1253,6 +1258,7 @@ class FeatureManager:
         except Exception as e:                                # noqa: BLE001
             info["error"] = f"{type(e).__name__}: {e}"
             self.plugins[name] = info
+            self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 加载失败 — %s", name, info["error"])
             return
 
@@ -1316,12 +1322,14 @@ class FeatureManager:
 
         self.plugins[name] = info
         if not info["enabled"] and not info.get("registered"):
+            self._drop_modules(name)      # 关掉的插件不留在 sys.modules 里
             return
 
         register = getattr(module, "register", None)
         if not callable(register):
             info["error"] = "没有 register(api) 函数"
             info["enabled"] = False
+            self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 缺少 register(api)，已跳过", name)
             return
         toolbox.unregister_plugin(name, self)   # 重载：先摘旧工具，register 里再登记新的
@@ -1344,6 +1352,7 @@ class FeatureManager:
             self.pages.pop(name, None)
             info["error"] = f"register(): {type(e).__name__}: {e}"
             info["enabled"] = False
+            self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 注册失败（已回滚半截注册）— %s", name, info["error"])
 
     # ---------- 注册 ----------
