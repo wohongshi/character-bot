@@ -4743,19 +4743,26 @@ async function botSaveModel(){
     window.__provs = d.providers || window.__provs;
     // 看图卡片的候选和「当前：xx / yy」都是按主 provider 算的：主模型换了
     // 整张卡都要跟着走，否则显示的是「已关闭」而服务端其实还开着
-    if (d.vision_raw) window.__mvSaved = d.vision_raw.model || "";
-    if (d.vision) window.__vis = Object.assign({}, window.__vis || {},
-      {configured: !!d.vision.configured, model: (d.vision_raw || {}).model || "",
-       provider: (d.vision_raw || {}).provider || ""});
+    const visOn = !!((d.vision || {}).configured);
+    const visRaw = d.vision_raw || {};
+    // 未配置时 raw.model 只是残值：写进基线的话下拉会把它捡回来，一保存就
+    // 把一个服务端明确说「关着」的功能悄悄打开
+    window.__mvSaved = visOn ? (visRaw.model || "") : "";
+    window.__vis = Object.assign({}, window.__vis || {}, {
+      configured: visOn, model: visOn ? (visRaw.model || "") : "",
+      provider: visOn ? (visRaw.provider || "") : ""});
     window.__mvSel = null;
     if ($("mvProv") && $("mvModel")){
+      const mp = $("mvProv");
+      // **先定 provider 再列模型**：botFillVisionModels 是按 provider 下拉的当前值
+      // 取候选清单的，顺序反了会出现「显示 A、列的是 B 的模型」
+      if (mp) mp.value = visOn ? (visRaw.provider || "") : "";
       botFillVisionModels();
       const out = $("mvOut");
-      if (out) out.textContent = (window.__vis || {}).configured
-        ? `当前：${window.__vis.provider} / ${window.__vis.model}`
+      const rv = d.vision || {};
+      if (out) out.textContent = rv.configured
+        ? `当前：${rv.provider} / ${rv.model}`      // 用解析后的：raw 的 provider 可能为空
         : "没配（发图时只会请你描述）";
-      const mp = $("mvProv");
-      if (mp) mp.value = (window.__vis || {}).configured ? ((window.__vis || {}).provider || "") : "";
     }
   }
 }
@@ -4768,9 +4775,16 @@ async function botTestModel(){
    只记布尔「动没动」是不够的：A→B→A 绕一圈时中间会变成空，布尔会让我们误以为
    用户就是想清空，于是把钉住的模型悄悄抹掉。 */
 function pickSel(now, sel, saved, ms){
-  if (ms.includes(now)) return now;
-  const want = (sel !== null && sel !== undefined) ? sel : (saved || "");
-  return ms.includes(want) ? want : "";
+  const base = String(saved || "");
+  if (ms.includes(now)) return now;                       // 当前下拉合法 → 用它
+  if (sel === null || sel === undefined)                  // 没动过 → 服务端的值
+    return ms.includes(base) ? base : "";
+  const want = String(sel);
+  if (!want) return "";                                   // 用户明确要「跟聊天同一个/不启用」
+  if (ms.includes(want)) return want;
+  // 选了别家供应商的模型（中途切过供应商）：这个选择在这家不存在，
+  // 退回服务端基线，别顺手把它清成空（保存时会把钉住的模型抹掉）
+  return ms.includes(base) ? base : "";
 }
 function botFillVisionModels(){
   // 「跟聊天同一个」时列出的应该是**主 provider** 的模型，不是列表第一家的
