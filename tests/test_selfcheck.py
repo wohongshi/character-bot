@@ -203,9 +203,11 @@ def main():
         check("8.2 条目齐全", len(d.get("items") or []) == 12, str(len(d.get("items") or [])))
         check("8.3 带整体等级", d.get("level") in ("ok", "warn", "bad"), str(d.get("level")))
         check("8.4 带计数", set((d.get("counts") or {})) == {"ok", "warn", "bad"}, str(d.get("counts")))
-        # 真服务上不该有「状态目录不可写」这种硬伤
-        bads = [i["id"] for i in d["items"] if i["level"] == "bad"]
-        check("8.5 生产环境没有 bad 项", not bads, str(bads))
+        # 真服务上不该有「状态目录不可写」这种硬伤。
+        # `adapter` 例外：QQ 掉登录态要人去扫码，那不是代码问题，也不该让整轮红掉
+        bads = [i["id"] for i in d["items"]
+                if i["level"] == "bad" and i["id"] != "adapter"]
+        check("8.5 生产环境没有 bad 项（登录态除外）", not bads, str(bads))
         wk = next(i for i in d["items"] if i["id"] == "workers")
         # 一次性线程（cache-warm）跑完就退，不能算成「后台任务已停止」——
         # 第一版就误报过它，所以这里既看等级也看数字

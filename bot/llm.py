@@ -811,6 +811,7 @@ class ModelStore:
         # 预算闸放在最前面：一次调用只问一次，降级链里的重试不再问
         # （否则「stop」会被 fallback 绕过去，等于没拦）
         dec = _budget_gate()
+        cheap_try = None
         if dec is not None:
             if not dec.get("allow", True):
                 raise BudgetExceeded(str(dec.get("reason") or "用量到上限了"))
@@ -829,17 +830,34 @@ class ModelStore:
                     log.info("用量已超：这次请求带工具/图片/工具轮，跳过降级（按 %s/%s 继续）",
                              provider or "主模型", model or "(active)")
                 else:
+                    cheap_try = {"provider": provider, "model": model}
                     provider = cheap_pid or provider
                     model = str(dec.get("model") or "") or model
                     # 降级期间不走降级链：`fallbacks()` 只排除当前 active，
                     # 便宜模型一失败就会用全价模型重试，等于预算没生效
                     allow_fallback = False
         if not allow_fallback:
-            return self._complete_once(
-                messages, model=model, provider=provider, timeout=timeout,
-                temperature=temperature, max_tokens=max_tokens, tools=tools,
-                tool_choice=tool_choice, extra_body=extra_body,
-                stream=stream, on_delta=on_delta, _character=character)
+            try:
+                return self._complete_once(
+                    messages, model=model, provider=provider, timeout=timeout,
+                    temperature=temperature, max_tokens=max_tokens, tools=tools,
+                    tool_choice=tool_choice, extra_body=extra_body,
+                    stream=stream, on_delta=on_delta, _character=character)
+            except BudgetExceeded:
+                raise
+            except Exception as e:                                # noqa: BLE001
+                # 便宜模型可能已经下线/改名/key 失效：这时**整段时间**都会失败，
+                # 比多花点钱糟得多。退回主模型一次，并把原因记下来。
+                if not cheap_try:
+                    raise
+                log.warning("便宜模型 %s 不可用（%s），这一轮退回主模型",
+                            model, str(e)[:120])
+                return self._complete_once(
+                    messages, model=cheap_try.get("model") or None,
+                    provider=cheap_try.get("provider") or None,
+                    timeout=timeout, temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, tool_choice=tool_choice, extra_body=extra_body,
+                    stream=stream, on_delta=on_delta, _character=character)
         emitted = {"any": False}
 
         def _delta(txt):

@@ -212,8 +212,11 @@ def main():
         L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
                                    "provider": "p1", "model": "nope"})
 
+        seen8 = []
+
         def picky(req, timeout=0):
             calls.append(req.full_url)
+            seen8.append(req.data or b"")
             if b'"model": "nope"' in (req.data or b""):
                 raise L.urllib.error.HTTPError(req.full_url, 400, "bad model", {}, None)
             return FakeResp('{"choices":[{"message":{"content":"ok"}}],'
@@ -223,11 +226,13 @@ def main():
         L._open_url = picky
         n1 = len(calls)
         try:
-            st.chat([{"role": "user", "content": "hi"}])
-        except Exception:                                         # noqa: BLE001
-            pass
-        check("9.8 便宜模型失败也不退回降级链（全价模型不会被偷偷用上）",
-              len(calls) - n1 == 1, str(len(calls) - n1))
+            out8 = st.chat([{"role": "user", "content": "hi"}])
+        except Exception as e:                                    # noqa: BLE001
+            out8 = f"raised {type(e).__name__}"
+        check("9.8 便宜模型挂了 → 退回主模型一次（不让整段时间都失败）",
+              out8 == "ok" and len(calls) - n1 == 2, f"{out8} / {len(calls) - n1}")
+        check("9.8a 退回的是主模型，不是降级链里的备用",
+              b'"model": "m1"' in (seen8[-1] if seen8 else b""), str(seen8[-1:])[:120])
         L._open_url = fake_open
 
         # 便宜供应商被删/改名：不能降级（否则 allow_fallback=False 会让每次调用都失败）

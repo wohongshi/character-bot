@@ -195,7 +195,9 @@ def rollup(rows: list, *, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     lt = time.localtime(now)
     day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-    hour_start = now - (now % 3600)
+    # 本地整点，不用 `now - now % 3600`：那是 UTC 对齐的，半小时时区
+    # （IST/ACST）会在 :30 归零，面板上「这一小时」和墙上的钟对不上
+    hour_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, lt.tm_hour, 0, 0, 0, 0, -1))
     used_day = used_hour = calls_day = 0
     for r in rows or []:
         if not isinstance(r, dict):
@@ -229,21 +231,26 @@ class Meter:
         self._lock = threading.Lock()
         now = time.time() if now is None else now
         self.day = time.strftime("%Y-%m-%d", time.localtime(now))
-        self.hour = int(now // 3600)
+        self.hour = self._hour_key(now)
         self.used_day = 0
         self.used_hour = 0
+
+    @staticmethod
+    def _hour_key(now: float) -> str:
+        """本地「年-月-日-时」：和 rollup 的本地整点窗口用同一个边界。"""
+        return time.strftime("%Y-%m-%d-%H", time.localtime(now))
 
     def seed(self, used_day: int, used_hour: int, now: float | None = None) -> None:
         now = time.time() if now is None else now
         with self._lock:
             self.day = time.strftime("%Y-%m-%d", time.localtime(now))
-            self.hour = int(now // 3600)
+            self.hour = self._hour_key(now)
             self.used_day = max(0, int(used_day or 0))
             self.used_hour = max(0, int(used_hour or 0))
 
     def _roll(self, now: float) -> None:
         d = time.strftime("%Y-%m-%d", time.localtime(now))
-        h = int(now // 3600)
+        h = self._hour_key(now)
         if d != self.day:
             self.day, self.used_day = d, 0
         if h != self.hour:

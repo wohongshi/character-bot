@@ -1807,6 +1807,8 @@ def _export_html(session: str, cid: str) -> bytes:
         # 否则 HTML 导出会把失败记录整条丢掉（markdown 那边是标出来的）
         if not text and not imgs and not e.get("caption") and not e.get("error"):
             continue
+        if e.get("error"):
+            text = ""            # 同一句不能既当她的气泡又当错误说明
         pic_html = []
         for ref in imgs:
             if budget <= 0:
@@ -2864,7 +2866,7 @@ def _jsonl_lines(text: str) -> list:
 
 
 _MSG_ROWS_CACHE = {"sig": None, "ts": 0.0, "rows": []}
-_MSG_ROWS_TTL = 20.0          # 秒：看板每分钟问一次，没必要每次重解析
+_MSG_ROWS_TTL = 60.0          # 秒：看板 60 秒轮询一次，TTL 必须 ≥ 它才可能命中
 _MSG_ROWS_TAIL = 8 << 20      # 只读尾部 8MB：文件会一直长，画像不需要全部历史
 
 
@@ -5458,7 +5460,9 @@ class Handler(BaseHTTPRequestHandler):
                 if e.get("error"):
                     # 出错的那一轮要标出来（HTML 导出一直是这么做的）：
                     # 否则「（今天已用 … 到上限了）」会被当成她本人说的话
-                    why = str(e.get("error"))[:120]
+                    # 去掉内部类名（`BudgetExceeded: …`），和 QQ 侧的措辞一致
+                    why = re.sub(r"^[A-Za-z_][\w.]*(Error|Exception):\s*", "",
+                                 str(e.get("error")))[:120]
                     lines.append(f"**{who}**（{when}）：⚠️ 这一轮出错 —— {why}")
                     lines.append("")
                     continue

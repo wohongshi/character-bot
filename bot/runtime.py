@@ -995,7 +995,16 @@ class BotRuntime(RuntimeFeatures):
             kb = await asyncio.to_thread(self._kb_context, q)
             hist = list(self.hist.get(self._hist_key(ctx.chat_id)) or [])
             msgs = self._build_messages(ctx, q, hist=hist, kb=kb)
-            res = await asyncio.to_thread(self._agent_call, msgs, ctx)
+            try:
+                res = await asyncio.to_thread(self._agent_call, msgs, ctx)
+            except Exception as e:                                 # noqa: BLE001
+                # `.agent` 走的是命令分发，没人替它接异常 —— 不在这里说一句，
+                # 用户看到的是「命令没反应」，日志里还只有一行 plugin error
+                from .llm import BudgetExceeded
+                if isinstance(e, BudgetExceeded) or isinstance(e.__cause__, BudgetExceeded):
+                    be = e if isinstance(e, BudgetExceeded) else e.__cause__
+                    return f"（{be}）"
+                raise
             for img in (res.get("images") or [])[:3]:
                 await self.send_image_file(ctx.chat_id, img.get("path") or "",
                                            img.get("caption") or None)

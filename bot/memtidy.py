@@ -132,7 +132,7 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
         th = DEFAULT_THRESHOLD
     rows = [x for x in (items or []) if isinstance(x, dict) and str(x.get("text") or "").strip()]
     rows = rows[:MAX_ITEMS]
-    rows.sort(key=lambda x: float(x.get("ts") or 0))
+    rows.sort(key=lambda x: (float(x.get("ts") or 0), str(x.get("text") or "")))
 
     groups = []
     dropped: set = set()
@@ -149,7 +149,8 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
             keep["scope"] = _merge_scope(rows[i].get("scope", ""), keep.get("scope", ""))
             keep["hits"] = int(keep.get("hits") or 0) + int(rows[i].get("hits") or 0)
             drop.append(rows[i])
-            dropped.add(float(rows[i].get("ts") or 0))
+            # 用 (ts, text) 而不是裸 ts：没有 ts 的老行会全折成 0.0，删多条只算一条
+            dropped.add((float(rows[i].get("ts") or 0), str(rows[i].get("text") or "")))
         keep["merged"] = len(drop)
         groups.append({"keep": keep, "drop": drop, "sim": round(
             similar(str(keep.get("text") or ""), str(drop[0].get("text") or "")), 3),
@@ -161,7 +162,7 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
         floor = now - int(stale_days) * 86400
         for i, r in enumerate(rows):
             ts = float(r.get("ts") or 0)
-            if ts and ts < floor and ts not in dropped:
+            if ts and ts < floor and (ts, str(r.get("text") or "")) not in dropped:
                 stale.append(r)
 
     keep_n = len(rows) - len(dropped) - len(stale)
@@ -253,9 +254,12 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
                 "dropped": 0, "noop": True}
 
     merged_by_keep = {}
+    keep_drops: dict = {}
     for g in (p or {}).get("groups") or []:
         k = g.get("keep") or {}
-        merged_by_keep[_key(k)] = k
+        kk = _key(k)
+        merged_by_keep[kk] = k
+        keep_drops[kk] = [_key(d) for d in (g.get("drop") or [])]
 
     lock = getattr(mem_mod, "_LOCK", None)
     ctx = lock if lock is not None else _NullLock()
@@ -264,6 +268,12 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         if not rows:
             return {"before": 0, "after": 0, "merged": 0, "archived": 0, "dropped": 0,
                     "noop": True}
+        # 计划是锁外算的：drop 那几条可能已经被别处删掉。一条都不在的话
+        # 就别把这个 keep 换成「合并后的记录」（hits/scope 会凭空变大）
+        present = {_key(r) for r in rows}
+        for kk, drops in list(keep_drops.items()):
+            if not any(d in present for d in drops):
+                merged_by_keep.pop(kk, None)
         out, archived = [], []
         for r in rows:
             k = _key(r)

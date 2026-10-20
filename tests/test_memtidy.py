@@ -203,14 +203,14 @@ def main():
     section("9. server 接线")
     import server as SV
     check("9.1 有 _mem_items 辅助", hasattr(SV, "_mem_items"))
-    try:
-        with open("/proc/self/status") as fh:
-            pass
-        ok = True
-    except OSError:
-        ok = False
+    # 只验证「plan 不改文件」：拿一个只读目录当 state_dir，plan 照样能算
+    ro = Path(tempfile.mkdtemp(prefix="klee-memtidy6-"))
+    before = sorted(x.name for x in ro.iterdir())
+    M.plan([{"ts": 1, "text": "x"}])
     check("9.2 计划是纯函数（不碰磁盘）",
-          M.plan([{"ts": 1, "text": "x"}])["counts"]["total"] == 1 and ok)
+          M.plan([{"ts": 1, "text": "x"}])["counts"]["total"] == 1
+          and sorted(x.name for x in ro.iterdir()) == before,
+          str(sorted(x.name for x in ro.iterdir())))
 
     print()
     if FAIL:

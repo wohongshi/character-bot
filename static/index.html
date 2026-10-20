@@ -5989,11 +5989,13 @@ async function ppLoad(force){
   // 以模块变量为准：viewBoard 重绘时 #ppChat 是空的（还没填 option），
   // 那时 sel.value 一定是 "" —— 发出去的请求就会变成「全部会话」，
   // 而下拉随后被恢复成群 X，数字和下拉对不上
-  const chat = ppChatSel || (sel ? sel.value : "");
+  // 发请求前把参数**快照**到局部：连点「7 天 → 90 天」时两个请求同时在飞，
+  // 慢的那个回来不能再读模块变量（那时已经是新值），否则会盖掉新结果
+  const days0 = ppDays, chat = ppChatSel || (sel ? sel.value : "");
   // 缓存要带请求参数：否则切了群但 5 秒内会直接拿上一次的结果重画
   if (ppCache && !force && Date.now() - ppCache.t < 5000
-      && ppCache.key === ppDays + "|" + chat){ ppRender(ppCache.d); return; }
-  const d = await api("/api/people?days=" + ppDays + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
+      && ppCache.key === days0 + "|" + chat){ ppRender(ppCache.d); return; }
+  const d = await api("/api/people?days=" + days0 + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
   if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
   if (sel && !sel.options.length){
     sel.innerHTML = `<option value="">全部会话</option>` +
@@ -6005,7 +6007,10 @@ async function ppLoad(force){
     if (sel.value !== ppChatSel) sel.value = "";      // 那个群已经不在列表里了
     ppChatSel = sel.value;
   }
-  ppCache = {t: Date.now(), key: ppDays + "|" + chat, d};   // key 用真正发出去的参数
+  if (days0 !== ppDays || chat !== (ppChatSel || chat)){
+    return;      // 期间参数又变了：这次结果作废，别盖掉新的
+  }
+  ppCache = {t: Date.now(), key: days0 + "|" + chat, d};   // key 用真正发出去的参数
   // 选中项失效（群已滑出列表）时，上面这份数据是按失效的 id 拉的：
   // 用修正后的参数重拉一次，否则下拉说「全部会话」而数字是某个群
   if (chat !== ppChatSel) return ppLoad(force);
