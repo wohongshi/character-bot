@@ -73,6 +73,22 @@ bad.mkdir()
 rows3, why3 = charpack.read_kb(bad, "x")
 check("坏库 → 空 + 原因（不抛）", rows3 == [] and why3, why3)
 
+# 预览计数必须和真导出一致：SQL 的 trim() 不认 \n / 全角空格，这里用同一套 Python strip
+KBD2 = TMP / "kbdata2"
+p2 = make_kb(KBD2, "blank", 4)
+con = sqlite3.connect(p2)
+con.execute("INSERT INTO chunks (source, type, title, text, embed_text) VALUES (?,?,?,?,?)",
+            ("x", "设定", "空行", "\n\t ", ""))
+con.execute("INSERT INTO chunks (source, type, title, text, embed_text) VALUES (?,?,?,?,?)",
+            ("x", "设定", "全角", "\u3000", ""))
+con.commit()
+con.close()
+full, _ = charpack.read_kb(KBD2, "blank")
+cnt, _ = charpack.read_kb(KBD2, "blank", count_only=True)
+check("空白块不算语料", len(full) == 4, str(len(full)))
+check("预览计数与真导出一致（空白块两边都丢）", len(cnt) == len(full),
+      f"{len(cnt)} vs {len(full)}")
+
 print("[3] 打包结构")
 blob, fname, man = charpack.build_pack(ROOT, STORE, "hutao", kb_dir=KBD)
 check("文件名带角色", fname == "hutao-pack.zip", fname)

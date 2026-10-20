@@ -90,14 +90,14 @@ def read_kb(db_dir: Path | str, cid: str, *, count_only: bool = False
         if "text" not in cols:
             return [], "语料库里没有 chunks.text（版本不匹配）"
         if count_only:
-            # 只数条数：面板的 dry 预览要显示「多少块语料」，没必要把正文全读出来。
-            # 计数口径必须和真导出**完全一致**（先 LIMIT 再丢空行），否则预览说 210、
-            # 实际文件里 200 —— 这种数字对不上比不显示更糟。
+            # 只数条数：面板的 dry 预览要显示「多少块语料」，没必要把正文拼成 JSON。
+            # 口径必须和真导出**完全一致** —— 所以也走 Python 的 `str.strip()`
+            # （SQLite 的 trim() 只去半角空格，\n / \t / 全角空格都留着，
+            #  而且 trim(0) 是 "0" 不算空；两边口径不一致时预览数会对不上）。
             try:
-                n = int(con.execute(
-                    f"SELECT COUNT(*) FROM (SELECT text FROM chunks LIMIT {int(MAX_KB_ROWS)})"
-                    " WHERE trim(COALESCE(text,'')) <> ''"
-                ).fetchone()[0])
+                n = sum(1 for (t,) in con.execute(
+                    f"SELECT text FROM chunks LIMIT {int(MAX_KB_ROWS)}")
+                    if str(t or "").strip())
             except sqlite3.Error as e:
                 return [], f"读语料库失败：{e}"
             return [{"text": ""} for _ in range(n)], ""
@@ -231,9 +231,11 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
 
     # 导入端还有总量/文件数上限（64MB、240 个文件）：超了同样装不回去，
     # 在这里一次算清楚（语料是最大头，2 万条中文 chunk 完全可能超）。
+    # +2 = 下面还会追加的 character.json 与 pack.json（导入端按 zip 条目数算，
+    # 漏掉这两个就会在 239/240 这种边界上放行一个装不回去的包）。
     total_bytes = sum(len(b) for _, b in files)
-    if len(files) > MAX_PACK_FILES:
-        raise ValueError(f"包里有 {len(files)} 个文件，超过导入上限 {MAX_PACK_FILES} 个")
+    if len(files) + 2 > MAX_PACK_FILES:
+        raise ValueError(f"包里有 {len(files) + 2} 个文件，超过导入上限 {MAX_PACK_FILES} 个")
     if total_bytes > MAX_PACK_BYTES:
         raise ValueError(f"解压后 {total_bytes // 1048576} MB，超过导入上限 "
                          f"{MAX_PACK_BYTES // 1048576} MB（先把语料导小一点）")
@@ -272,4 +274,10 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
             # 权限统一 0644：Windows 上解压不会变成「仅自己可读」的怪文件
             info_z.external_attr = 0o644 << 16
             zf.writestr(info_z, blob)
-    return buf.getvalue(), f"{cid}-pack.zip", manifest
+    out = buf.getvalue()
+    # 压缩后也要复核一次：导入端对**原始字节**也有限制（>64MB 直接拒），
+    # 解压后贴着上限时 deflate 的头部/中央目录仍可能把本体顶出去。
+    if len(out) > MAX_PACK_BYTES:
+        raise ValueError(f"压缩后 {len(out) // 1048576} MB，超过导入上限 "
+                         f"{MAX_PACK_BYTES // 1048576} MB（先把语料导小一点）")
+    return out, f"{cid}-pack.zip", manifest
