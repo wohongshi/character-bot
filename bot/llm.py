@@ -837,12 +837,24 @@ class ModelStore:
                     # 便宜模型一失败就会用全价模型重试，等于预算没生效
                     allow_fallback = False
         if not allow_fallback:
+            t0 = time.monotonic()
+            seen = {"any": False}
+
+            def _delta_cheap(txt):
+                seen["any"] = True
+                if on_delta is not None:
+                    on_delta(txt)
+
             try:
-                return self._complete_once(
+                res = self._complete_once(
                     messages, model=model, provider=provider, timeout=timeout,
                     temperature=temperature, max_tokens=max_tokens, tools=tools,
                     tool_choice=tool_choice, extra_body=extra_body,
-                    stream=stream, on_delta=on_delta, _character=character)
+                    stream=stream, on_delta=_delta_cheap if on_delta else None,
+                    _character=character)
+                # 空正文也算失败（和 allow_fallback=True 那条路一个口径）
+                _require_text(res)
+                return res
             except BudgetExceeded:
                 raise
             except Exception as e:                                # noqa: BLE001
@@ -850,12 +862,17 @@ class ModelStore:
                 # 比多花点钱糟得多。退回主模型一次，并把原因记下来。
                 if not cheap_try:
                     raise
-                log.warning("便宜模型 %s 不可用（%s），这一轮退回主模型",
-                            model, str(e)[:120])
+                if seen["any"]:
+                    # 已经流出去半句了：换模型重念一遍比报错更糟
+                    raise
+                base = float(timeout or 0) or 90.0
+                remain = max(2.0, base - (time.monotonic() - t0))
+                log.warning("便宜模型 %s 不可用（%s），这一轮退回主模型（剩 %.0fs）",
+                            model, str(e)[:120], remain)
                 return self._complete_once(
                     messages, model=cheap_try.get("model") or None,
                     provider=cheap_try.get("provider") or None,
-                    timeout=timeout, temperature=temperature, max_tokens=max_tokens,
+                    timeout=remain, temperature=temperature, max_tokens=max_tokens,
                     tools=tools, tool_choice=tool_choice, extra_body=extra_body,
                     stream=stream, on_delta=on_delta, _character=character)
         emitted = {"any": False}

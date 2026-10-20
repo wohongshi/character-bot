@@ -245,6 +245,24 @@ def main():
         check("9.8c 用的还是主模型",
               b'"model": "m1"' in (seen_g[0] if seen_g else b""), str(seen_g[:1])[:120])
 
+        # 便宜模型返回「HTTP 200 但正文为空」：和失败一样要退回主模型
+        def empty_cheap(req, timeout=0):
+            calls.append(req.full_url)
+            if b'"model": "cheap"' in (req.data or b""):
+                return FakeResp('{"choices":[{"message":{"content":""}}],'
+                                '"usage":{"prompt_tokens":1,"completion_tokens":0,'
+                                '"total_tokens":1}}')
+            return FakeResp('{"choices":[{"message":{"content":"主模型答的"}}],'
+                            '"usage":{"prompt_tokens":1,"completion_tokens":1,'
+                            '"total_tokens":2}}')
+
+        L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
+                                   "provider": "p1", "model": "cheap"})
+        L._open_url = empty_cheap
+        out_e = st.chat([{"role": "user", "content": "hi"}])
+        check("9.12 便宜模型空回复也退回主模型", out_e == "主模型答的", out_e)
+        L._open_url = fake_open
+
         # 带 tools / 图片的请求不降级（便宜文本模型会 4xx，再按全价重试更亏）
         L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
                                    "provider": "p1", "model": "cheap"})

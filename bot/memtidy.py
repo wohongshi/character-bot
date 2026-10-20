@@ -271,9 +271,24 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         # 计划是锁外算的：drop 那几条可能已经被别处删掉。一条都不在的话
         # 就别把这个 keep 换成「合并后的记录」（hits/scope 会凭空变大）
         present = {_key(r) for r in rows}
+        by_key = {_key(r): r for r in rows}
         for kk, drops in list(keep_drops.items()):
-            if not any(d in present for d in drops):
+            alive = [by_key[d] for d in drops if d in present]
+            if not alive:
                 merged_by_keep.pop(kk, None)
+                continue
+            # 计划可能部分过期（别的进程删了其中一条）：按**实际还在的** drop
+            # 重算，别直接抄计划里那份（它已经把那几条的 hits/scope 加进去了）
+            base = by_key.get(kk) or merged_by_keep[kk]
+            rec = {**base}
+            rec["hits"] = int(base.get("hits") or 0)
+            scope = str(base.get("scope") or "")
+            for d in alive:
+                scope = _merge_scope(str(d.get("scope") or ""), scope)
+                rec["hits"] += int(d.get("hits") or 0)
+            rec["scope"] = scope
+            rec.pop("merged", None)
+            merged_by_keep[kk] = rec
         out, archived = [], []
         for r in rows:
             k = _key(r)

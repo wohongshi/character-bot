@@ -1739,6 +1739,12 @@ def _scrub_secrets(obj):
     return obj
 
 
+def _err_text(e) -> str:
+    """把落盘的 `TypeName: message` 变成一句人话（去内部类名，截断）。"""
+    raw = str((e or {}).get("error") or "")
+    return re.sub(r"^[A-Za-z_][\w.]*:\s+", "", raw)[:120]
+
+
 def _export_rows(session: str, cid: str) -> list:
     # 失败那一轮**要**留在导出里（导出是给人看的记录，页面上会把它标成错误），
     # 但索引/上下文里不算「她说过的话」—— 那两处各自过滤
@@ -1838,7 +1844,7 @@ def _export_html(session: str, cid: str) -> bytes:
         if pic_html:
             parts.append('<div class="pics">' + "".join(pic_html) + "</div>")
         if e.get("error"):
-            parts.append('<p class="err">（这条出错了：' + _html.escape(str(e["error"])[:120]) + "）</p>")
+            parts.append('<p class="err">（这条出错了：' + _html.escape(_err_text(e)) + "）</p>")
         parts.append("</div></div>")
         body.append("".join(parts))
 
@@ -2866,7 +2872,7 @@ def _jsonl_lines(text: str) -> list:
 
 
 _MSG_ROWS_CACHE = {"sig": None, "ts": 0.0, "rows": []}
-_MSG_ROWS_TTL = 60.0          # 秒：看板 60 秒轮询一次，TTL 必须 ≥ 它才可能命中
+_MSG_ROWS_TTL = 90.0          # 秒：看板 60 秒轮询一次，要留抖动余量才可能命中
 _MSG_ROWS_TAIL = 8 << 20      # 只读尾部 8MB：文件会一直长，画像不需要全部历史
 
 
@@ -5461,8 +5467,7 @@ class Handler(BaseHTTPRequestHandler):
                     # 出错的那一轮要标出来（HTML 导出一直是这么做的）：
                     # 否则「（今天已用 … 到上限了）」会被当成她本人说的话
                     # 去掉内部类名（`BudgetExceeded: …`），和 QQ 侧的措辞一致
-                    why = re.sub(r"^[A-Za-z_][\w.]*(Error|Exception):\s*", "",
-                                 str(e.get("error")))[:120]
+                    why = _err_text(e)
                     lines.append(f"**{who}**（{when}）：⚠️ 这一轮出错 —— {why}")
                     lines.append("")
                     continue

@@ -5996,7 +5996,15 @@ async function ppLoad(force){
   if (ppCache && !force && Date.now() - ppCache.t < 5000
       && ppCache.key === days0 + "|" + chat){ ppRender(ppCache.d); return; }
   const d = await api("/api/people?days=" + days0 + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
-  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  // 回来先判一次「这次响应是不是已经过期」（参数又变了）：过期就连失败都不写，
+  // 否则慢的那个失败响应会把已经画好的新结果刷成「读不到」
+  const stale = days0 !== ppDays || chat !== ppChatSel;
+  if (!d || !d.ok){
+    if (stale) return;
+    box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  if (stale) return;           // 过期结果：连下拉都别碰（它会改写 ppChatSel）
   if (sel && !sel.options.length){
     sel.innerHTML = `<option value="">全部会话</option>` +
       (d.chats || []).map(c => `<option value="${esc(c.id)}">${esc(prChatLabel(c.id))}（${c.n}）</option>`).join("");
@@ -6006,9 +6014,6 @@ async function ppLoad(force){
     sel.value = ppChatSel;
     if (sel.value !== ppChatSel) sel.value = "";      // 那个群已经不在列表里了
     ppChatSel = sel.value;
-  }
-  if (days0 !== ppDays || chat !== (ppChatSel || chat)){
-    return;      // 期间参数又变了：这次结果作废，别盖掉新的
   }
   ppCache = {t: Date.now(), key: days0 + "|" + chat, d};   // key 用真正发出去的参数
   // 选中项失效（群已滑出列表）时，上面这份数据是按失效的 id 拉的：
