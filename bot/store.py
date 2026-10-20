@@ -122,8 +122,6 @@ class MessageIndex:
             con.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
             row = con.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
             epoch = str(row[0]) if row else ""
-            cols = {r[1] for r in con.execute("PRAGMA table_info(msg)")}
-            missing = [c for c in self.NEED_COLUMNS if c not in cols]
             if epoch != str(self.EPOCH):
                 log.info("消息索引规则变了（epoch %s → %s），重建一次", epoch or "无", self.EPOCH)
                 con.executescript("DROP TABLE IF EXISTS msg_fts; DROP TABLE IF EXISTS msg;")
@@ -135,6 +133,10 @@ class MessageIndex:
                 self._offsets = {}
                 con.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('epoch', ?)",
                             (str(self.EPOCH),))
+            # 列检查放在 epoch 重建之后：刚重建过的表一定是新结构，再查一遍会
+            # 立刻触发第二次整表重建（还多打一条误导日志）
+            cols = {r[1] for r in con.execute("PRAGMA table_info(msg)")}
+            missing = [c for c in self.NEED_COLUMNS if c not in cols]
             if missing:
                 # 旧索引没有这些列：整表重建（比 ALTER + 回填简单，而且这里的数据
                 # 全部能从 JSONL 重新推出来，删掉不丢东西）

@@ -5976,6 +5976,9 @@ async function ppLoad(force){
     ppChatSel = sel.value;
   }
   ppCache = {t: Date.now(), key: ppDays + "|" + chat, d};   // key 用真正发出去的参数
+  // 选中项失效（群已滑出列表）时，上面这份数据是按失效的 id 拉的：
+  // 用修正后的参数重拉一次，否则下拉说「全部会话」而数字是某个群
+  if (chat !== ppChatSel) return ppLoad(force);
   ppRender(d);
 }
 function ppRender(d){

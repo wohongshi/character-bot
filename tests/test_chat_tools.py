@@ -29,6 +29,12 @@ def check(name, ok, extra=""):
     print(f"  {'✓' if ok else '✗'} {name}" + (f"   [{extra}]" if extra and not ok else ""))
 
 
+def upstream_busy(d) -> bool:
+    """上游限流（429）是外部状况，不该让整轮测试红掉 —— 打印跳过即可。"""
+    s = str((d or {}).get("error") or "")
+    return "429" in s or "rate_limit" in s
+
+
 def section(t):
     print(f"\n== {t}")
 
@@ -88,6 +94,9 @@ def main():
             ms = round((time.time() - t0) * 1000)
             out = str(d.get("text") or "")
             print(f"   · {act}: {code} {ms}ms → {out[:70]!r}")
+            if upstream_busy(d):
+                print(f"  · {act} 跳过（上游限流）")
+                continue
             check(f"3.x {act} 成功", code == 200 and d.get("ok") is True and out, f"{code} {d}")
             check(f"3.y {act} 输出是加工过的（不是原文照抄）", out.strip() != text.strip(), out[:80])
             check(f"3.z {act} 内容像样", bool(ok_fn(out)), out[:120])

@@ -174,7 +174,19 @@ def main():
             if not cur["running"] and len(cur["messages"]) >= 2:
                 after = get("/api/mood?character=cyrene")["turns"]
                 break
-        check("8.4 聊一轮会记进心情", after > before, f"{before} → {after}")
+        # 上游限流（429）时这一轮根本没聊成：跳过，而不是报「心情没变」
+        busy = False
+        try:
+            cur = get(f"/api/chat?session={sess}&character=cyrene")
+            busy = any("429" in str(m.get("error") or "") or
+                       "rate_limit" in str(m.get("error") or "")
+                       for m in (cur.get("messages") or []))
+        except Exception:                                         # noqa: BLE001
+            busy = False
+        if busy:
+            print("  · 跳过（上游限流，这一轮没聊成）")
+        else:
+            check("8.4 聊一轮会记进心情", after > before, f"{before} → {after}")
         post("/api/chat/delete", {"session": sess, "character": "cyrene"})
 
         code, d = post("/api/commands/run", {"command": "心情", "args": "", "character": "cyrene"})

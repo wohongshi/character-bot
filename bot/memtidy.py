@@ -264,7 +264,7 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
 
         # 计划是锁外算的：并发的第二次 apply、或者计划已过期时，这里可能根本没变化。
         # 那种情况下**一个字节都不写**（否则会拿已经整理过的内容覆盖掉第一轮留的 .bak）
-        if len(out) == len(rows) and not archived:
+        if out == rows:        # 比内容，不比条数：合并只改内容时长度不变
             return {"before": len(rows), "after": len(rows), "merged": 0,
                     "archived": 0, "dropped": 0, "noop": True}
         if path.exists():

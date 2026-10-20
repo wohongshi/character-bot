@@ -2575,7 +2575,7 @@ def _messages_of(chat_id: str, n: int = 4, *, tail_bytes: int = 1_048_576) -> li
         cut = text.find("\n")
         text = text[cut + 1:] if cut >= 0 else ""
     out = []
-    for line in text.splitlines():
+    for line in _jsonl_lines(text):
         try:
             row = json.loads(line)
         except ValueError:
@@ -2829,6 +2829,16 @@ def _budget_hook() -> dict:
     return out
 
 
+def _jsonl_lines(text: str) -> list:
+    """按 JSONL 的语义切行：只认 `\n`。
+
+    `str.splitlines()` 还会在 \x85 / \u2028 / \x0b 处断行，而这些字符在
+    `json.dumps(..., ensure_ascii=False)` 下是**原样**写进字符串的 —— 一条消息
+    里带上它们就会被切成两段，两段都解析失败、整条静默丢掉。
+    """
+    return str(text or "").split("\n")
+
+
 _MSG_ROWS_CACHE = {"sig": None, "ts": 0.0, "rows": []}
 _MSG_ROWS_TTL = 20.0          # 秒：看板每分钟问一次，没必要每次重解析
 _MSG_ROWS_TAIL = 8 << 20      # 只读尾部 8MB：文件会一直长，画像不需要全部历史
@@ -2874,7 +2884,7 @@ def _messages_rows() -> list:
         text = text[nl + 1:] if nl >= 0 else ""
     # 只按 "\n" 切：JSONL 的换行就是它，而 str.splitlines() 还会在 \x85/\u2028
     # 处断行（这两个字符在 ensure_ascii=False 下是原样写进字符串的）
-    for line in text.split("\n"):
+    for line in _jsonl_lines(text):
         line = line.strip()
         if not line:
             continue
@@ -4270,7 +4280,7 @@ def _similar(q: str, limit: int = 3) -> dict:
             start = max(0, MSG_JSONL.stat().st_size - 262144)
             with MSG_JSONL.open("rb") as f:
                 f.seek(start)
-                lines = f.read().decode("utf-8", "replace").splitlines()
+                lines = _jsonl_lines(f.read().decode("utf-8", "replace"))
             if start > 0 and lines:
                 lines = lines[1:]          # 只有从文件中段开始读时才丢掉半行
             for line in reversed(lines):
