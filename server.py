@@ -6671,7 +6671,8 @@ class Handler(BaseHTTPRequestHandler):
                                      cheap_model=body.get("cheap_model"),
                                      warn_at=(None if body.get("warn_at") is None
                                               else float(body["warn_at"])))
-            except (TypeError, ValueError) as e:
+            except (TypeError, ValueError, OverflowError) as e:
+                # OverflowError：JSON 里的 1e400 会被解析成 inf，`int(inf)` 抛它
                 self._json({"ok": False, "error": f"参数不对：{e}"}, 400)
                 return
             except OSError as e:        # 磁盘满 / 只读 / 权限：要让用户看见「没存上」
