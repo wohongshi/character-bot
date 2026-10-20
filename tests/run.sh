@@ -11,7 +11,7 @@ for f in test_agent.py test_skills.py test_plugin_meta.py test_themes.py \
          test_selfcheck.py test_insights.py test_pluginpack.py \
          test_cmd_perms.py test_chat_policy.py test_simulator.py \
          test_promptdbg.py test_kbingest.py test_proactive.py \
-         test_model_pinning.py; do
+         test_model_pinning.py test_pick_sel.py; do
   echo "== $f"
   python3 "$f" || rc=1
 done

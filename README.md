@@ -864,7 +864,7 @@ character-bot/
 │   ├── native/             C / Rust / C++ 源码 → .so（ctypes 直调）
 │   └── pkgcheck/           C# 插件包校验 CLI（.NET 10）
 ├── docs/                   框架、插件、角色、主题、字体、日志
-└── tests/                  67 套测试
+└── tests/                  68 套测试
 ```
 
 规模：Python **22,179 行 / 155 个文件**，面板 4,116 行，Go 613 行；另有 C / Rust / C++ / Node / Java / PHP / C# 七种语言的辅助实现。
@@ -872,7 +872,7 @@ character-bot/
 ## 测试
 
 ```bash
-bash tests/run.sh          # 67 套 / 2895 项断言，rc=0 才算过
+bash tests/run.sh          # 68 套 / 2905 项断言，rc=0 才算过
 ```
 
 覆盖：插件装载与命令冲突、角色隔离、适配器契约（含 async 实现）、HTTP 鉴权、

@@ -4606,7 +4606,7 @@ async function viewModels(target){
       <button class="btn primary" onclick="botSaveVision()">保存看图模型</button>
     </div>
     <div id="mvOut" class="kv" style="margin-top:8px">${vis.configured
-      ? `当前：${esc(vis.provider)} / ${esc(vis.model)}`
+      ? `当前：${esc(((md || {}).vision || {}).provider || vis.provider || act.provider)} / ${esc(vis.model)}`
       : "没配（发图时只会请你描述）"}</div>
   </div>
   <div class="card">
@@ -4797,7 +4797,11 @@ function botFillVisionModels(){
   // 保存时 set_vision → _ensure_model 就把「别的供应商的模型」永久写进这家
   // 选择优先：当前下拉里合法 → 用它；否则（换供应商绕回来）用挂载时的原值；
   // 用户自己动过下拉就尊重他（包括选了「不启用」）
-  const cur = pickSel($("mvModel").value, window.__mvSel, window.__mvSaved, ms);
+  let cur = pickSel($("mvModel").value, window.__mvSel, window.__mvSaved, ms);
+  // 「跟聊天同一个」时服务端仍可能钉着一个模型（provider 空 + model 非空）。
+  // 新主 provider 的清单里没它也不能当成「关着」—— providers[].models 只是
+  // 面板勾选清单，不是白名单（`vision()` 还会报 not_in_list）。
+  if (!cur && !$("mvProv").value && (window.__mvSaved || "")) cur = window.__mvSaved;
   $("mvModel").innerHTML = `<option value="" ${cur?"":"selected"}>（不启用图片理解）</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
