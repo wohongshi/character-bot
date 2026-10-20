@@ -2049,7 +2049,7 @@ def _usage_rows(days: int = 7, *, today: bool = False) -> list[dict]:
     def _ts_of(r: dict) -> float:
         try:
             return float(r.get("ts") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0.0        # 坏时间戳的行当「很久以前」，别让整份统计炸掉
 
     if today:
@@ -2098,7 +2098,7 @@ def _usage_summary(days: int = 7, *, today: bool = False) -> dict:
         m["ms"] += ms
         try:
             day = time.strftime("%m-%d", time.localtime(float(r.get("ts") or 0)))
-        except (TypeError, ValueError, OSError):
+        except (TypeError, ValueError, OSError, OverflowError):
             continue          # 坏时间戳的行不进逐日图（别让整份统计炸掉）
         d = by_day.setdefault(day, {"date": day, "requests": 0, "total": 0})
         d["requests"] += 1
@@ -3849,21 +3849,9 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
     if not IMPORT_ID.match(cid):
         raise ImportError_("id 只能是小写字母开头、2-30 位的字母/数字/-/_")
     backup = None
-    if _char_store().get(cid):
-        if not replace:
-            raise ImportError_(f"角色 {cid} 已存在（不能覆盖；要覆盖请勾上「覆盖同名角色」）")
-        # 覆盖：先整份备份（定义/人格/主题/专属插件），再逐个替换
-        try:
-            backup = _char_pack_backup(cid)
-        except OSError as e:
-            raise ImportError_(f"备份旧角色失败（没有覆盖，什么都没动）：{e}") from None
-        if backup is not None:
-            # 旧插件先挪走：同名的会被新包覆盖，不挪的话导入端「文件已存在」会拒
-            for fp in sorted((backup / "plugins").glob("*.py")) if (backup / "plugins").is_dir() else []:
-                try:
-                    (FEATURES_DIR / fp.name).unlink()
-                except OSError:
-                    pass
+    if _char_store().get(cid) and not replace:
+        raise ImportError_(f"角色 {cid} 已存在（不能覆盖；要覆盖请勾上「覆盖同名角色」）")
+    backup = cid if _char_store().get(cid) else None
     soul = text_of("SOUL.md")
     if len(soul.strip()) < 80:
         raise ImportError_("SOUL.md 太短（至少 80 字）")
@@ -3907,6 +3895,53 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
                 kb_lines.append(row)
     if not kb_lines:
         raise ImportError_("knowledge/ 里没有可用语料（kb/*.jsonl，每行要有 text）")
+
+    # —— 到这里所有输入都校验过了，才开始动旧数据 ——
+    # 覆盖安装：先备份，再删「**只属于这个角色**」的旧插件。
+    # 共享插件（CHARACTERS 里还有别的角色）绝不能碰：删掉就是把别人也弄坏。
+    if backup:
+        try:
+            bak_dir = _char_pack_backup(cid)
+        except OSError as e:
+            raise ImportError_(f"备份旧角色失败（没有覆盖，什么都没动）：{e}") from None
+        backup = bak_dir
+        new_names = {Path(k).name for k in plugin_files}
+        for fp in sorted(FEATURES_DIR.glob("*.py")):
+            try:
+                src = fp.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            m = IMPORT_CHARS.search(src)
+            if not m:
+                continue
+            ids = {x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()}
+            if ids == {cid} and fp.name not in new_names:
+                # 这个角色独占、而新包里没有：属于「被下线的旧插件」，删掉
+                try:
+                    fp.unlink()
+                except OSError:
+                    pass
+    # 新包里与已有文件同名的插件：只有「确实属于这个角色」才能覆盖
+    for rel in plugin_files:
+        fname = Path(rel).name
+        dest = FEATURES_DIR / fname
+        if not dest.exists():
+            continue
+        try:
+            old_src = dest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = IMPORT_CHARS.search(old_src)
+        ids = ({x.strip().strip("\"'") for x in (m.group(1) or "").split(",") if x.strip()}
+               if m else set())
+        if cid not in ids:
+            raise ImportError_(f"插件 {fname} 已存在且不属于 {cid}（换个文件名再试）")
+        if backup:
+            # 是同名、且属于这个角色：覆盖安装允许换掉（已备份），先删再装
+            try:
+                dest.unlink()
+            except OSError as e:
+                raise ImportError_(f"旧的 {fname} 删不掉（{e}），先停掉它再试") from None
 
     # —— 落盘 ——
     # 先把主题写到临时目录，全部写完再一次性换掉旧目录：
@@ -4063,15 +4098,35 @@ def _char_overview(days: int = 7) -> dict:
     active = str(store.active_id() or "")
     errs_by_char: dict[str, int] = {}
     if mgr is not None:
-        plugins = getattr(mgr, "plugins", {}) or {}
-        for name, count in (getattr(mgr, "errors", {}) or {}).items():
+        # 机器人线程会在持锁时重绑/填充这两个 dict：不拷一份边遍历会 RuntimeError
+        lock = getattr(mgr, "_lock", None)
+        try:
+            if lock is not None:
+                with lock:
+                    plugins = dict(getattr(mgr, "plugins", {}) or {})
+                    errs = dict(getattr(mgr, "errors", {}) or {})
+            else:
+                plugins = dict(getattr(mgr, "plugins", {}) or {})
+                errs = dict(getattr(mgr, "errors", {}) or {})
+        except Exception:                                           # noqa: BLE001
+            plugins, errs = {}, {}
+        for name, count in errs.items():
             info = plugins.get(name) or {}
             for cid in (info.get("characters") or ()):
                 errs_by_char[str(cid)] = errs_by_char.get(str(cid), 0) + int(count or 0)
     # 每个角色一共有多少个专属插件（含待命的）：面板上「20（装上 1）」才不误导
     total_plugins: dict[str, int] = {}
     if mgr is not None:
-        for info in (getattr(mgr, "plugins", {}) or {}).values():
+        lock = getattr(mgr, "_lock", None)
+        try:
+            if lock is not None:
+                with lock:
+                    items = list((getattr(mgr, "plugins", {}) or {}).values())
+            else:
+                items = list((getattr(mgr, "plugins", {}) or {}).values())
+        except Exception:                                           # noqa: BLE001
+            items = []
+        for info in items:
             for cid in (info.get("characters") or ()):
                 total_plugins[str(cid)] = total_plugins.get(str(cid), 0) + 1
     rows = []
@@ -4096,11 +4151,14 @@ def _char_overview(days: int = 7) -> dict:
             "soul_chars": len(store.soul(cid)),
         })
     rows.sort(key=lambda r: (-int(r["active"]), -int(r["bound"]), -int(r["tokens"]), r["id"]))
-    return {"ok": True, "days": days, "items": rows,
+    # 知识库连不上时所有角色都是 0 块：那时候告警全是假警报
+    kb_ok = bool(_kb_health().get("ok"))
+    return {"ok": True, "days": days, "kb_online": kb_ok, "items": rows,
             "totals": {"chars": len(rows), "bound": sum(r["bound"] for r in rows),
                        "tokens": sum(r["tokens"] for r in rows),
                        "kb_chunks": sum(r["kb_chunks"] for r in rows)},
-            "warn": [r["id"] for r in rows if r["bound"] and not r["kb_chunks"]]}
+            "warn": [r["id"] for r in rows
+                     if kb_ok and r["bound"] and not r["kb_chunks"]]}
 
 
 def _chat_labels(limit: int = 40) -> list:
@@ -5985,8 +6043,11 @@ class Handler(BaseHTTPRequestHandler):
                     got = set()
                 for it in items:
                     it["known"] = it["word"] in got
+            from bot import chat_char as _cc2
+            chats = [c["chat"] for c in _chat_labels(40)
+                     if _cc2.is_bindable(c["chat"])]
             self._json({"ok": True, "character": cid, "days": days, "chat": chat,
-                        "scanned": len(picked), "items": items,
+                        "scanned": len(picked), "items": items, "chats": chats,
                         "ignored": ignored[-40:],
                         "counts": {"scanned": len(picked), "items": len(items),
                                    "known": sum(1 for x in items if x.get("known")),
@@ -7700,7 +7761,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
                     return
                 text = str(body.get("text") or "").strip() or \
-                    f"群里的常用说法：{word}（${time.strftime('%Y-%m-%d')} 从聊天里收录）"
+                    f"群里的常用说法：{word}（{time.strftime('%Y-%m-%d')} 从聊天里收录）"
                 try:
                     req = urllib.request.Request(
                         KB_URL + "/add",

@@ -1105,7 +1105,16 @@ class BotRuntime(RuntimeFeatures):
         return out
 
     async def _prepare_images(self, ctx: FeatureContext, images: list) -> bool:
-        """图片段 → 描述并改写 ctx.text；返回 False 表示已经回过话、别继续聊天。"""
+        """图片段 → 描述并改写 ctx.text；返回 False 表示已经回过话、别继续聊天。
+
+        进来先过频率闸：看图也是**一次模型调用**，放在聊天之后才拦，
+        刷屏的人照样能靠发图一张一张烧 token、还每张都收到一句回复。
+        """
+        if images:
+            if await self._throttle_check(ctx.chat_id, ctx):
+                return False
+            # 已经记过一次：_chat 里别再记一遍（一条用户消息只该算一条）
+            ctx.throttle_passed = True
         max_n = max(0, int(self.config.get("max_images") or 3))
         caption = self._IMG_NOTE_RE.sub("", ctx.text).strip()
         notes, ok_n, reason = [], 0, ""
@@ -1493,6 +1502,10 @@ class BotRuntime(RuntimeFeatures):
         if cfg["action"] == "notice":
             # 每人每 10 分钟最多说一次「慢点」：刷屏的时候每次都回，等于没节流
             now = time.time()
+            if len(self._throttle_notice_at) > 500:      # 长跑防膨胀
+                self._throttle_notice_at = {
+                    k: v for k, v in self._throttle_notice_at.items()
+                    if now - float(v or 0) < 3600}
             last = float(self._throttle_notice_at.get(chat_id) or 0)
             if now - last >= 600:
                 self._throttle_notice_at[chat_id] = now
@@ -1520,10 +1533,11 @@ class BotRuntime(RuntimeFeatures):
         if not text:
             return
         chat_id = ctx.chat_id
-        # 频率闸：放在**调模型之前**（放后面等于钱已经花了）
-        blocked = await self._throttle_check(chat_id, ctx)
-        if blocked:
-            return
+        # 频率闸：放在**调模型之前**（放后面等于钱已经花了）。
+        # 看图路径已经记过账的话就不再记（否则带图的一条消息算两条）。
+        if not getattr(ctx, "throttle_passed", False):
+            if await self._throttle_check(chat_id, ctx):
+                return
         async with self._hist_lock:
             hist_key = self._hist_key(chat_id)
             hist = self.hist.setdefault(hist_key, [])

@@ -76,7 +76,7 @@ def _entropy(counter: Counter) -> float:
     return h
 
 
-def collect(rows, *, min_count: int = MIN_COUNT):
+def collect(rows):
     """统计 n-gram / 左右邻接 / 总字数。返回 (cnt, left, right, total, users)。"""
     cnt: Counter = Counter()
     left: dict[str, Counter] = defaultdict(Counter)
@@ -134,10 +134,12 @@ def scan(rows, *, ignore=(), known=(), min_count: int = MIN_COUNT,
     """扫一遍消息行 → 候选词列表（按热度降序）。纯函数，测试友好。"""
     ignore = {str(x) for x in (ignore or ()) if str(x)}
     known = {str(x) for x in (known or ()) if str(x)}
-    cnt, left, right, total, users = collect(rows, min_count=min_count)
+    cnt, left, right, total, users = collect(rows)
     cand: list[dict] = []
     for w, c in cnt.items():
         if c < min_count:
+            continue
+        if len(w) < MIN_WORD or len(w) > MAX_WORD:
             continue
         if w in STOP or w in ignore:
             continue
@@ -154,6 +156,9 @@ def scan(rows, *, ignore=(), known=(), min_count: int = MIN_COUNT,
         cand.append({"word": w, "count": c, "users": len(users[w]),
                      "pmi": round(pmi, 2), "left": round(lb, 2), "right": round(rb, 2),
                      "known": w in known})
+    # 先按热度截一批再做包含扫描：候选可能上千，两两比较是 O(n²)
+    cand.sort(key=lambda x: (-x["count"], -x["users"], x["word"]))
+    cand = cand[: max(60, int(top) * 8)]
     # 长词优先：包含关系里次数接近的短词是碎片
     cand.sort(key=lambda x: (-len(x["word"]), -x["count"]))
     kept: list[dict] = []
@@ -174,15 +179,34 @@ def path_for(state_dir: Path | str) -> Path:
 def load_ignored(state_dir: Path | str) -> list:
     try:
         d = json.loads(path_for(state_dir).read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as e:
+        log.info("忽略名单读取失败（按空处理）：%s", e)
         return []
     got = d.get("ignored") if isinstance(d, dict) else None
     return sorted({str(x) for x in got}) if isinstance(got, list) else []
 
 
+MAX_IGNORED = 2000
+
+
 def set_ignored(state_dir: Path | str, words) -> list:
-    """整份替换忽略名单（去重、截断到 2000 条，防长跑膨胀）。"""
-    clean = sorted({str(w).strip() for w in (words or ()) if str(w).strip()})[:2000]
+    """整份替换忽略名单。
+
+    - **保持插入顺序**（不是字母序）：满了要丢的时候丢的是最早的那个，不是「按拼音最后」的；
+    - 去重后超过 2000 条就截断，并在日志里说一声（静默丢用户数据很糟）。
+    """
+    seen, clean = set(), []
+    for w in (words or ()):
+        w = str(w).strip()
+        if w and w not in seen:
+            seen.add(w)
+            clean.append(w)
+    if len(clean) > MAX_IGNORED:
+        log.warning("忽略名单超过 %d 条，丢弃最早的 %d 条", MAX_IGNORED,
+                    len(clean) - MAX_IGNORED)
+        clean = clean[-MAX_IGNORED:]
     p = path_for(state_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     with _LOCK:
@@ -203,9 +227,13 @@ def ignore_word(state_dir: Path | str, word: str) -> list:
     w = str(word or "").strip()
     if not w:
         return load_ignored(state_dir)
-    return set_ignored(state_dir, load_ignored(state_dir) + [w])
+    # 读-改-写整段持锁（RLock，嵌套 set_ignored 不会自锁）：面板连点两下，
+    # 或面板与运行时同时忽略两个词，后写的会把先写的丢掉。
+    with _LOCK:
+        return set_ignored(state_dir, load_ignored(state_dir) + [w])
 
 
 def unignore_word(state_dir: Path | str, word: str) -> list:
     w = str(word or "").strip()
-    return set_ignored(state_dir, [x for x in load_ignored(state_dir) if x != w])
+    with _LOCK:
+        return set_ignored(state_dir, [x for x in load_ignored(state_dir) if x != w])

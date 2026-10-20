@@ -127,6 +127,39 @@ check("两份备份都在", (DST / "state" / res["backup"]).is_dir()
       and (DST / "state" / res2["backup"]).is_dir())
 check("最新的是 v3", store.get("upg")["name"] == "升级版v3")
 
+print("[4b] 坏包不能先毁旧数据")
+(DST / "bot" / "features" / "upg_old_only.py").write_text(
+    'CHARACTERS = ("upg",)\nNAME = "只有旧版有"\n\n\ndef register(api):\n    pass\n',
+    encoding="utf-8")
+(DST / "bot" / "features" / "upg_shared.py").write_text(
+    'CHARACTERS = ("upg", "other")\nNAME = "共享插件"\n\n\ndef register(api):\n    pass\n',
+    encoding="utf-8")
+bad = io.BytesIO()
+with zipfile.ZipFile(bad, "w") as zf:
+    zf.writestr("character.json", json.dumps({"id": "upg", "name": "坏包"}))
+    zf.writestr("SOUL.md", "# 坏包\n\n" + "人格够长。" * 20)
+    zf.writestr("plugins/upg_one.py", 'CHARACTERS = ("upg",)\n\ndef register(api):\n    pass\n')
+    zf.writestr("kb/upg.jsonl", json.dumps({"text": "x"}) + "\n")   # 故意缺 theme/
+before = (SV.FEATURES_DIR / "upg_one.py").read_text(encoding="utf-8")
+trash_before = set((DST / "state" / "trash").glob("*")) if (DST / "state" / "trash").is_dir() else set()
+try:
+    SV._import_character_zip(bad.getvalue(), replace=True)
+    check("坏包被拒", False)
+except SV.ImportError_ as e:
+    check("坏包被拒", "theme" in str(e), str(e))
+check("旧插件**没被提前删掉**", (SV.FEATURES_DIR / "upg_one.py").exists()
+      and (SV.FEATURES_DIR / "upg_one.py").read_text(encoding="utf-8") == before)
+trash_after = set((DST / "state" / "trash").glob("*")) if (DST / "state" / "trash").is_dir() else set()
+check("坏包不留下半份备份", trash_after == trash_before, str(trash_after - trash_before))
+
+print("[4c] 共享插件 / 旧独占插件的处理")
+res3 = SV._import_character_zip(make_pack("v4"), replace=True)
+check("再覆盖一次成功", bool(res3.get("ok")), str(res3)[:120])
+check("旧版独占、新包里没有 → 被下线", not (SV.FEATURES_DIR / "upg_old_only.py").exists())
+check("共享插件不受影响（还服务别的角色）", (SV.FEATURES_DIR / "upg_shared.py").exists())
+check("备份里有被下线的那个", (DST / "state" / res3["backup"] / "plugins"
+                            / "upg_old_only.py").exists())
+
 print("[5] 语料库不动（那是 klee-kb 的库，覆盖安装不该清）")
 corpus = KB / "corpus" / "upg" / "processed" / "imported.jsonl"
 check("新语料落进去了", corpus.is_file())

@@ -33,7 +33,11 @@ def clamp_cfg(raw: dict | None) -> dict:
     """配置收敛：类型不对/超范围都夹回合法值（坏配置等同于默认）。"""
     raw = raw if isinstance(raw, dict) else {}
     out = dict(DEFAULTS)
-    out["on"] = bool(raw.get("on", False))
+    on = raw.get("on", False)
+    if isinstance(on, str):
+        # `bool("false")` 是 True —— 面板/手改 JSON 传字符串会静默打开节流
+        on = on.strip().lower() not in ("", "0", "false", "no", "off", "关", "关闭", "不")
+    out["on"] = bool(on)
     for k, (lo, hi) in LIMITS.items():
         try:
             v = int(raw.get(k, DEFAULTS[k]))

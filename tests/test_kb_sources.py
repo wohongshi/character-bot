@@ -56,7 +56,22 @@ def make_db(path: Path, sources: dict) -> Path:
 
 
 print("[1] klee-kb：sources / purge")
-KB = Path("/root/.hermes/workspace/klee-kb")
+# klee-kb 是**另一个仓库**：不在同一台机器/没有它时，这一节跳过（不能整个套件挂掉）
+KB = Path(os.environ.get("KLEE_KB_DIR") or (ROOT.parent / "klee-kb"))
+if not (KB / "server.py").is_file():
+    print("[1] klee-kb 不在（跳过 sources/purge 的服务端那几节）")
+    print("[3] 工作室：透传 + 二次确认")
+    HTML = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for anchor in ("/api/kb/sources", "/api/kb/purge", "function loadKbSources",
+                   "function kbPurge", "kbPurgeArm", "确定删除？"):
+        check(f"面板有 {anchor}", anchor in HTML)
+    SRV = (ROOT / "server.py").read_text(encoding="utf-8")
+    check("删来源必须 confirm", 'body.get("confirm") is not True' in SRV)
+    check("空 source 被拒", '缺少 source' in SRV)
+    check("来源接口在敏感名单里", '"/api/kb/sources",' in SRV)
+    print(f"\nPASS {PASS} / {PASS + FAIL}")
+    sys.exit(0 if FAIL == 0 else 1)
+
 spec = importlib.util.spec_from_file_location("kleekb_srv", KB / "server.py")
 kbm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(kbm)

@@ -116,8 +116,12 @@ for anchor in ('id="nwCard"', 'id="nwBox"', "function nwLoad", "function nwAdd",
 SRV = (ROOT / "server.py").read_text(encoding="utf-8")
 check("GET 与 POST 都在", SRV.count('u.path == "/api/newwords"') == 2,
       str(SRV.count('u.path == "/api/newwords"')))
-KBS = (Path("/root/.hermes/workspace/klee-kb") / "server.py").read_text(encoding="utf-8")
-check("klee-kb 有 /present（标已知用）", '"/present"' in KBS)
+KB = Path(os.environ.get("KLEE_KB_DIR") or (ROOT.parent / "klee-kb"))
+if (KB / "server.py").is_file():
+    check("klee-kb 有 /present（标已知用）", '"/present"' in (KB / "server.py").read_text(
+        encoding="utf-8"))
+else:
+    print("  · klee-kb 不在（跳过 /present 检查）")
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(0 if FAIL == 0 else 1)

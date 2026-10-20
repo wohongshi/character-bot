@@ -5033,7 +5033,7 @@ async function bgSave(btn){
 }
 
 /* ---------- 语料来源：按 source 统计 / 整组删除 ---------- */
-let kbPurgeArm = "";             // 两次点击确认：第一次只是「待确认」
+let kbPurgeArm = "";             // 两次点击确认：内容是 ACTIVE.id + "\u0000" + 来源
 async function loadKbSources(){
   const box = $("kbSrc");
   if (!box) return;
@@ -5045,7 +5045,9 @@ async function loadKbSources(){
   const items = d.items || [];
   if (!items.length){ box.innerHTML = `<div class="kv">这个角色的语料库是空的</div>`; return; }
   box.innerHTML = items.map(x => {
-    const armed = kbPurgeArm === x.source;
+    // 键里带角色：「群聊新词」这种来源每个角色都有，只按名字记会让另一个角色
+    // 的同名来源一进来就是「已武装」状态，一次点击就删掉
+    const armed = kbPurgeArm === (ACTIVE.id + "\u0000" + x.source);
     return `<div class="kbhit" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <b style="flex:1;min-width:110px">${esc(x.source)}</b>
       <span class="kv" style="flex:none;margin:0">${x.chunks} 块</span>
@@ -5057,7 +5059,7 @@ async function loadKbSources(){
 }
 async function kbPurge(source, confirmed){
   if (!confirmed){
-    kbPurgeArm = source;
+    kbPurgeArm = ACTIVE.id + "\u0000" + source;
     await loadKbSources();
     flash(`再点一次删除「${source}」`);
     return;
@@ -5071,13 +5073,13 @@ async function kbPurge(source, confirmed){
 
 /* ---------- 新词候选：从群聊里学梗 ----------
    判定是「频次 + 内部凝聚度 + 左右自由度」，纯规则；面板上人点一下才入库。 */
-let nwDays = 14, nwChatSel = "";
+let nwDays = 14, nwChatSel = "", nwHideKnown = true;   // 都放模块变量：viewBoard 每 60 秒重绘整页
 function nwSet(d){ nwDays = d; nwLoad(); }
 async function nwLoad(){
   const box = $("nwBox"), sel = $("nwChat");
   if (!box) return;
   const days = nwDays, chat = nwChatSel || (sel ? sel.value : "");
-  const hide = !!(($("nwHideKnown") || {}).checked);
+  const hide = !!nwHideKnown;
   const d = await api("/api/newwords?days=" + days + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
   if (days !== nwDays || chat !== (nwChatSel || (sel ? sel.value : ""))) return;   // 过期响应
   if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
@@ -5085,9 +5087,14 @@ async function nwLoad(){
     const b = $("nw" + k);
     if (b) b.classList.toggle("primary", k === days);
   }
-  if (sel && !sel.options.length){
+  if (sel){
+    // 每次都用服务端给的会话列表重建（以前读一个从没赋值的全局，下拉永远是空的）
+    const chats = d.chats || [];
+    const keep = nwChatSel;
     sel.innerHTML = `<option value="">全部会话</option>` +
-      ((window.__nwChats || []).map(c => `<option value="${esc(c)}">${esc(prChatLabel(c))}</option>`).join(""));
+      chats.map(c => `<option value="${esc(c)}">${esc(prChatLabel(c))}</option>`).join("");
+    sel.value = chats.includes(keep) ? keep : "";
+    nwChatSel = sel.value;
   }
   const all = d.items || [];
   const rows = hide ? all.filter(x => !x.known) : all;
@@ -6432,11 +6439,13 @@ async function viewBoard(target){
     <h3>🆕 新词候选 <span class="kv" style="font-family:var(--font-body)">群里最近爱说的词</span>
       <button class="btn tiny" style="margin-left:auto" onclick="nwLoad()">刷新</button></h3>
     <div class="row" style="gap:8px;align-items:center;margin:6px 0 8px">
-      <select id="nwChat" style="flex:1;min-width:130px" onchange="nwLoad()"></select>
+      <select id="nwChat" style="flex:1;min-width:130px"
+        onchange="nwChatSel = this.value; nwLoad()"></select>
       <button class="btn tiny" id="nw7" onclick="nwSet(7)">7 天</button>
       <button class="btn tiny" id="nw14" onclick="nwSet(14)">14 天</button>
       <button class="btn tiny" id="nw30" onclick="nwSet(30)">30 天</button>
-      <label class="check"><input type="checkbox" id="nwHideKnown" checked onchange="nwLoad()"> 隐藏已知</label>
+      <label class="check"><input type="checkbox" id="nwHideKnown" ${nwHideKnown ? "checked" : ""}
+        onchange="nwHideKnown = this.checked; nwLoad()"> 隐藏已知</label>
     </div>
     <div id="nwBox"><div class="kv">读取中…</div></div>
     <div class="kv" id="nwMsg" style="margin-top:6px"></div>
