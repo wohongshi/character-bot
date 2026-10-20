@@ -81,6 +81,8 @@ def main():
     r = PV.decide({"on": True, "per_day": 0}, now=now, last_user_ts=now - 99 * 3600,
                   rng=Rng(0.0))
     check("2.11 per_day=0 等于全关", r["send"] is False)
+    check("2.12 per_day=0 的原因要写对（不是「今天已经发了 0 条」）",
+          "上限为 0" in r["reason"], r["reason"])
 
     section("3. 参数钳制")
     c = PV._clamp({"per_day": 999, "min_gap_h": -5, "idle_h": 99999, "chance": 9})
@@ -178,6 +180,19 @@ def main():
     lines = (big / "proactive_log.jsonl").read_text(encoding="utf-8").splitlines()
     check("7.9 日志有上限", len(lines) == PV.LOG_MAX_LINES, str(len(lines)))
     check("7.10 留的是最新的", json.loads(lines[-1])["text"] == str(PV.LOG_MAX_LINES + 29))
+
+    section("7b. 跨天显示 / 结果未知")
+    st2 = Path(tempfile.mkdtemp(prefix="klee-proact-day-"))
+    PV.set_chat(st2, "group:1", on=True, per_day=3)
+    PV.mark_sent(st2, "group:1", "昨天", now=now - 86400, intent="evening")
+    c = PV.get_chat(st2, "group:1")
+    check("7b.1 过了零点就显示 0（不是昨天的数）", c["sent_today"] == 0, str(c.get("sent_today")))
+    c2 = PV.mark_unknown(st2, "group:1", "发送超时", now=now)
+    check("7b.2 结果未知要占住名额", c2["last_sent_ts"] == now, str(c2.get("last_sent_ts")))
+    check("7b.3 结果未知不算失败", int(c2.get("fails") or 0) == 0, str(c2.get("fails")))
+    check("7b.4 结果未知也不增加已发条数", c2["sent_today"] == 0, str(c2.get("sent_today")))
+    check("7b.5 日志里能查到这个未知结果",
+          any(x["event"] == "unknown" for x in PV.read_log(st2, 5)))
 
     section("8. last_user_ts")
     mj = st / "messages.jsonl"

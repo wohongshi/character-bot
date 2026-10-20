@@ -159,11 +159,15 @@ class _PreviewAdapter:
     platform = "preview"
     CAPABILITIES: dict = {}
 
-    def __init__(self, owner_id: str):
+    def __init__(self, owner_id: str, chat_id: str = ""):
         self.owner_id = str(owner_id or "")
+        # `FeatureContext.chat_id` 会问这里；试跑必须让它等于调用方给的会话，
+        # 否则历史/记忆按 A 取、适配器按 B 报（`web:` 会话尤其明显）
+        self._chat = str(chat_id or "")
 
-    @staticmethod
-    def chat_id_of(is_group: bool, group_id: str, user_id: str) -> str:
+    def chat_id_of(self, is_group: bool, group_id: str, user_id: str) -> str:
+        if self._chat:
+            return self._chat
         return f"group:{group_id}" if is_group else f"private:{user_id}"
 
 
@@ -1189,19 +1193,29 @@ class BotRuntime(RuntimeFeatures):
         text = str(text or "")[:4000]
         cid = str(chat_id or "").strip()
         owner_uid = str(self.owner_id or "") if as_owner else "10000"
+        group_id, uid = "", owner_uid
         if cid.startswith("group:"):
-            is_group, group_id, uid = True, cid.split(":", 1)[1], owner_uid
+            is_group, group_id = True, cid.split(":", 1)[1]
         elif cid.startswith("private:"):
             # 私聊的 uid 必须取会话里的那个人：`ctx.chat_id` 是用 uid 反推的，
             # 拿主人 id 顶上去会让「记忆」块读成另一个会话（调试器说假话）
-            is_group, group_id = False, ""
+            is_group = False
             uid = cid.split(":", 1)[1] or owner_uid
+        elif cid.startswith("web:"):
+            is_group = False                      # 面板会话：history/记忆 scope 都是这个
         elif cid.isdigit():
-            is_group, group_id, uid = bool(is_group), cid, owner_uid
+            if is_group:
+                group_id = cid
+            else:
+                uid = cid
         else:
-            is_group, group_id, uid = bool(is_group), "preview", owner_uid
-            cid = ""
-        chat = cid or (f"group:{group_id}" if is_group else f"private:{uid}")
+            is_group, group_id, cid = bool(is_group), "preview", ""
+        if cid.startswith(("group:", "private:", "web:")):
+            chat = cid                       # 已经带形态，原样用
+        elif is_group:
+            chat = f"group:{group_id or uid}"
+        else:
+            chat = f"private:{uid}"
         # 不抢 _hist_lock：它是 asyncio 锁（这里是面板线程的同步调用），
         # 拿不到只会等；list() 读的是 GIL 保护下的快照，最坏情况少/多一条，
         # 而这只影响调试视图，不影响真实请求。
@@ -1222,7 +1236,7 @@ class BotRuntime(RuntimeFeatures):
         ctx = FeatureContext(
             # 不看「当主人」时 owner_id 要留空：否则 is_owner 恒为真，
             # 仅主人可见的块（技能提示等）照样出现 —— 预览再一次说假话
-            adapter=_PreviewAdapter(str(self.owner_id or "") if as_owner else ""),
+            adapter=_PreviewAdapter(str(self.owner_id or "") if as_owner else "", chat),
             text=text, is_group=bool(is_group), group_id=str(group_id or ""),
             user_id=uid, user_name=str(user_name or "你"), message_id="")
         parts = self._compose_blocks(ctx, text, hist=hist, kb=kb_text,

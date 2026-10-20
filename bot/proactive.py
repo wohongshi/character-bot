@@ -69,6 +69,11 @@ def _clamp(cfg: dict) -> dict:
     for k in ("last_sent_ts", "sent_day", "sent_today", "fails", "last_error", "last_ts"):
         if k in cfg:
             out[k] = cfg[k]
+    # 跨天就把「今天发了多少」归零：面板读的是 _clamp() 的结果，
+    # 不在这里归零的话，过了零点还会显示「今天 2/2 条」——正是那种
+    # 「为什么她不说话」的误导信号。
+    if out.get("sent_day") != _day(time.time()):
+        out["sent_today"] = 0
     return out
 
 
@@ -100,8 +105,13 @@ def save(state_dir: Path | str, data: dict) -> None:
 
 
 def get_chat(state_dir: Path | str, chat_id: str) -> dict:
+    """读一个会话的配置（**已经过 `_clamp`**：跨天计数归零、参数范围也夹过）。
+
+    直接返回磁盘原文会让调用方看到「昨天发了 2 条」而 decide() 看到 0。
+    """
     with _LOCK:
-        return load(state_dir)["chats"].get(str(chat_id)) or {}
+        raw = load(state_dir)["chats"].get(str(chat_id)) or {}
+    return _clamp(raw) if raw else {}
 
 
 def set_chat(state_dir: Path | str, chat_id: str, *, on=None, per_day=None,
@@ -169,7 +179,10 @@ def decide(cfg: dict, *, now: float, last_user_ts: float = 0.0,
         return {"send": False, "reason": f"连续失败 {int(c['fails'])} 次，已暂停", "sent_today": 0}
     today = _day(now)
     sent_today = int(c.get("sent_today") or 0) if c.get("sent_day") == today else 0
-    if sent_today >= int(c.get("per_day") or 0):
+    per_day = int(c.get("per_day") or 0)
+    if per_day <= 0:
+        return {"send": False, "reason": "每天上限为 0（已关闭）", "sent_today": sent_today}
+    if sent_today >= per_day:
         return {"send": False, "reason": f"今天已经发了 {sent_today} 条", "sent_today": sent_today}
     last_sent = float(c.get("last_sent_ts") or 0)
     gap = float(c.get("min_gap_h") or 0) * 3600
@@ -247,6 +260,24 @@ def _mark_sent_locked(state_dir, chat_id, text, *, now: float, intent: str) -> d
     _log(state_dir, {"ts": now, "chat_id": str(chat_id), "text": str(text or "")[:400],
                      "event": "sent", "intent": str(intent or "")})
     return cur
+
+
+def mark_unknown(state_dir: Path | str, chat_id: str, note: str,
+                 *, now: float | None = None) -> dict:
+    """结果未知（比如发送超时）：占住「刚发过」的名额，但**不算失败**。
+
+    否则会在最小间隔内再发一条（可能重复），或者记成失败把功能自动暂停。
+    """
+    now = time.time() if now is None else now
+    with _LOCK:
+        data = load(state_dir)
+        cur = _clamp(data["chats"].get(str(chat_id)) or {})
+        cur.update({"last_sent_ts": now, "last_error": str(note or "")[:200], "last_ts": now})
+        data["chats"][str(chat_id)] = cur
+        save(state_dir, data)
+        _log(state_dir, {"ts": now, "chat_id": str(chat_id), "event": "unknown",
+                         "error": str(note or "")[:200]})
+        return cur
 
 
 def mark_fail(state_dir: Path | str, chat_id: str, error: str, *, now: float | None = None) -> dict:

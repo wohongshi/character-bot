@@ -6006,7 +6006,7 @@ async function selfFix(id, btn){
 const PBHUE = {persona:"a", rules:"b", tools:"b", skills:"c", memory:"d", mood:"e",
   stickers:"f", kb:"g", summary:"h", hist:"i", who:"j", user:"k", scene:"b",
   system:"i", other:"i"};
-let prData = null, prOpen = false, prChat = "", prSel = "", prAt = 0;
+let prData = null, prOpen = false, prChat = "", prAt = 0;
 async function prLoad(force){
   const box = $("prBox");
   if (!box) return;
@@ -6020,7 +6020,7 @@ async function prLoad(force){
   prRender();
 }
 async function prPickChat(v){
-  prChat = v || ""; prSel = "";
+  prChat = v || "";
   await prLoad(true);
 }
 function prToggle(){
@@ -6311,7 +6311,9 @@ async function pvTick(btn){
   btn.disabled = false; btn.textContent = "现在巡检一次";
   if (!d || !d.ok){ flash("巡检失败：" + ((d && d.error) || "未知")); return; }
   const acts = (d.actions || []);
-  flash(acts.length ? acts.map(a => a.send ? "发了" : a.reason).join("；") : "没有开着的会话");
+  flash(acts.length ? acts.map(a => !a.send ? a.reason
+      : (a.ok === false ? "失败：" + (a.error || "未知") : "发了")).join("；")
+    : "没有开着的会话");
   pvLoad(true);
 }
 

@@ -235,8 +235,21 @@ def split_msgs(msgs: list) -> list:
 
 def diff(old: dict, new: dict) -> list:
     """两次组装的块级差异（试跑对比用）：只看字符数变化。"""
-    a = {f'{b.get("key")}#{i}': b for i, b in enumerate((old or {}).get("blocks") or [])}
-    b = {f'{x.get("key")}#{i}': x for i, x in enumerate((new or {}).get("blocks") or [])}
+    def _idx(blocks):
+        # 按「key + 第几次出现」配对，而不是按全局下标：插/删一个块（比如关掉知识库）
+        # 不会让后面每一块都移位，diff 才不会满屏假变化
+        seen: dict = {}
+        out: dict = {}
+        for b in blocks or []:
+            if not isinstance(b, dict):
+                continue
+            k = str(b.get("key") or "")
+            seen[k] = seen.get(k, 0) + 1
+            out[f"{k}#{seen[k]}"] = b
+        return out
+
+    a = _idx((old or {}).get("blocks"))
+    b = _idx((new or {}).get("blocks"))
     rows = []
     for k in list(a) + [k for k in b if k not in a]:
         x, y = a.get(k), b.get(k)

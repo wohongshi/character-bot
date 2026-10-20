@@ -139,6 +139,16 @@ def main():
     check("7.2 新增块标 added", rows["memory"]["kind"] == "added")
     check("7.3 消失的块标 removed", rows["user"]["kind"] == "removed")
     check("7.4 没变的不出现", all(r["delta"] != 0 for r in PB.diff(a, a)))
+    # 中间插/删一个块，后面的同 key 块不该跟着「变了」
+    x1 = PB.snapshot([PB.block("persona", "system", "P"),
+                      PB.block("kb", "system", "资料"),
+                      PB.block("hist", "user", "1"), PB.block("hist", "assistant", "2"),
+                      PB.block("user", "user", "q")], chat_id="c", character="x")
+    x2 = PB.snapshot([PB.block("persona", "system", "P"),
+                      PB.block("hist", "user", "1"), PB.block("hist", "assistant", "2"),
+                      PB.block("user", "user", "q")], chat_id="c", character="x")
+    rows2 = PB.diff(x1, x2)
+    check("7.5 删掉一个块只报那一块", [r["key"] for r in rows2] == ["kb"], str(rows2))
 
     section("8. runtime 接线（块合并 = 原来的消息体）")
     from bot.runtime import BotRuntime
@@ -177,6 +187,12 @@ def main():
     check("9.5 群聊会加「群聊身份」", any(b["key"] == "who" for b in pv2["blocks"]))
     check("9.6 关掉知识库就不检索", not any(b["key"] == "kb" for b in pv2["blocks"]))
     check("9.7 群聊 chat_id 解析对", pv2["chat_id"] == "group:777", pv2["chat_id"])
+    pv4 = rt.build_preview("x", chat_id="web:studio-main")
+    check("9.8 面板会话的 id 原样保留", pv4["chat_id"] == "web:studio-main", pv4["chat_id"])
+    pv5 = rt.build_preview("x", chat_id="10086", is_group=False)
+    check("9.9 裸 QQ 号推导成私聊", pv5["chat_id"] == "private:10086", pv5["chat_id"])
+    pv6 = rt.build_preview("x", chat_id="777", is_group=True, kb=False)
+    check("9.10 裸群号推导成群聊", pv6["chat_id"] == "group:777", pv6["chat_id"])
 
     section("9b. 「不当主人」时 is_owner 必须为假")
     pv3 = rt.build_preview("x", chat_id="private:42", as_owner=False)

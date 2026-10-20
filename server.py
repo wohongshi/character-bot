@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio               # 模块级：主动消息用 run_coroutine_threadsafe（局部别名不算）
 import base64
 import binascii
 import email.utils
@@ -2460,6 +2461,16 @@ def _sched_loop() -> None:
 
 
 # ---------- 文档导入知识库 ----------
+def _num(v, default):
+    """面板传来的数字：空/坏值用默认，**0 照用**。"""
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _kb_ingest(text: str, *, filename: str = "", character: str = "",
                max_chars: int = 600, overlap: int = 80, min_chars: int = 40,
                dry_run: bool = True) -> dict:
@@ -2535,17 +2546,25 @@ def _proactive_blocked(rt, chat_id: str) -> str:
     return ""
 
 
-def _messages_of(chat_id: str, n: int = 4) -> list:
-    """这个会话最近 n 条消息（从文件尾部读，不整文件灌进内存）。"""
-    from collections import deque
+def _messages_of(chat_id: str, n: int = 4, *, tail_bytes: int = 1_048_576) -> list:
+    """这个会话最近 n 条消息（**按字节**从尾部读）。
 
+    `deque(f, maxlen=2000)` 只是限制留在内存里的行数，文件照样从头读到尾 ——
+    messages.jsonl 能到几十 MB，而这里每次主动发送都会调一次。
+    """
     try:
-        with open(MSG_JSONL, "r", encoding="utf-8", errors="replace") as f:
-            tail = deque(f, maxlen=2000)
+        size = os.path.getsize(MSG_JSONL)
+        with open(MSG_JSONL, "rb") as f:
+            f.seek(max(0, size - max(65536, int(tail_bytes))))
+            blob = f.read()
     except OSError:
         return []
+    text = blob.decode("utf-8", "replace")
+    if size > tail_bytes:
+        cut = text.find("\n")
+        text = text[cut + 1:] if cut >= 0 else ""
     out = []
-    for line in tail:
+    for line in text.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
@@ -2585,9 +2604,19 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
         msgs, max_tokens=120, character=rt.active_character, **kw))
     if not text:
         raise RuntimeError("模型没有给出内容")
-    fut = asyncio.run_coroutine_threadsafe(
-        rt.send(chat_id, text, sentence_split=True), BOT.loop)
-    res = fut.result(timeout=90)
+    async def _do():
+        # wait_for 在**loop 内部**取消：只对 future 设超时不会取消已排队的协程，
+        # 传输层可能照样把消息发出去，而我们这边却记成失败 → 下一轮重复发。
+        return await asyncio.wait_for(
+            rt.send(chat_id, text, sentence_split=True), timeout=90)
+
+    fut = asyncio.run_coroutine_threadsafe(_do(), BOT.loop)
+    try:
+        res = fut.result(timeout=95)
+    except (asyncio.TimeoutError, TimeoutError):
+        # 不知道发没发出去：按「已发」占住名额（宁可不重复，也不刷屏）
+        pv.mark_unknown(_state_dir(), chat_id, "发送超时，不确定是否已送达", now=now)
+        raise RuntimeError("发送超时（结果未知，已按已发记账）") from None
     if not getattr(res, "success", True):
         raise RuntimeError("发送失败（限流，或适配器没连上）")
     pv.mark_sent(_state_dir(), chat_id, text, now=now, intent=intent["key"])
@@ -6355,9 +6384,10 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("text") or ""),
                     filename=str(body.get("filename") or ""),
                     character=str(body.get("character") or ""),
-                    max_chars=int(body.get("max_chars") or 600),
-                    overlap=int(body.get("overlap") or 80),
-                    min_chars=int(body.get("min_chars") or 40),
+                    # 0 是合法值（重叠 0 = 不重叠），不能被 `or` 吞成默认值
+                    max_chars=int(_num(body.get("max_chars"), 600)),
+                    overlap=int(_num(body.get("overlap"), 80)),
+                    min_chars=int(_num(body.get("min_chars"), 40)),
                     dry_run=body.get("dry_run", True) is not False)
             except ValueError as e:
                 self._json({"ok": False, "error": str(e)}, 400)

@@ -184,6 +184,13 @@ def main():
     except ValueError as e:
         ok2, err2 = True, str(e)
     check("8.3 合法但不存在的角色也要报错", ok2 and "zzz" in err2, err2)
+    out0 = SV._kb_ingest("正文。" * 60, filename="x.txt", character="klee",
+                         overlap=0, dry_run=True)
+    check("8.4 overlap=0 不会被当成默认值", out0["params"]["overlap"] == 0,
+          str(out0["params"]))
+    check("8.5 默认值仍然生效",
+          SV._kb_ingest("正文。" * 60, filename="x.txt", character="klee",
+                        dry_run=True)["params"]["overlap"] == 80)
 
     print()
     if FAIL:
