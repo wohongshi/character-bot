@@ -508,6 +508,31 @@ html[data-touch="1"] .cmdkbtn{min-height:44px}   /* 侧栏里的搜索按钮，�
 .route.stop{color:var(--red)}
 .say{display:flex;gap:9px;align-items:flex-start;margin-top:7px}
 .ava.sm{width:28px;height:28px;border-width:2px}
+/* ============ 提示词调试 ============ */
+.prbar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--line);margin:8px 0 6px}
+.prbar i{display:block;height:100%}
+.pb-a{background:#d97757}.pb-b{background:#c9a227}.pb-c{background:#5b9e6f}
+.pb-d{background:#7a6ff0}.pb-e{background:#e08bb0}.pb-f{background:#4fa3c7}
+.pb-g{background:#2f8f8a}.pb-h{background:#b06f3a}.pb-i{background:#9a9a9a}
+.pb-j{background:#6d7fa8}.pb-k{background:#c0392b}
+.prrow{border-bottom:1px dashed var(--line);padding:3px 0;font-size:12.5px}
+.prrow summary{cursor:pointer;display:flex;gap:8px;align-items:baseline;list-style:none;flex-wrap:wrap}
+.prrow summary::-webkit-details-marker{display:none}
+.prrow .lb{font-weight:600;min-width:84px}
+.prrow .ct{color:var(--dim);font-size:max(11px, calc(11px * var(--fx)))}
+.pretxt{white-space:pre-wrap;word-break:break-word;background:var(--surface-2);border-radius:10px;
+  padding:8px 10px;margin:6px 0;font-size:12px;max-height:220px;overflow:auto;
+  font-family:var(--font-body);line-height:1.6}
+/* ============ 文档导入 ============ */
+.ingrow{display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px dashed var(--line);font-size:12.5px}
+.ingrow .ix{color:var(--dim);width:30px;flex:none}
+.ingrow .ti{flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ingrow .tx{flex:1;color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ingrow.dup{opacity:.55}
+/* ============ 主动消息 ============ */
+.pvrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--line)}
+.pvrow .id{font-weight:600;min-width:118px}
+.pvrow input[type=number]{width:70px}
 /* ============ 知识库 ============ */
 .kbhit{border:2px solid var(--line);border-radius:14px;padding:10px 12px;margin-bottom:8px;background:var(--surface-2)}
 .kbh-h{display:flex;gap:8px;align-items:center;margin-bottom:5px;font-size:11.5px;color:var(--dim);flex-wrap:wrap}
@@ -3978,6 +4003,31 @@ async function viewPersona(){
     <div id="kbManual" style="margin-top:10px"></div>
   </div>
   <div class="card">
+    <h3>📄 导入文档 <span class="kv" style="font-family:var(--font-body)">长文切成块再入库，重复的自动跳过</span></h3>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <input type="file" id="kbIngFile" accept=".txt,.md,.markdown,.csv,.json,.log" hidden
+             onchange="kbIngPick(this)">
+      <button class="btn tiny" onclick="kbIngFileClick()">选文件</button>
+      <input id="kbIngName" placeholder="标题 / 来源名（可空）" style="flex:1;min-width:150px">
+      <span class="kv" id="kbIngMsg"></span>
+    </div>
+    <textarea id="kbIngText" rows="5" placeholder="也可以直接把整篇文字粘进来（设定集、剧情、问答稿…）"
+      style="width:100%;margin-top:8px;font-family:var(--font-body);font-size:13px"></textarea>
+    <div class="row" style="gap:10px;flex-wrap:wrap;margin-top:8px;align-items:center">
+      <label class="kv" style="margin:0">每块 <input type="number" id="kbIngMax" value="600" min="200"
+        max="1200" step="50" style="width:74px"> 字</label>
+      <label class="kv" style="margin:0">重叠 <input type="number" id="kbIngOv" value="80" min="0"
+        max="300" step="10" style="width:64px"> 字</label>
+      <label class="kv" style="margin:0">短块并入上一块 <input type="number" id="kbIngMin" value="40"
+        min="10" max="200" step="10" style="width:64px"> 字</label>
+      <button class="btn tiny" onclick="kbIngPreview(this)">预览切块</button>
+      <button class="btn primary tiny" id="kbIngGo" style="display:none" onclick="kbIngCommit(this)">确认入库</button>
+    </div>
+    <div class="kv" style="margin-top:6px">按标题/段落/句子切，块之间留重叠（一句话不会被切两半）。
+      同一个文件导第二次会自动跳过——靠内容指纹，不是文件名。</div>
+    <div id="kbIngOut" style="margin-top:8px"></div>
+  </div>
+  <div class="card">
     <h3>🕒 最近命中 <span class="kv" style="font-family:var(--font-body)">谁问的、命中了哪几段</span>
       <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
     <div id="kbRecent" style="margin-top:6px"></div>
@@ -5952,7 +6002,313 @@ async function selfFix(id, btn){
   selfCheck(true);
 }
 
+/* ================= 提示词调试台 ================= */
+const PBHUE = {persona:"a", rules:"b", tools:"b", skills:"c", memory:"d", mood:"e",
+  stickers:"f", kb:"g", summary:"h", hist:"i", who:"j", user:"k", scene:"b",
+  system:"i", other:"i"};
+let prData = null, prOpen = false, prChat = "", prSel = "";
+async function prLoad(force){
+  const box = $("prBox");
+  if (!box) return;
+  const d = await api("/api/prompt" + (prChat ? "?chat=" + encodeURIComponent(prChat) : ""));
+  if (!d || !d.ok){
+    box.innerHTML = `<span class="bad">读不到提示词：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  prData = d;
+  prRender();
+}
+async function prPickChat(v){
+  prChat = v || ""; prSel = "";
+  await prLoad(true);
+}
+function prToggle(){
+  prOpen = !prOpen;
+  const box = $("prBox"), btn = $("prMore");
+  if (box) box.style.display = prOpen ? "" : "none";
+  if (btn) btn.textContent = prOpen ? "收起" : "展开";
+  if (prOpen) prLoad(true);
+}
+function prBars(blocks){
+  const tot = blocks.reduce((a, b) => a + (b.chars || 0), 0) || 1;
+  return `<div class="prbar">` + blocks.map(b => {
+    const w = Math.max(1, Math.round((b.chars || 0) * 100 / tot));
+    return `<i class="pb-${PBHUE[b.key] || "i"}" style="width:${w}%" title="${esc(b.label)} ${b.chars} 字"></i>`;
+  }).join("") + `</div>`;
+}
+function prRows(blocks){
+  const rows = []; let h = null;
+  for (const b of blocks){
+    if (b.key === "hist"){
+      if (!h){ h = {label:"历史对话", chars:0, n:0, texts:[]}; rows.push(h); }
+      h.chars += b.chars || 0; h.n++; h.texts.push(b.text); continue;
+    }
+    h = null; rows.push({label:b.label, chars:b.chars, n:0, texts:[b.text], role:b.role, key:b.key});
+  }
+  return rows.map(r => `<details class="prrow"><summary>
+      <span class="lb">${esc(r.label)}</span>
+      ${r.n ? `<span class="ct">${r.n} 条</span>` : `<span class="ct">${esc(r.role || "")}</span>`}
+      <span class="ct">${r.chars} 字</span>
+    </summary>${r.texts.map(t => `<pre class="pretxt">${esc(t)}</pre>`).join("")}</details>`).join("");
+}
+function prRender(){
+  const box = $("prBox");
+  if (!box) return;
+  const snap = (prData && prData.latest) || null;
+  const list = (prData && prData.recent) || [];
+  const sum = $("prSum");
+  if (sum) sum.innerHTML = list.length ? `<span class="tag">${list.length} 次</span>` : "";
+  const opts = [`<option value="">最近一次（全部会话）</option>`].concat(
+    list.map(x => `<option value="${esc(x.chat_id)}"${x.chat_id === prChat ? " selected" : ""}>`
+      + `${esc(prChatLabel(x.chat_id))} · ${esc(x.source)} · ${new Date((x.ts || 0) * 1000).toLocaleTimeString()}</option>`));
+  const head = `<div class="row" style="gap:6px;flex-wrap:wrap;margin:6px 0">
+      <select style="max-width:260px" onchange="prPickChat(this.value)">${opts.join("")}</select>
+      <button class="btn tiny" onclick="prClear(this)">清空记录</button></div>`;
+  if (!snap){
+    box.innerHTML = head + `<div class="kv">还没有捕获到 —— 让她回一条消息，或者直接在下面试跑。</div>` + prDryBox();
+    return;
+  }
+  const blocks = snap.blocks || [];
+  const when = new Date((snap.ts || 0) * 1000).toLocaleString();
+  box.innerHTML = head + `
+    <div class="kv" style="margin:2px 0 0">
+      ${esc(prChatLabel(snap.chat_id))} · ${esc(snap.source)} · ${esc(when)}
+      · 共 <b>${snap.messages}</b> 条消息 / <b>${snap.chars}</b> 字 / 约 <b>${snap.tokens}</b> token
+    </div>` + prBars(blocks) + prRows(blocks) + prDryBox();
+}
+function prDryBox(){
+  return `<div style="margin-top:12px;border-top:1px dashed var(--line);padding-top:10px">
+    <div class="kv" style="margin:0 0 6px">试跑<span class="kv" style="margin:0">按当前设置重新拼一遍，不发出去、不写历史</span></div>
+    <div class="row" style="gap:6px;flex-wrap:wrap">
+      <input id="prText" placeholder="打一句试试，比如「今天好累」" style="flex:1;min-width:160px">
+      <select id="prWhere" style="min-width:88px"><option value="dm">私聊</option><option value="group">群聊</option></select>
+      <label class="check" style="font-size:12px"><input type="checkbox" id="prOwner" checked> 当主人</label>
+      <label class="check" style="font-size:12px"><input type="checkbox" id="prKb" checked> 带知识库</label>
+      <button class="btn primary tiny" onclick="prDry(this)">试跑</button>
+    </div>
+    <div id="prOut"></div>
+  </div>`;
+}
+async function prDry(btn){
+  btn = btn || {style: {}};          // 键盘/脚本调用时不带按钮
+  const text = (($("prText") || {}).value || "").trim();
+  if (!text){ flash("先写一句要试的话"); return; }
+  btn.disabled = true;
+  const d = await post("/api/prompt/preview", {
+    text, chat_id: prChat, is_group: ($("prWhere") || {}).value === "group",
+    as_owner: !!($("prOwner") || {}).checked, kb: !!($("prKb") || {}).checked});
+  btn.disabled = false;
+  const out = $("prOut");
+  if (!out) return;
+  if (!d || !d.ok){
+    out.innerHTML = `<span class="bad">试跑失败：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  const diff = !d.has_base ? `<span class="kv" style="margin:0">（这个会话还没有真实请求可比，下面是完整结果）</span>`
+    : ((d.diff || []).map(x => {
+        const sign = x.delta > 0 ? "+" : "";
+        const cls = x.kind === "removed" ? "bad" : "";
+        return `<span class="tag ${cls}">${esc(x.label)} ${sign}${x.delta} 字</span>`;
+      }).join("") || `<span class="tag">和最近一次一样</span>`);
+  out.innerHTML = `<div class="row" style="gap:4px;flex-wrap:wrap;margin:8px 0">
+      <span class="kv" style="margin:0">共 ${d.messages} 条 / ${d.chars} 字 / 约 ${d.tokens} token</span>${diff}</div>`
+    + prBars(d.blocks || []) + prRows(d.blocks || [])
+    + `<details><summary class="kv">真实请求体（点开看原文）</summary>
+         <pre class="pretxt">${esc(JSON.stringify(d.msgs || [], null, 1))}</pre></details>`
+    + (d.kb_error ? `<div class="kv bad">知识库检索失败：${esc(d.kb_error)}</div>` : "");
+}
+async function prClear(btn){
+  btn = btn || {style: {}};
+  btn.disabled = true;
+  const d = await post("/api/prompt/clear", {});
+  btn.disabled = false;
+  if (d && d.ok){ flash("已清空 " + d.cleared + " 条"); prLoad(true); }
+  else flash("清空失败");
+}
+function prChatLabel(id){
+  const s = String(id || "");
+  if (s.startsWith("group:")) return "群 " + s.slice(6);
+  if (s.startsWith("private:")) return "私聊 " + s.slice(8);
+  if (s.startsWith("web:")) return "面板 " + s.slice(4);
+  return s || "—";
+}
+
+/* ================= 知识库：文档导入 ================= */
+let kbIngPlan = null;
+function kbIngFileClick(){ const f = $("kbIngFile"); if (f) f.click(); }
+async function kbIngPick(inp){
+  const f = inp.files && inp.files[0];
+  if (!f) return;
+  if (f.size > 2000000){ flash("文件太大（纯文本上限 2MB）"); inp.value = ""; return; }
+  const txt = await f.text();
+  $("kbIngText").value = txt;
+  if (!$("kbIngName").value) $("kbIngName").value = f.name.replace(/\.[^.]+$/, "");
+  $("kbIngMsg").textContent = `${f.name} · ${txt.length} 字`;
+  kbIngPlan = null;
+  const go = $("kbIngGo"); if (go) go.style.display = "none";
+  kbIngPreview();
+}
+function kbIngParams(){
+  return {max_chars: +($("kbIngMax").value || 600), overlap: +($("kbIngOv").value || 0),
+          min_chars: +($("kbIngMin").value || 40)};
+}
+async function kbIngPreview(btn){
+  const text = ($("kbIngText").value || "").trim();
+  if (!text){ flash("先选文件或粘一段文字"); return; }
+  if (btn) btn.disabled = true;
+  const d = await post("/api/kb/ingest", Object.assign({
+    text, filename: $("kbIngName").value, character: ACTIVE.id, dry_run: true}, kbIngParams()));
+  if (btn) btn.disabled = false;
+  const out = $("kbIngOut"), go = $("kbIngGo");
+  if (!d || !d.ok){
+    out.innerHTML = `<span class="bad">切不了：${esc((d && d.error) || "未知")}</span>`;
+    if (go) go.style.display = "none";
+    return;
+  }
+  kbIngPlan = d;
+  const c = d.counts || {};
+  out.innerHTML = `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="tag">${c.total} 块</span>
+      <span class="tag">可入库 ${c.fresh}</span>
+      ${c.dup ? `<span class="tag">重复 ${c.dup}（会跳过）</span>` : ""}
+      <span class="tag">共 ${c.chars} 字</span></div>`
+    + (d.chunks || []).map(x => `<div class="ingrow${x.dup ? " dup" : ""}">
+        <span class="ix">${x.idx + 1}</span>
+        <span class="ti" title="${esc(x.title)}">${esc(x.title || "—")}</span>
+        <span class="tx">${esc(x.text)}</span>
+        <span class="ct">${x.chars} 字${x.dup ? " · " + esc(x.dup) : ""}</span></div>`).join("");
+  if (go) go.style.display = c.fresh ? "" : "none";
+}
+async function kbIngCommit(btn){
+  btn = btn || {style: {}};
+  if (!kbIngPlan){ flash("先预览一次"); return; }
+  const text = ($("kbIngText").value || "").trim();
+  btn.disabled = true; btn.textContent = "写入中…";
+  const d = await post("/api/kb/ingest", Object.assign({
+    text, filename: $("kbIngName").value, character: ACTIVE.id, dry_run: false}, kbIngParams()));
+  btn.disabled = false; btn.textContent = "确认入库";
+  if (!d || !d.ok){
+    flash("入库失败：" + ((d && d.error) || "未知"));
+    return;
+  }
+  flash(`入库 ${d.added} 条${d.failed ? "，失败 " + d.failed + " 条" : ""}`);
+  if (d.failed) $("kbIngOut").insertAdjacentHTML("afterbegin",
+    `<div class="kv bad">${esc((d.errors || []).join("；"))}</div>`);
+  kbIngPreview();
+}
+
 /* ================= 管控：命令权限 / 会话策略 / 模拟器 ================= */
+/* ================= 管控：主动消息 ================= */
+let pvData = null;
+async function pvLoad(force){
+  const d = await api("/api/proactive");
+  if (!d || !d.ok){
+    const box = $("pvRows");
+    if (box) box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  pvData = d;
+  pvRender();
+  pvRenderLog();
+}
+function pvRender(){
+  const box = $("pvRows");
+  if (!box || !pvData) return;
+  const chats = pvData.chats || {};
+  const ids = Object.keys(chats);
+  const meta = $("pvMeta");
+  if (meta) meta.innerHTML = ids.length ? `<span class="tag">${ids.length} 个会话</span>` : "";
+  const pick = $("pvPick");
+  if (pick){
+    const known = pvData.known_chats || [];
+    pick.innerHTML = known.map(id => `<option value="${esc(id)}">${esc(prChatLabel(id))}`
+      + `${chats[id] ? "（已加）" : ""}</option>`).join("") || `<option value="">没有已知会话</option>`;
+  }
+  if (!ids.length){
+    box.innerHTML = `<div class="kv">还没加会话。挑一个已知会话加进来，再打开开关。</div>`;
+    return;
+  }
+  box.innerHTML = ids.map(id => {
+    const c = chats[id];
+    const off = !c.on;
+    return `<div class="pvrow" data-chat="${esc(id)}">
+      <span class="id" style="opacity:${off ? ".55" : "1"}">${esc(prChatLabel(id))}</span>
+      <button class="btn tiny ${c.on ? "primary" : ""}" onclick="pvToggle('${esc(id)}',${!c.on})">
+        ${c.on ? "● 开" : "○ 关"}</button>
+      <label class="kv" style="margin:0">每天 <input type="number" min="0" max="20" value="${c.per_day}"
+        onchange="pvSave('${esc(id)}','per_day',this.value)"> 条</label>
+      <label class="kv" style="margin:0">间隔 <input type="number" min="0.5" max="168" step="0.5" value="${c.min_gap_h}"
+        onchange="pvSave('${esc(id)}','min_gap_h',this.value)"> 小时</label>
+      <label class="kv" style="margin:0">没聊 <input type="number" min="0.5" max="720" step="0.5" value="${c.idle_h}"
+        onchange="pvSave('${esc(id)}','idle_h',this.value)"> 小时才发</label>
+      <label class="kv" style="margin:0">概率 <input type="number" min="0" max="1" step="0.05" value="${c.chance}"
+        onchange="pvSave('${esc(id)}','chance',this.value)"></label>
+      <button class="btn tiny" onclick="pvTest('${esc(id)}',this)">现在发一条</button>
+      <button class="btn tiny" onclick="pvRemove('${esc(id)}')">移除</button>
+      <span class="kv" style="flex-basis:100%;margin:0;font-size:max(11px, calc(11px * var(--fx)))">
+        今天 ${c.sent_today || 0}/${c.per_day} 条
+        ${c.last_sent_ts ? " · 上一条 " + new Date(c.last_sent_ts * 1000).toLocaleString() : ""}
+        ${c.fails ? ` · <span class="bad">连续失败 ${c.fails} 次：${esc(c.last_error || "")}</span>` : ""}
+      </span></div>`;
+  }).join("");
+}
+function pvRenderLog(){
+  const box = $("pvLog");
+  if (!box || !pvData) return;
+  const log = pvData.log || [];
+  box.innerHTML = log.length
+    ? `<div style="margin-bottom:4px">最近发出去的：</div>` + log.map(x =>
+        `<div class="kv" style="margin:0 0 3px">${esc(prChatLabel(x.chat_id))} · `
+        + `${new Date((x.ts || 0) * 1000).toLocaleString()} · `
+        + `${x.event === "sent" ? esc(x.text || "") : `<span class="bad">发送失败 ${esc(x.error || "")}</span>`}</div>`).join("")
+    : `<div class="kv">还没有发过。</div>`;
+}
+async function pvSave(chat, field, value){
+  const body = {chat_id: chat};
+  body[field] = (value === "" || value == null) ? null : Number(value);
+  const d = await post("/api/proactive/chat", body);
+  if (!d || !d.ok){ flash("保存失败：" + ((d && d.error) || "未知")); }
+  pvLoad(true);
+}
+async function pvToggle(chat, on){
+  const d = await post("/api/proactive/chat", {chat_id: chat, on: !!on});
+  if (!d || !d.ok) flash("保存失败：" + ((d && d.error) || "未知"));
+  pvLoad(true);
+}
+async function pvAdd(){
+  const id = ($("pvPick") || {}).value || "";
+  if (!id){ flash("没有可选的会话"); return; }
+  const d = await post("/api/proactive/chat", {chat_id: id, on: true});
+  if (!d || !d.ok) flash("加不上：" + ((d && d.error) || "未知"));
+  else flash("已加入：" + id);
+  pvLoad(true);
+}
+async function pvRemove(chat){
+  const d = await post("/api/proactive/remove", {chat_id: chat});
+  if (!d || !d.ok) flash("删不掉：" + ((d && d.error) || "未知"));
+  pvLoad(true);
+}
+async function pvTest(chat, btn){
+  btn = btn || {style: {}};
+  if (!confirm("现在真的发一条到 " + chat + " ？")) return;
+  btn.disabled = true; btn.textContent = "生成中…";
+  const d = await post("/api/proactive/test", {chat_id: chat});
+  btn.disabled = false; btn.textContent = "现在发一条";
+  if (!d || !d.ok) flash("发不出去：" + ((d && d.error) || "未知"));
+  else flash("已发送：" + (d.text || ""));
+  pvLoad(true);
+}
+async function pvTick(btn){
+  btn = btn || {style: {}};
+  btn.disabled = true; btn.textContent = "巡检中…";
+  const d = await post("/api/proactive/tick", {});
+  btn.disabled = false; btn.textContent = "现在巡检一次";
+  if (!d || !d.ok){ flash("巡检失败：" + ((d && d.error) || "未知")); return; }
+  const acts = (d.actions || []);
+  flash(acts.length ? acts.map(a => a.send ? "发了" : a.reason).join("；") : "没有开着的会话");
+  pvLoad(true);
+}
+
 let ctlData = null, ctlFilter = "all", ctlQuery = "";
 function ctlNormChat(raw, isGroup){
   // 裸数字按「场景」决定是群号还是 QQ 号 —— QQ 号也是 5~11 位，
@@ -6008,6 +6364,26 @@ async function viewControl(){
         <span class="kv">留空的项就跟随全局（全局：<b id="ctlGlobal"></b>）</span>
       </div>
     </div>
+    <div class="card" id="pvCard">
+      <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span class="kv" style="margin:0">💌 主动消息 <span id="pvMeta"></span></span>
+        <span class="row" style="gap:6px">
+          <button class="btn tiny" onclick="pvLoad(true)">⟳ 刷新</button>
+          <button class="btn tiny" onclick="pvTick(this)">现在巡检一次</button>
+        </span>
+      </div>
+      <div class="kv" style="margin:4px 0 8px;line-height:1.7">
+        很久没聊时，她自己开个话头。<b>默认全关</b>；受「每日上限 / 最小间隔 / 会话策略的静默时段」三重限制，
+        连续失败 3 次自动暂停。「现在发一条」会立刻真发到那个会话。
+      </div>
+      <div id="pvRows" class="kv">读取中…</div>
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+        <select id="pvPick" style="min-width:170px"></select>
+        <button class="btn tiny" onclick="pvAdd()">＋ 加一个会话</button>
+        <span class="kv" id="pvMsg"></span>
+      </div>
+      <div id="pvLog" class="kv" style="margin-top:8px"></div>
+    </div>
     <div class="card" id="ctlSimCard">
       <div class="kv" style="margin:0 0 6px">🧪 消息模拟器
         <span class="kv" style="margin:0">不发送、不执行、不写历史</span></div>
@@ -6029,6 +6405,7 @@ async function viewControl(){
       <div id="simOut"></div>
     </div>`;
   await ctlLoad();
+  pvLoad();                 // 主动消息是独立接口：漏了这一句卡片就永远显示「读取中…」
 }
 async function ctlLoad(){
   const d = await api("/api/control");
@@ -6278,6 +6655,20 @@ async function viewOps(target){
       </span>
     </div>
     <div id="chkBox" class="kv" style="margin-top:6px">正在检查…</div>
+  </div>
+  <div class="card" id="prCard" style="margin-bottom:14px">
+    <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <span class="kv" style="margin:0">🔬 提示词调试 <span id="prSum"></span></span>
+      <span class="row" style="gap:6px">
+        <button class="btn tiny" onclick="prLoad(true)">⟳ 刷新</button>
+        <button class="btn tiny" id="prMore" onclick="prToggle()">展开</button>
+      </span>
+    </div>
+    <div class="kv" style="margin-top:4px;line-height:1.7">
+      她这一轮<b>真正发给模型</b>的东西，按块摊开：人格占多少、记忆有没有进来、知识库命中了哪段、历史被压成什么样。
+      只记在内存里，重启就没了。
+    </div>
+    <div id="prBox" style="display:none"></div>
   </div>
   <div class="opsgrid">
     <div class="card"><h3>${t("ops.panel")}</h3>

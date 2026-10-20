@@ -2459,6 +2459,212 @@ def _sched_loop() -> None:
         time.sleep(20)
 
 
+# ---------- 文档导入知识库 ----------
+def _kb_ingest(text: str, *, filename: str = "", character: str = "",
+               max_chars: int = 600, overlap: int = 80, min_chars: int = 40,
+               dry_run: bool = True) -> dict:
+    """切块 → （可选）逐条写进 klee-kb。`dry_run` 只预览，不动库。"""
+    from bot import kbingest as ig
+
+    raw_cid = str(character or "").strip().lower()
+    cid = re.sub(r"[^a-z0-9_\-]", "", raw_cid)[:32]
+    if raw_cid and not cid:
+        raise ValueError(f"角色 id 只能是字母、数字、下划线或短横线：{raw_cid[:20]}")
+    cid = cid or _active_cid()
+    # klee-kb 对**不认识的角色名会回退到默认库**（klee 的 kb.sqlite3）——
+    # 传错一个字母就会把别人的资料灌进克莱的库，所以这里先卡死。
+    if _char_store().get(cid) is None:
+        raise ValueError(f"没有这个角色：{cid}")
+    title = str(filename or "").strip()[:80]
+    plan = ig.plan(text, state_dir=_state_dir(), character=cid, max_chars=max_chars,
+                   overlap=overlap, min_chars=min_chars, title=title)
+
+    def _add(chunk: dict) -> None:
+        payload = {"text": chunk["text"],
+                   "title": (f"{title} · {chunk.get('title')}" if title else
+                             str(chunk.get("title") or ""))[:120],
+                   "source": f"import:{title or '粘贴'}"[:160],
+                   "character": cid}
+        req = urllib.request.Request(
+            KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:        # noqa: S310
+            out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        if not out.get("ok", True):
+            raise RuntimeError(str(out.get("error") or "知识库拒绝了这一条"))
+
+    added = failed = 0
+    errors: list = []
+    if not dry_run:
+        res = ig.commit(plan["chunks"], _add)
+        added, failed, errors = res["added"], res["failed"], res["errors"]
+        if res["fps"]:
+            ig.save_seen(_state_dir(), cid, res["fps"])
+    return {"ok": True, "character": cid, "dry_run": bool(dry_run),
+            "counts": plan["counts"], "params": plan["params"],
+            "chunks": [{"idx": c["idx"], "title": c["title"], "chars": c["chars"],
+                        "dup": c["dup"], "text": c["text"][:240]} for c in plan["chunks"]],
+            "added": added, "failed": failed, "errors": errors}
+
+
+# ---------- 主动消息 ----------
+def _proactive_blocked(rt, chat_id: str) -> str:
+    """会话策略拦不拦（完全不理 / 静默时段）。返回原因，空串 = 可以发。"""
+    try:
+        pol = rt.policy_for(chat_id, is_group=str(chat_id).startswith("group:"))
+    except Exception as e:                                        # noqa: BLE001
+        return f"策略读取失败：{type(e).__name__}"
+    if pol.get("blocks_all"):
+        return "这个会话的策略是完全不理"
+    if pol.get("quiet"):
+        return "现在是静默时段"
+    return ""
+
+
+def _messages_of(chat_id: str, n: int = 4) -> list:
+    """这个会话最近 n 条消息（从文件尾部读，不整文件灌进内存）。"""
+    from collections import deque
+
+    try:
+        with open(MSG_JSONL, "r", encoding="utf-8", errors="replace") as f:
+            tail = deque(f, maxlen=2000)
+    except OSError:
+        return []
+    out = []
+    for line in tail:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and str(row.get("chat_id") or "") == str(chat_id):
+            out.append(row)
+    return out[-max(1, int(n or 4)):]
+
+
+def _clean_proactive(text: str) -> str:
+    """把她主动说的那句收拾干净：一句话、去掉引号和自言自语的前缀。"""
+    s = str(text or "").strip()
+    s = re.sub(r"^\s*(?:主动|回复|答)\s*[:：]\s*", "", s)
+    s = s.strip("\"'“”「」")
+    s = re.sub(r"\s*\n+\s*", " ", s)
+    return s[:200].strip()
+
+
+def _proactive_send(chat_id: str, *, now=None, rng=None) -> dict:
+    """真的发一条：模型写一句 → 走 runtime.send（限流/分句/引用都照旧）。"""
+    from bot import proactive as pv
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    if rt is None or BOT.loop is None:
+        raise RuntimeError("bot 没在跑")
+    now = time.time() if now is None else now
+    intent = pv.pick_intent(now, rng)
+    recent = "\n".join(f"{'她' if m.get('role') == 'assistant' else '对方'}："
+                        f"{str(m.get('text') or '')[:120]}"
+                        for m in _messages_of(chat_id, 4)[-2:])
+    msgs = pv.build_messages(rt._persona(), intent=intent, recent=recent, now=now)
+    mm = (BOT.models.for_character(rt.active_character)
+          if hasattr(BOT.models, "for_character") else {})
+    kw = {"provider": str(mm.get("provider") or ""), "model": str(mm.get("model") or "")}
+    if not kw["model"]:
+        kw = {}
+    text = _clean_proactive(BOT.models.chat(
+        msgs, max_tokens=120, character=rt.active_character, **kw))
+    if not text:
+        raise RuntimeError("模型没有给出内容")
+    fut = asyncio.run_coroutine_threadsafe(
+        rt.send(chat_id, text, sentence_split=True), BOT.loop)
+    res = fut.result(timeout=90)
+    if not getattr(res, "success", True):
+        raise RuntimeError("发送失败（限流，或适配器没连上）")
+    pv.mark_sent(_state_dir(), chat_id, text, now=now, intent=intent["key"])
+    return {"text": text, "intent": intent["key"], "chat_id": chat_id}
+
+
+def _proactive_tick(now=None, rng=None) -> list:
+    """巡检一遍：每个开了的会话单独判定，发的记日志、失败的记失败。"""
+    from bot import proactive as pv
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    if rt is None or BOT.loop is None:
+        return []
+    now = time.time() if now is None else now
+    out: list = []
+    for chat_id, cfg in list(pv.load(_state_dir()).get("chats", {}).items()):
+        verdict = pv.decide(cfg, now=now, last_user_ts=pv.last_user_ts(MSG_JSONL, chat_id),
+                            blocked=_proactive_blocked(rt, chat_id), rng=rng)
+        row = {"chat_id": chat_id, "send": bool(verdict["send"]), "reason": verdict["reason"]}
+        if verdict["send"]:
+            try:
+                got = _proactive_send(chat_id, now=now, rng=rng)
+                row.update(ok=True, text=got["text"])
+            except Exception as e:                                # noqa: BLE001
+                pv.mark_fail(_state_dir(), chat_id, f"{type(e).__name__}: {e}", now=now)
+                row.update(ok=False, error=f"{type(e).__name__}: {e}")
+                logger.warning("主动消息发不出去（%s）：%s", chat_id, e)
+        out.append(row)
+    return out
+
+
+def _proactive_loop() -> None:
+    from bot import proactive as pv
+    while True:
+        try:
+            if pv.load(_state_dir()).get("chats"):
+                _proactive_tick()
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning("主动消息巡检出错：%s", e)
+        time.sleep(pv.TICK_S)
+
+
+def _proactive_view() -> dict:
+    from bot import proactive as pv
+    data = pv.load(_state_dir())
+    chats = {k: pv._clamp(v) for k, v in (data.get("chats") or {}).items()}
+    try:
+        known = [str(x.get("id")) if isinstance(x, dict) else str(x)
+                 for x in (_control_snapshot().get("known_chats") or [])]
+    except Exception:                                             # noqa: BLE001
+        known = []
+    for k in chats:
+        if k not in known:
+            known.append(k)
+    return {"ok": True, "chats": chats, "defaults": pv.DEFAULTS, "limits": pv.LIMITS,
+            "known_chats": known[:120], "log": pv.read_log(_state_dir(), 20),
+            "tick_s": pv.TICK_S, "fail_stop": pv.FAIL_STOP}
+
+
+# ---------- 提示词调试台 ----------
+def _prompt_store():
+    """运行时里那块只在内存里的环形缓冲；bot 没起来就返回 None。"""
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    return getattr(rt, "prompts", None)
+
+
+def _capture_prompt(chat_id: str, cid: str, msgs: list, *, user_text: str = "",
+                    source: str = "面板") -> None:
+    """面板侧的提示词快照：从**真实消息**反推块。
+
+    这里刻意不另拼一份 —— 拼两份必然和真正发出去的那份分叉，
+    调试器一旦说假话就比没有更糟。
+    """
+    st = _prompt_store()
+    if st is None or not msgs:
+        return
+    try:
+        from bot import promptdbg as pb
+        st.add(pb.snapshot(pb.split_msgs(msgs), chat_id=chat_id, character=cid,
+                           source=source, user_text=user_text))
+    except Exception as e:                                        # noqa: BLE001
+        logger.debug("提示词快照失败：%s", e)
+
+
+def _prompt_snapshot(chat_id: str = "", character: str = "") -> dict:
+    st = _prompt_store()
+    if st is None:
+        return {"ok": False, "error": "bot 未启动"}
+    return {"ok": True, "latest": st.latest(chat_id or None, character or None) or None,
+            "recent": st.recent(24), "count": len(st)}
+
+
 # ---------- 对话：队列 + worker ----------
 def _run_job(job: dict) -> None:
     """跑一个对话作业：**外壳只负责「开一格运行状态 / 关一格」**。
@@ -2621,6 +2827,8 @@ def _run_job_body(job: dict, cid: str) -> None:
                 if e.get("role") in ("user", "assistant"):
                     msgs.append({"role": e["role"], "content": str(e.get("text"))[:800]})
         msgs.append({"role": "user", "content": dtxt})
+        _capture_prompt("web:" + str(job.get("session") or ""), cid, msgs,
+                        user_text=dtxt, source="面板")
 
         # ---- Agent 工具循环（面板当 agent 用；与 QQ 侧同一套） ----
         if use_agent:
@@ -4628,7 +4836,7 @@ _SENSITIVE_GET = frozenset({
     # 长期记忆是整个应用里最私人的东西，和 /api/chat 同级
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
-    "/api/control",
+    "/api/control", "/api/prompt", "/api/proactive",
 })
 
 
@@ -5172,6 +5380,14 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/lock":
             self._json({"ok": True, "lock": _lock.info(), "queue": _chat_q.qsize(),
                         "busy": _chat_q.busy(), "runs": _run_all()})
+            return
+        if u.path == "/api/proactive":
+            self._json(_proactive_view())
+            return
+        if u.path == "/api/prompt":
+            cid = str((q.get("character") or [""])[0] or "").strip().lower()
+            chat = str((q.get("chat") or [""])[0] or "").strip()
+            self._json(_prompt_snapshot(chat, cid))
             return
         if u.path == "/api/control":
             try:
@@ -6070,6 +6286,94 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({**out, "character": cid})
             return
+        if u.path in ("/api/proactive/chat", "/api/proactive/remove",
+                      "/api/proactive/test", "/api/proactive/tick"):
+            if not self._guard():
+                return
+            from bot import proactive as pv
+            try:
+                if u.path == "/api/proactive/tick":
+                    self._json({"ok": True, "actions": _proactive_tick()})
+                    return
+                chat_id = str(body.get("chat_id") or "").strip()
+                if not chat_id:
+                    self._json({"ok": False, "error": "缺少会话 id"}, 400)
+                    return
+                if u.path == "/api/proactive/remove":
+                    self._json({"ok": True, "removed": pv.remove_chat(_state_dir(), chat_id)})
+                    return
+                if u.path == "/api/proactive/test":
+                    got = _proactive_send(chat_id)
+                    self._json({"ok": True, **got})
+                    return
+                cfg = pv.set_chat(_state_dir(), chat_id, on=body.get("on"),
+                                  per_day=body.get("per_day"),
+                                  min_gap_h=body.get("min_gap_h"),
+                                  idle_h=body.get("idle_h"),
+                                  chance=body.get("chance"),
+                                  note=body.get("note"))
+                self._json({"ok": True, "chat_id": chat_id, "chat": cfg})
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("主动消息接口失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+            return
+        if u.path == "/api/kb/ingest":
+            if not self._guard():
+                return
+            try:
+                out = _kb_ingest(
+                    str(body.get("text") or ""),
+                    filename=str(body.get("filename") or ""),
+                    character=str(body.get("character") or ""),
+                    max_chars=int(body.get("max_chars") or 600),
+                    overlap=int(body.get("overlap") or 80),
+                    min_chars=int(body.get("min_chars") or 40),
+                    dry_run=body.get("dry_run", True) is not False)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("导入文档失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json(out)
+            return
+        if u.path in ("/api/prompt/preview", "/api/prompt/clear"):
+            if not self._guard():
+                return
+            from bot import promptdbg as _pb
+            st = _prompt_store()
+            if st is None:
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            if u.path == "/api/prompt/clear":
+                self._json({"ok": True, "cleared": st.clear()})
+                return
+            b = body          # 请求体在 do_POST 开头就读过了，再读一次只会拿到空（rfile 不可回退）
+            rt = getattr(BOT, "runtime", None) if BOT else None
+            if rt is None:
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            try:
+                chat = str(b.get("chat_id") or "").strip()
+                out = rt.build_preview(
+                    str(b.get("text") or ""), chat_id=chat,
+                    is_group=bool(b.get("is_group")),
+                    user_name=str(b.get("user_name") or "你"),
+                    as_owner=b.get("as_owner", True) is not False,
+                    kb=b.get("kb", True) is not False)
+            except Exception as e:                                # noqa: BLE001
+                logger.exception("提示词试跑失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            base = st.latest(chat or None)
+            out["ok"] = True
+            out["diff"] = _pb.diff(base or {}, out)
+            out["has_base"] = bool(base)
+            self._json(out)
+            return
         if u.path == "/api/chat/tool":
             # 对**某一条**消息做轻量处理：翻译 / 总结 / 拆解 / 润色。
             # 结果不回写 chat.jsonl —— 它是「工具输出」，不是她的一句话；
@@ -6641,6 +6945,7 @@ def main():
     _spawn_worker("log-janitor", _log_janitor)
     _start_workers()
     _spawn_worker("sched-loop", _sched_loop)
+    _spawn_worker("proactive-loop", _proactive_loop)
     try:
         from bot import llm as _llm
         _llm.set_usage_hook(_usage_record)      # 每次模型调用都记一笔（失败不影响对话）
