@@ -316,6 +316,10 @@ class ModelStore:
         self.data = self._load()
         if self._migrated:            # 迁移当场落盘：别等到下一次保存才生效
             try:
+                # 迁移会改用户的文件：留一份原样备份，手滑了还能捞回来
+                bak = self.path.with_suffix(self.path.suffix + ".bak")
+                if self.path.exists() and not bak.exists():
+                    bak.write_bytes(self.path.read_bytes())
                 self.save()
             except OSError as e:
                 log.warning("迁移后的模型配置写不回去：%s", e)
@@ -364,6 +368,9 @@ class ModelStore:
             ms = p.get("models") if isinstance(p.get("models"), list) else []
             if ms:
                 first[str(p.get("id"))] = str(ms[0])
+        act = d.get("active") if isinstance(d.get("active"), dict) else {}
+        act_prov = str(act.get("provider") or "")
+        act_model = str(act.get("model") or "")
         cleared = []
         for sec in ("agent", "vision"):
             v = d.get(sec)
@@ -373,7 +380,14 @@ class ModelStore:
             provider = str(v.get("provider") or "").strip()
             if not model:
                 continue
-            if model == first.get(provider):
+            if not provider:          # 「跟聊天同一个」写下的伪值：provider 空 → 落在主 provider
+                provider = act_prov
+            # 伪值的两种形状：
+            #   a) 等于该 provider 清单第一项（看图下拉默认选第一项）；
+            #   b) 等于当前主模型（工具卡片把 `agent()` 的解析结果回填后保存）。
+            # b 对 agent 尤其常见 —— 且清掉它行为完全不变（跟随 = 用主模型），
+            # 所以不会误伤「我就想让它跟主模型一样」的人。
+            if model == first.get(provider) or (provider == act_prov and model == act_model):
                 v["model"] = ""
                 cleared.append(f"{sec}={model}")
         if cleared:
@@ -673,7 +687,8 @@ class ModelStore:
                 if isinstance(v, dict) and str(v.get("provider") or "") == pid \
                         and v.get("model"):
                     keep.add(str(v["model"]))
-            for v in (self.data.get("characters") or {}).values():
+            chars = self.data.get("characters")
+            for v in (chars.values() if isinstance(chars, dict) else ()):
                 if isinstance(v, dict) and str(v.get("provider") or "") == pid and v.get("model"):
                     keep.add(str(v["model"]))
             prov["models"] = list(dict.fromkeys([*prov["models"], *sorted(keep)]))

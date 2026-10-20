@@ -4566,6 +4566,9 @@ async function viewModels(target){
   // 拿它回填会把「不启用」显示成「启用了某个模型」，一保存就钉死。
   const vis = Object.assign({}, (md && md.vision_raw) || (md && md.vision) || {});
   vis.configured = !!((md && md.vision) || {}).configured;
+  // 未配置时 provider 只是上次留下的残值：不清掉的话下拉显示「跟聊天同一个」，
+  // 下面列出的却是那个残留 provider 的模型 —— 选了会把别的 provider 的模型带过去
+  if (!vis.configured) vis.provider = "";
   window.__vis = vis;                     // botSaveVision 用它判断「是不是在清空」
   const visProv = provs.find(p => p.id === (vis.provider || act.provider)) || cur;
   const visModels = visProv.models || [];
@@ -4736,7 +4739,10 @@ function botFillVisionModels(){
   const p = (window.__provs || []).find(x => x.id === $("mvProv").value);
   const ms = p ? (p.models || []) : (((window.__provs || [])[0] || {}).models || []);
   // 选中的值以**当前下拉**为准（换供应商时保留用户已经选的那个），没选过才用配置
-  const cur = $("mvModel").value || (window.__vis || {}).model || "";
+  // 只在新供应商真的提供时才保留当前选择：否则 optList 会把它塞进新清单，
+  // 保存时 set_vision → _ensure_model 就把「别的供应商的模型」永久写进这家
+  const now = $("mvModel").value;
+  const cur = (now && ms.includes(now)) ? now : "";
   $("mvModel").innerHTML = `<option value="" ${cur?"":"selected"}>（不启用图片理解）</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
@@ -4754,8 +4760,10 @@ async function botSaveVision(){
 function botFillAgentModels(){
   const p = (window.__provs || []).find(x => x.id === $("agProv").value);
   const ms = p ? (p.models || []) : [];
-  // 换供应商时保留用户已经选的（以前重建成第一项 —— 一保存就把工具模型钉死）
-  const cur = $("agModel").value || "";
+  // 换供应商时保留用户已经选的（以前重建成第一项 —— 一保存就把工具模型钉死）；
+  // 但只保留新供应商真的有的，否则会把别家的模型永久塞进这家的清单
+  const now = $("agModel").value;
+  const cur = (now && ms.includes(now)) ? now : "";
   $("agModel").innerHTML = `<option value="" ${cur ? "" : "selected"}>跟聊天同一个模型</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }

@@ -101,6 +101,18 @@ def main():
     check("4.2 看图模型也保留", st3.vision()["model"] == "m2", str(st3.vision()))
     check("4.3 仍然打了 schema 标记", json.loads(p2.read_text())["_schema"] == SCHEMA)
 
+    section("4b. 另外两种伪值形状")
+    # a) provider 空（「跟聊天同一个」那项）但 model 被回填成主 provider 的第一个
+    p4 = mkfile(base(agent={"provider": "", "model": "m1"}))
+    check("4b.1 provider 空也认得出来", ModelStore(p4).agent_raw()["model"] == "",
+          str(ModelStore(p4).agent_raw()))
+    # b) agent 被钉在当时的主模型上（工具卡片回填的特征）
+    p5 = mkfile(base(active="m2", agent={"provider": "p1", "model": "m2"}))
+    check("4b.2 钉在主模型上的 agent 也清掉", ModelStore(p5).agent_raw()["model"] == "",
+          str(ModelStore(p5).agent_raw()))
+    check("4b.3 迁移前留了备份", p5.with_suffix(".json.bak").exists(),
+          str(sorted(x.name for x in p5.parent.iterdir())))
+
     section("5. 已经迁移过的文件不再动")
     p3 = mkfile({**base(agent={"provider": "p1", "model": "m1"}), "_schema": SCHEMA})
     st4 = ModelStore(p3)
@@ -125,6 +137,17 @@ def main():
           st6.for_agent("atri")["model"] == "m3", str(st6.for_agent("atri")))
     check("7.2 聊天模型也是 m3", st6.for_character("atri")["model"] == "m3")
     check("7.3 看图模型不再被误设成文本模型", st6.vision()["configured"] is False)
+
+    section("7b. characters 被手改成非 dict 也不能炸")
+    bad = mkfile({**base(), "characters": ["oops"]})
+    st7 = ModelStore(bad)
+    try:
+        st7.upsert_provider({"id": "p1", "name": "P1", "api": "http://127.0.0.1:1/v1",
+                             "key_env": "K", "models": ["m1"]})
+        ok, err = True, ""
+    except Exception as e:                                        # noqa: BLE001
+        ok, err = False, f"{type(e).__name__}: {e}"
+    check("7b.1 坏 characters 不影响改供应商", ok, err)
 
     section("8. 面板拿到的字段")
     import server as SV
