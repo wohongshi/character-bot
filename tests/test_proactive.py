@@ -279,9 +279,7 @@ def main():
             return self._c
 
         def exception(self):
-            if self._e is None:
-                raise RuntimeError("no exception")
-            return self._e
+            return self._e          # 真 Task 在「已完成且无异常」时也是返回 None
 
     got = SV._classify_wait_timeout(_Task(True, False, TimeoutError("读取超时")))
     check("11a.1 传输层超时 → 普通 RuntimeError（走失败）",
@@ -290,6 +288,10 @@ def main():
     check("11a.2 我们等超时 → SendTimeout（走未知）", isinstance(got2, PV.SendTimeout))
     got3 = SV._classify_wait_timeout(_Task(True, False, None))
     check("11a.3 task 没有异常也不炸", isinstance(got3, RuntimeError), repr(got3))
+    check("11a.4 没有异常时说明原因（不是 None 字样）",
+          "无异常" in str(got3), str(got3))
+    got4 = SV._classify_wait_timeout(_Task(True, False, TimeoutError()))
+    check("11a.5 空消息的异常也带类型名", "TimeoutError" in str(got4), str(got4))
 
     section("11. 「结果未知」不能记成失败（server 巡检）")
     st3 = Path(tempfile.mkdtemp(prefix="klee-proact-unk-"))

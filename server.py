@@ -2591,9 +2591,15 @@ def _classify_wait_timeout(task) -> BaseException:
     if task.done() and not task.cancelled():
         try:
             detail = task.exception()
-        except Exception:                                         # noqa: BLE001
-            detail = "未知"
-        return RuntimeError(f"发送超时（传输层）：{detail}")
+        except Exception as e:                                    # noqa: BLE001
+            detail = e
+        if detail is None:
+            why = "无异常（task 已完成）"
+        else:
+            # 带类型名：`TimeoutError()` 的 str 是空的，只写 {detail} 会退化成
+            # 「发送超时（传输层）：」，排查时还是看不出哪一层超时
+            why = f"{type(detail).__name__}: {detail}"
+        return RuntimeError(f"发送超时（传输层）：{why}")
     return pv.SendTimeout("发送超时（90 秒）")
 
 
