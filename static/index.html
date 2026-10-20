@@ -4081,9 +4081,9 @@ async function viewPersona(){
     </div>
     <div class="row" style="gap:10px;flex-wrap:wrap">
       <label class="kv" style="margin:0">相像到 <input type="number" id="memTh" value="0.45" min="0.3"
-        max="0.95" step="0.05" style="width:70px"> 就合并</label>
+        max="0.95" step="0.05" style="width:70px" oninput="memTidyInvalidate()"> 就合并</label>
       <label class="kv" style="margin:0">超过 <input type="number" id="memStale" value="0" min="0"
-        max="3650" style="width:70px"> 天没更新的归档（0=不归档）</label>
+        max="3650" style="width:70px" oninput="memTidyInvalidate()"> 天没更新的归档（0=不归档）</label>
       <button class="btn primary tiny" id="memTidyGo" style="display:none" onclick="memTidyApply(this)">确认整理</button>
       <span class="kv" id="memTidyMsg"></span>
     </div>
@@ -4171,7 +4171,13 @@ async function stkSend(name){
 
 /* ---------- 长期记忆 ---------- */
 /* ---------- 记忆整理 ---------- */
-let memPlan = null;
+let memPlan = null, memPlanParams = null;
+function memTidyInvalidate(){
+  // 改了阈值/天数就得重新预演：apply 用的必须是「你刚刚看过的那份计划」
+  memPlan = null; memPlanParams = null;
+  const go = $("memTidyGo");
+  if (go) go.style.display = "none";
+}
 async function memTidyPreview(btn){
   btn = btn || {};
   const out = $("memTidyOut"), go = $("memTidyGo");
@@ -4182,10 +4188,13 @@ async function memTidyPreview(btn){
     "&stale_days=" + ($("memStale") ? $("memStale").value : 0));
   btn.disabled = false;
   if (!d || !d.ok){
+    memTidyInvalidate();          // 上一次的计划不能留着被点
     if (out) out.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
     return;
   }
   memPlan = d;
+  memPlanParams = {threshold: Number((($("memTh") || {}).value) || 0.45),
+                   stale_days: Number((($("memStale") || {}).value) || 0)};
   const c = d.counts || {};
   if (!c.groups && !c.stale){
     if (out) out.innerHTML = `<div class="kv">没有可以合并的（${c.total} 条记忆里没有近似重复）。</div>`;
@@ -4210,10 +4219,12 @@ async function memTidyApply(btn){
   if (!memPlan){ flash("先预演一次"); return; }
   if (!confirm("确认整理？会写盘（先备份 .bak），合并掉的句子只保留最新那条。")) return;
   btn.disabled = true; btn.textContent = "整理中…";
+  if (!memPlanParams){ flash("参数变了，先重新预演一次"); return; }
   const d = await post("/api/memories/tidy", {
     character: ACTIVE.id,
-    threshold: Number(($("memTh") || {}).value || 0.45),
-    stale_days: Number(($("memStale") || {}).value || 0),
+    // 用**预演时**的参数：不然改完数字直接点确认，实际合并范围和刚才看到的不一致
+    threshold: memPlanParams.threshold,
+    stale_days: memPlanParams.stale_days,
     apply: true});
   btn.disabled = false; btn.textContent = "确认整理";
   const msg = $("memTidyMsg");

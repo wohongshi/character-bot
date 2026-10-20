@@ -87,7 +87,9 @@ def summarize(rows: list, *, now: float | None = None, days: int = 0,
                 p["first"] = ts
             if ts > p["last"]:
                 p["last"] = ts
-            if name and not p["name"]:
+            # `_blank()` 一定给了 name（兜底是 uid 或「未记录」），所以不能判 falsy：
+            # 拿 id 当名字的记录，后面带了真名也要能更新过来
+            if name and p["name"] in (p["user_id"], UNKNOWN, ""):
                 p["name"] = name
             last_user = (ts, cid, key)
             continue
@@ -100,7 +102,10 @@ def summarize(rows: list, *, now: float | None = None, days: int = 0,
             if p is not None:
                 p["replied"] += 1
                 replies_total += 1
-        last_user = None        # 一句话只算回一次
+        # 只在**同一个会话**的那条用户消息被消费掉时才清空：别的群的助手消息
+        # 不该把本群待配对的那条顶掉（全局口径下这种交错很常见）
+        if ucid == cid:
+            last_user = None
 
     items = []
     for p in people.values():

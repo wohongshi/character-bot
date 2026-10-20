@@ -2542,6 +2542,17 @@ def _kb_ingest(text: str, *, filename: str = "", character: str = "",
 
 
 # ---------- 主动消息 ----------
+class _NeverBudget(Exception):
+    """`llm.BudgetExceeded` 拿不到时的占位（永远不会被抛出）。"""
+
+
+_BudgetStop = _NeverBudget          # 预算拦下 ≠ 发送失败
+try:                                # 模块级绑定：`except _BudgetStop` 必须是类
+    from bot.llm import BudgetExceeded as _BudgetStop
+except Exception:                                             # noqa: BLE001
+    pass
+
+
 _PROACTIVE_LOCK = threading.Lock()      # 巡检互斥（后台线程 vs 面板按钮）
 
 
@@ -2747,6 +2758,10 @@ def _proactive_tick(now=None, rng=None) -> list:
                 try:
                     got = _proactive_send(chat_id, now=now)
                     row.update(ok=True, text=got["text"])
+                except _BudgetStop as e:                          # noqa: E722
+                    # 预算停掉不是故障：别累加 fails（三次会把主动消息自动暂停）
+                    row.update(ok=None, skipped=True, reason=str(e))
+                    logger.info("主动消息跳过（%s）：%s", chat_id, e)
                 except pv.UnknownResult as e:
                     # 结果未知：已经记过账，不能再记失败（否则三次超时就自动暂停）
                     row.update(ok=None, unknown=True, error=str(e))
@@ -2813,9 +2828,15 @@ def _budget_numbers() -> dict:
     return _BUDGET_METER.snapshot()
 
 
+def _budget_cfg() -> dict:
+    """预算配置的唯一入口：判定和降级都从这里取，别各写一份 fallback。"""
+    from bot import budget as B
+    return BUDGET if BUDGET is not None else B.load(STATE_DIR)
+
+
 def _budget_decision() -> dict:
     from bot import budget as B
-    cfg = BUDGET if BUDGET is not None else B.load(STATE_DIR)
+    cfg = _budget_cfg()
     used = _budget_numbers()
     return B.decide(cfg, used_day=used["used_day"], used_hour=used["used_hour"])
 
@@ -2826,7 +2847,7 @@ def _budget_hook() -> dict:
     out = {"allow": bool(dec.get("allow", True)), "action": dec.get("action"),
            "reason": dec.get("reason") or ""}
     if dec.get("action") == "cheap":
-        cfg = BUDGET or {}
+        cfg = _budget_cfg()
         out["provider"] = str(cfg.get("cheap_provider") or "")
         out["model"] = str(cfg.get("cheap_model") or "")
     return out
@@ -5695,7 +5716,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 th = float((q.get("threshold") or ["0.45"])[0] or 0.45)
                 sd = int(float((q.get("stale_days") or ["0"])[0] or 0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 self._json({"ok": False, "error": "参数不对"}, 400)
                 return
             try:
@@ -7358,7 +7379,11 @@ def main():
     _start_workers()
     _spawn_worker("sched-loop", _sched_loop)
     _spawn_worker("proactive-loop", _proactive_loop)
-    _budget_init()                              # 预算：今天用了多少先汇总出来
+    try:
+        _budget_init()                          # 预算：今天用了多少先汇总出来
+    except Exception as e:                                       # noqa: BLE001
+        # 预算是附加功能：它自己坏了也不能让整个面板起不来
+        print(f"[klee-studio] 预算初始化失败（按不限额跑）：{e}", flush=True)
     try:
         from bot import llm as _llm
         _llm.set_usage_hook(_usage_record)      # 每次模型调用都记一笔（失败不影响对话）

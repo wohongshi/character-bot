@@ -98,6 +98,10 @@ def load(state_dir: Path | str) -> dict:
     except ValueError as e:
         log.warning("用量预算配置解析失败（按默认值=关闭）：%s", e)
         return dict(DEFAULTS)
+    if not isinstance(d, dict):
+        # 被别的工具写成 `[]` / `null` 也能解析成功，但 clamp() 会静默当默认值（=关闭）
+        log.warning("用量预算配置不是对象（%s，按默认值=关闭）", type(d).__name__)
+        return dict(DEFAULTS)
     return clamp(d)
 
 

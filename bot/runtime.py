@@ -1297,6 +1297,13 @@ class BotRuntime(RuntimeFeatures):
                 if not reply:
                     raise RuntimeError(res.get("error") or "agent 没有给出回复")
             except Exception as e:                                 # noqa: BLE001
+                from .llm import BudgetExceeded
+                if isinstance(e, BudgetExceeded):
+                    # 预算停掉时不必回退普通聊天（那一层同样会被拦），
+                    # 也不算 agent 故障：直接说原因
+                    logger.info("预算拦下这一轮（agent）：%s", e)
+                    await self.send(chat_id, f"（{e}）", reply_to=ctx.message_id)
+                    return
                 self.stats["agent_errors"] += 1
                 self.stats["agent_fallbacks"] += 1
                 logger.warning("agent 失败，回退普通聊天: %s", e)
@@ -1314,15 +1321,17 @@ class BotRuntime(RuntimeFeatures):
                     max_tokens=int(self.config.get("max_tokens") or 800),
                     character=self.active_character, **mkw)
             except Exception as e:                                 # noqa: BLE001
+                # 预算拦下是**策略**不是故障：不能算进 errors（面板的「错误 N」）
+                # 也不能刷 warning，否则正常的成本控制在读数上长得像故障
+                from .llm import BudgetExceeded
+                if isinstance(e, BudgetExceeded):
+                    logger.info("预算拦下这一轮：%s", e)
+                    await self.send(chat_id, f"（{e}）", reply_to=ctx.message_id)
+                    return
                 self.stats["errors"] += 1
                 logger.warning("聊天失败: %s", e)
-                # 预算拦下要说话（不然群里就是「她忽然不理我」）；
-                # 其它失败保持原来那句，别把技术细节甩到群里。
-                # 用 isinstance 而不是比类名：改名/包一层之后按名字判断会静默失效
-                from .llm import BudgetExceeded
-                msg = (f"（{e}）" if isinstance(e, BudgetExceeded)
-                       else "呜……脑袋卡住了，等等再试好不好～")
-                await self.send(chat_id, msg, reply_to=ctx.message_id)
+                await self.send(chat_id, "呜……脑袋卡住了，等等再试好不好～",
+                                reply_to=ctx.message_id)
                 return
         reply = await self.mgr.run_reply_hooks(chat_id, ctx.is_group, reply)
         # 表情标记 → 真的发图。洗在「写历史」之前：历史里只留那句人话，

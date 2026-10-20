@@ -144,7 +144,9 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
         for i in g:
             if i == keep_idx:
                 continue
-            keep["scope"] = _merge_scope(keep.get("scope", ""), rows[i].get("scope", ""))
+            # `_merge_scope(old, new)` 让**第二个**参数优先（截断从尾部保）；
+            # 要保留的是 keep 那条的会话，所以把它放在第二位
+            keep["scope"] = _merge_scope(rows[i].get("scope", ""), keep.get("scope", ""))
             keep["hits"] = int(keep.get("hits") or 0) + int(rows[i].get("hits") or 0)
             drop.append(rows[i])
             dropped.add(float(rows[i].get("ts") or 0))

@@ -68,6 +68,19 @@ def main():
     r4 = P.summarize([a(300), u(290, uid="u1")], now=NOW)
     check("2.6 助手先说、用户后说 = 不算回复", r4["people"][0]["replied"] == 0)
 
+    section("2b. 全局口径下跨会话交错")
+    rows = [u(300, cid="group:1", uid="u1", name="甲"),          # 甲说话
+            a(295, cid="group:2"),                              # 别的群先回了
+            a(290, cid="group:1")]                              # 甲这条回复不能被吃掉
+    r = P.summarize(rows, now=NOW)
+    by = {p["name"]: p for p in r["people"]}
+    check("2b.1 别的群的助手消息不吃掉本群待配对",
+          by["甲"]["replied"] == 1, str(by["甲"]["replied"]))
+    r2 = P.summarize([u(300, cid="group:1", uid="u1", name="甲"), a(299, cid="group:1"),
+                      a(298, cid="group:1")], now=NOW)
+    check("2b.2 同一条只算回一次", r2["people"][0]["replied"] == 1,
+          str(r2["people"][0]["replied"]))
+
     section("3. 会话隔离")
     rows = [u(300, cid="group:1", uid="u1", name="甲"), a(295, cid="group:1"),
             u(200, cid="group:2", uid="u2", name="乙"), a(199, cid="group:1")]
@@ -88,6 +101,13 @@ def main():
     r = P.summarize(rows, now=NOW)
     check("4.3 同一个未知会话合并成一个人", r["total"] == 1 and r["people"][0]["n"] == 2,
           str(r["people"][0]))
+    # 先只有 id、后面带了真名：名字要能更新过来
+    rows = [{"ts": NOW - 20, "chat_id": "g", "role": "user", "text": "a", "user_id": "u9"},
+            {"ts": NOW - 10, "chat_id": "g", "role": "user", "text": "b", "user_id": "u9",
+             "name": "阿九"}]
+    r = P.summarize(rows, now=NOW)
+    check("4.4 后来的真名会替换掉 id", r["people"][0]["name"] == "阿九",
+          str(r["people"][0]["name"]))
 
     section("5. web: 会话默认不算群友")
     rows = [u(300, cid="web:s1", uid="u1", name="面板"), u(200, cid="group:1", uid="u2",
