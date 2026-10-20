@@ -90,13 +90,20 @@ class SkillHub:
 
     # ---------- 目录 ----------
     def skills(self) -> list[dict]:
-        """按插件聚合：名称 / 标题 / 描述 / 命令（含别名、帮助、权限）。"""
+        """按插件聚合：名称 / 标题 / 描述 / 命令（含别名、帮助、权限）。
+
+        只列**此刻这个会话的角色**能用的命令：角色限定插件现在全部注册
+        （`enabled` 表示「全局角色能不能用」），照它过滤会把别的角色的技能
+        混进来、也会漏掉本会话角色自己的 —— 这里按命令的 `characters` 判。
+        """
         by_plugin: dict[str, list] = {}
-        for cmd in {id(c): c for c in self.mgr.commands.values()}.values():
+        for cmd in self.mgr.all_commands():
+            if not self.mgr._char_ok(getattr(cmd, "characters", ()), ""):
+                continue
             by_plugin.setdefault(cmd.plugin, []).append(cmd)
         out = []
         for name, info in sorted(self.mgr.plugins.items()):
-            if not info.get("enabled") or info.get("error"):
+            if info.get("error"):
                 continue
             cmds = sorted(by_plugin.get(name, []), key=lambda c: (c.priority, c.name))
             if not cmds:
@@ -349,7 +356,7 @@ class SkillHub:
         # 于是「试跑 .r」报「.r 属于技能 dice，不是 anniversary」，纯属自己绕自己。
         s = None
         key = re.sub(r"^[.。．/／]+", "", str(name or "").strip()).split(" ")[0].lower()
-        cmd0 = self.mgr.commands.get(key) if key else None
+        cmd0 = self.mgr.cmd_for(key) if key else None
         if cmd0 is not None:
             cand = self.get(cmd0.plugin)
             if cand:
@@ -365,13 +372,21 @@ class SkillHub:
         token = token.strip()
         cmd = None
         if token:
-            cmd = self.mgr.commands.get(token.lower())
+            # 用 `cmd_for`（带角色门控）：直接查 commands 会拿到「首选」那条，
+            # 可能是别的角色的同名命令，等于绕过了按会话角色分发
+            cmd = self.mgr.cmd_for(token.lower())
             if cmd is not None and cmd.plugin != s["name"]:
                 return {"ok": False, "error": f".{cmd.name} 属于技能 {cmd.plugin}，不是 {s['name']}"}
         if cmd is None:
-            cmd = self.mgr.commands.get(s["commands"][0]["name"].lower())
+            cmd = self.mgr.cmd_for(s["commands"][0]["name"].lower())
             # 模型常写 "北京" 而不是 "weather 北京"：整段当参数，别把输入吞掉
             rest = raw if rest.strip() else token
+        if cmd is None:
+            # 技能在列表里（别的角色能用），但本会话的角色用不了：明确说出来，
+            # 别让调用方拿到 AttributeError（cmd.cooldown → None）
+            return {"ok": False,
+                    "error": f"「{s['name']}」是别的角色的技能，"
+                             f"本会话的角色（{self.mgr._char_now()}）用不了"}
         is_owner = bool(getattr(adapter, "owner_id", "")) and str(user_id) == str(
             getattr(adapter, "owner_id", ""))
         is_admin = is_owner or (is_group and role in ("owner", "admin"))
@@ -395,6 +410,8 @@ class SkillHub:
             adapter=cap, text=f".{cmd.name}" + (f" {rest}" if rest else ""),
             is_group=is_group, group_id=str(group_id or ""), user_id=str(user_id),
             user_name=str(user_name or user_id), message_id="", mentioned=True, role=role,
+            # 带上「此刻的角色」：插件里判角色（以及 cmd.characters 的二次校验）都看它
+            character=self.mgr._char_now(),
         )
         ctx.command, ctx.args = cmd.name, rest.split() if rest else []
         box: dict = {}

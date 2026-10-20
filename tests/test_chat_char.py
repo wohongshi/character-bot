@@ -308,7 +308,8 @@ NAME = "同名胡桃"
 CHARACTERS = ("hutao",)
 def register(api):
     async def h(ctx):
-        return "hutao 版"
+        # 把 ctx.character 带回去：技能通路必须把「此刻的角色」放进上下文
+        return "hutao 版|" + str(getattr(ctx, "character", ""))
     async def hook(ctx):
         return "HOOK-H"
     api.on_command("同名", h, aliases=("拥抱",), help=".同名 —— 胡桃版")
@@ -396,6 +397,48 @@ t1, t2 = asyncio.run(hook_test())
 check("入站钩子按角色跑（可莉）", t1 == "HOOK-K", t1)
 check("入站钩子按角色跑（胡桃）", t2 == "HOOK-H", t2)
 
+
+# ============ 3b) 技能通路也要按角色门控 ============
+print("[3b] 技能通路")
+from bot.skills import SkillHub                             # noqa: E402
+
+hub = SkillHub(fm)
+seen_roles = []
+
+
+def skills_for(char):
+    tok = chat_char.push(char)
+    try:
+        return [x["name"] for x in hub.skills()]
+    finally:
+        chat_char.pop(tok)
+
+
+k_skills, h_skills, a_skills = skills_for("klee"), skills_for("hutao"), skills_for("atri")
+check("可莉看到自己的限定插件", "k" in k_skills and "h" not in k_skills, str(k_skills))
+check("胡桃看到自己的限定插件", "h" in h_skills and "k" not in h_skills, str(h_skills))
+check("两个角色都能看到通用插件", "g" in k_skills and "g" in h_skills, str((k_skills, h_skills)))
+check("没有对应角色的会话看不到任何一个", "k" not in a_skills and "h" not in a_skills,
+      str(a_skills))
+
+
+def run_skill(char, name, text):
+    tok = chat_char.push(char)
+    try:
+        return hub.run(name, text, adapter=FakeAdapter(char), is_group=True, group_id="1",
+                       user_id="42", user_name="t", role="admin")
+    finally:
+        chat_char.pop(tok)
+
+
+r1 = run_skill("klee", "同名", "x")
+r2 = run_skill("hutao", "同名", "x")
+check("可莉的会话跑到可莉那条", r1.get("ok") and "klee" in str(r1.get("text") or ""), str(r1)[:120])
+check("胡桃的会话跑到胡桃那条", r2.get("ok") and "hutao" in str(r2.get("text") or ""), str(r2)[:120])
+check("技能上下文的 ctx.character 就是本会话的角色",
+      "|hutao" in str(r2.get("text") or ""), str(r2.get("text"))[:80])
+r4 = run_skill("atri", "hutao_only_nonexistent", "x")
+check("不存在的技能仍是普通错误", r4.get("ok") is False and "没有技能" in str(r4.get("error")), str(r4)[:100])
 
 # ============ 4) 命令插件 chatrole ============
 print("[4] .角色 命令")

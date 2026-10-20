@@ -1265,6 +1265,18 @@ class FeatureManager:
             items = [c for group in self._cmd_all.values() for c in group]
         return {id(c): c for c in items}.values()
 
+    def cmd_for(self, name: str, character: str = "") -> Optional[_Command]:
+        """按名字取「这个角色此刻真的能用」的那条命令；用不了 → None。
+
+        公开版本（`_pick_cmd` + 角色门控）：技能通路 / 试跑 / 任何绕过
+        `explain_command` 的入口都必须走它，否则「分发时按角色门控」就有洞
+        —— 曾出现「亚托莉的群通过 use_skill 跑起可莉的插件」。
+        """
+        cmd = self._pick_cmd(name, character)
+        if cmd is None:
+            return None
+        return cmd if self._char_ok(getattr(cmd, "characters", ()), character) else None
+
     def _pick_cmd(self, name: str, character: str = "") -> Optional[_Command]:
         """同名多条命令时，挑这个角色该用的那条。
 
