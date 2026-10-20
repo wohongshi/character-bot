@@ -1300,11 +1300,14 @@ class BotRuntime(RuntimeFeatures):
                 from .llm import BudgetExceeded
                 # `agent.run` 会把底层异常包成 AgentError（raise ... from e），
                 # 所以还要看 __cause__，否则这个分支永远不命中
-                if isinstance(e, BudgetExceeded) or isinstance(e.__cause__, BudgetExceeded):
+                budget_e = (e if isinstance(e, BudgetExceeded) else
+                            (e.__cause__ if isinstance(e.__cause__, BudgetExceeded) else None))
+                if budget_e is not None:
                     # 预算停掉时不必回退普通聊天（那一层同样会被拦），
-                    # 也不算 agent 故障：直接说原因
-                    logger.info("预算拦下这一轮（agent）：%s", e)
-                    await self.send(chat_id, f"（{e}）", reply_to=ctx.message_id)
+                    # 也不算 agent 故障。发**原始的那句**：agent 包过一层之后
+                    # 文案会变成「模型调用失败：BudgetExceeded: …」，别把内部类名甩到群里
+                    logger.info("预算拦下这一轮（agent）：%s", budget_e)
+                    await self.send(chat_id, f"（{budget_e}）", reply_to=ctx.message_id)
                     return
                 self.stats["agent_errors"] += 1
                 self.stats["agent_fallbacks"] += 1

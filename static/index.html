@@ -4198,6 +4198,14 @@ async function memTidyPreview(btn){
     if (out) out.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
     return;
   }
+  // 预演期间用户可能改了参数（oninput 已经把计划作废了）：别把旧参数的
+  // 结果又装回去 —— 输入框是新值、要应用的是旧预览，那是最坑的一种错位
+  const nowArgs = memTidyParams();
+  if (nowArgs.threshold !== args.threshold || nowArgs.stale_days !== args.stale_days){
+    memTidyInvalidate();
+    if (out) out.innerHTML = `<div class="kv">参数改过了，这次比对作废，请重新预演。</div>`;
+    return;
+  }
   memPlan = d;
   memPlanParams = args;          // 和这次请求的 URL 同一份
   const c = d.counts || {};
