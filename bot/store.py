@@ -126,11 +126,16 @@ class MessageIndex:
                 log.info("消息索引规则变了（epoch %s → %s），重建一次", epoch or "无", self.EPOCH)
                 con.executescript("DROP TABLE IF EXISTS msg_fts; DROP TABLE IF EXISTS msg;")
                 con.executescript(SCHEMA)
+                self._offsets = {}
+                # 偏移量必须真的清掉：bump 了 epoch、表也删了，但偏移量文件说
+                # 「已经读到文件末尾」的话，重启后会因为 epoch 一致而永远不再索引
                 try:
                     self.state_path.unlink()
-                except OSError:
+                except FileNotFoundError:
                     pass
-                self._offsets = {}
+                except OSError as e:
+                    log.warning("索引重建后偏移量文件删不掉（强制写空）：%s", e)
+                    self._save_offsets()
                 con.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('epoch', ?)",
                             (str(self.EPOCH),))
             # 列检查放在 epoch 重建之后：刚重建过的表一定是新结构，再查一遍会

@@ -4187,7 +4187,7 @@ async function memTidyPreview(btn){
   const out = $("memTidyOut"), go = $("memTidyGo");
   // 参数在**发请求前**快照一份：比对要几秒，期间用户可能改了阈值 ——
   // URL 和 memPlanParams 必须来自同一份，否则装回去的是「旧计划 + 新参数」
-  const args = memTidyParams();
+  const args = Object.assign(memTidyParams(), {character: ACTIVE.id});
   if (out) out.innerHTML = `<div class="kv">比对中…（${ACTIVE.id} 的记忆）</div>`;
   btn.disabled = true;
   const d = await api("/api/memories/tidy?character=" + encodeURIComponent(ACTIVE.id) +
@@ -4201,7 +4201,8 @@ async function memTidyPreview(btn){
   // 预演期间用户可能改了参数（oninput 已经把计划作废了）：别把旧参数的
   // 结果又装回去 —— 输入框是新值、要应用的是旧预览，那是最坑的一种错位
   const nowArgs = memTidyParams();
-  if (nowArgs.threshold !== args.threshold || nowArgs.stale_days !== args.stale_days){
+  if (nowArgs.threshold !== args.threshold || nowArgs.stale_days !== args.stale_days
+      || ACTIVE.id !== args.character){
     memTidyInvalidate();
     if (out) out.innerHTML = `<div class="kv">参数改过了，这次比对作废，请重新预演。</div>`;
     return;
@@ -4230,6 +4231,9 @@ async function memTidyPreview(btn){
 }
 async function memTidyApply(btn){
   if (!memPlan || !memPlanParams){ flash("先预演一次"); return; }
+  if (memPlanParams.character && memPlanParams.character !== ACTIVE.id){
+    flash("角色切换过了，先重新预演"); memTidyInvalidate(); return;
+  }
   if (!confirm("确认整理？会写盘（先备份 .bak），合并掉的句子只保留最新那条。")) return;
   btn.disabled = true; btn.textContent = "整理中…";
   const d = await post("/api/memories/tidy", {
@@ -5965,7 +5969,7 @@ async function viewBoard(target){
   $(T).scrollTop = st;                    // 重绘也保住滚动位置
   loadIndexInfo();                        // 索引规模（顺手验证 /api/search/stats 可用）
   renderInsights();                       // 洞察卡片（热力图/角色/常用字）
-  ppCache = null; ppLoad();               // 群友画像（选中项在 ppChatSel 里保着）
+  ppLoad();                               // 群友画像（选中项在 ppChatSel 里保着）
   await viewFeed("feedSlot");
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
   boardTimer = setInterval(() => {
@@ -5976,10 +5980,10 @@ async function viewBoard(target){
 
 let insDays = 30, insSrc = "messages";
 /* ================= 群友画像 ================= */
-let ppDays = 30, ppCache = null, ppChatSel = "";   // 选中项要跨重绘保留
+let ppDays = 30, ppChatSel = "";   // 选中项要跨重绘保留
 /* 名字不能叫 ppChat：那个 id 的元素在 document 上有同名属性，
    内联处理器里 `ppChat(...)` 会先解析成 <select> 元素 → TypeError */
-function ppPick(v){ ppChatSel = v || ""; ppCache = null; ppLoad(1); }
+function ppPick(v){ ppChatSel = v || ""; ppLoad(1); }
 function ppSet(d){ ppDays = d;
   document.querySelectorAll("#ppDays button").forEach(b => b.classList.toggle("on", +b.dataset.d === d));
   ppLoad(1); }
@@ -5991,10 +5995,9 @@ async function ppLoad(force){
   // 而下拉随后被恢复成群 X，数字和下拉对不上
   // 发请求前把参数**快照**到局部：连点「7 天 → 90 天」时两个请求同时在飞，
   // 慢的那个回来不能再读模块变量（那时已经是新值），否则会盖掉新结果
+  // 不在这里做「5 秒内复用」：唯一的非强制调用方 viewBoard 每次都会先清缓存，
+  // 那段分支等于永远走不到（真要去重就交给服务端 90 秒的行缓存）
   const days0 = ppDays, chat = ppChatSel || (sel ? sel.value : "");
-  // 缓存要带请求参数：否则切了群但 5 秒内会直接拿上一次的结果重画
-  if (ppCache && !force && Date.now() - ppCache.t < 5000
-      && ppCache.key === days0 + "|" + chat){ ppRender(ppCache.d); return; }
   const d = await api("/api/people?days=" + days0 + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
   // 回来先判一次「这次响应是不是已经过期」（参数又变了）：过期就连失败都不写，
   // 否则慢的那个失败响应会把已经画好的新结果刷成「读不到」
@@ -6015,7 +6018,6 @@ async function ppLoad(force){
     if (sel.value !== ppChatSel) sel.value = "";      // 那个群已经不在列表里了
     ppChatSel = sel.value;
   }
-  ppCache = {t: Date.now(), key: days0 + "|" + chat, d};   // key 用真正发出去的参数
   // 选中项失效（群已滑出列表）时，上面这份数据是按失效的 id 拉的：
   // 用修正后的参数重拉一次，否则下拉说「全部会话」而数字是某个群
   if (chat !== ppChatSel) return ppLoad(force);

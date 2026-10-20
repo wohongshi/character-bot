@@ -31,6 +31,14 @@ DEFAULT_STALE_DAYS = 0       # 0 = 不归档（默认只做去重，行为最保
 _HEAD_KEEP = 12              # 太短的句子（「好的」）不参与相似度判断
 
 
+def _num(v, default: float = 0.0) -> float:
+    """容错的数值转换：手改/外部导入的 `ts` 可能是字符串，别让整次整理 500。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _norm(s: str) -> str:
     return "".join(str(s or "").lower().split())
 
@@ -132,7 +140,7 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
         th = DEFAULT_THRESHOLD
     rows = [x for x in (items or []) if isinstance(x, dict) and str(x.get("text") or "").strip()]
     rows = rows[:MAX_ITEMS]
-    rows.sort(key=lambda x: (float(x.get("ts") or 0), str(x.get("text") or "")))
+    rows.sort(key=lambda x: (_num(x.get("ts")), str(x.get("text") or "")))
 
     groups = []
     dropped: set = set()
@@ -150,7 +158,7 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
             keep["hits"] = int(keep.get("hits") or 0) + int(rows[i].get("hits") or 0)
             drop.append(rows[i])
             # 用 (ts, text) 而不是裸 ts：没有 ts 的老行会全折成 0.0，删多条只算一条
-            dropped.add((float(rows[i].get("ts") or 0), str(rows[i].get("text") or "")))
+            dropped.add((_num(rows[i].get("ts")), str(rows[i].get("text") or "")))
         keep["merged"] = len(drop)
         groups.append({"keep": keep, "drop": drop, "sim": round(
             similar(str(keep.get("text") or ""), str(drop[0].get("text") or "")), 3),
@@ -161,7 +169,7 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
     if int(stale_days or 0) > 0:
         floor = now - int(stale_days) * 86400
         for i, r in enumerate(rows):
-            ts = float(r.get("ts") or 0)
+            ts = _num(r.get("ts"))
             if ts and ts < floor and (ts, str(r.get("text") or "")) not in dropped:
                 stale.append(r)
 
@@ -240,12 +248,16 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
 
     def _key(r: dict) -> tuple:
         # 只用 ts 当身份会把「没有 ts 的老行」全折成 0.0 —— 删一条就删一片
-        return (float(r.get("ts") or 0), str(r.get("text") or ""))
+        return (_num(r.get("ts")), str(r.get("text") or ""))
 
     drop_ts = set()
     for g in (p or {}).get("groups") or []:
+        keep_key = _key(g.get("keep") or {})
         for d in g.get("drop") or []:
-            drop_ts.add(_key(d))
+            # 文件里存在完全重复的行时（老导入、都没有 ts）drop 会和 keep 同键，
+            # 那样会把 keep 自己也删掉 → 整组凭空消失
+            if _key(d) != keep_key:
+                drop_ts.add(_key(d))
     stale_ts = {_key(r) for r in (p or {}).get("stale") or []}
     total = int(((p or {}).get("counts") or {}).get("total") or 0)
     if not drop_ts and not stale_ts:
@@ -256,10 +268,7 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
     merged_by_keep = {}
     keep_drops: dict = {}
     for g in (p or {}).get("groups") or []:
-        k = g.get("keep") or {}
-        kk = _key(k)
-        merged_by_keep[kk] = k
-        keep_drops[kk] = [_key(d) for d in (g.get("drop") or [])]
+        keep_drops[_key(g.get("keep") or {})] = [_key(d) for d in (g.get("drop") or [])]
 
     lock = getattr(mem_mod, "_LOCK", None)
     ctx = lock if lock is not None else _NullLock()

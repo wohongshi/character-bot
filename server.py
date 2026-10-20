@@ -1739,6 +1739,14 @@ def _scrub_secrets(obj):
     return obj
 
 
+def _ts(r) -> float:
+    """容错取 ts（手改/外部导入的行可能是字符串）。"""
+    try:
+        return float((r or {}).get("ts") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
 def _err_text(e) -> str:
     """把落盘的 `TypeName: message` 变成一句人话（去内部类名，截断）。"""
     raw = str((e or {}).get("error") or "")
@@ -2558,8 +2566,10 @@ class _NeverBudget(Exception):
 _BudgetStop = _NeverBudget          # 预算拦下 ≠ 发送失败
 try:                                # 模块级绑定：`except _BudgetStop` 必须是类
     from bot.llm import BudgetExceeded as _BudgetStop
-except Exception:                                             # noqa: BLE001
-    pass
+except Exception as _e:                                       # noqa: BLE001
+    # 静默降级成「永不命中」会让预算拦下被当成发送失败（三次就自动暂停），
+    # 而日志里一点线索都没有 —— 至少留一行
+    print(f"[klee-studio] 预算异常类拿不到（按无预算处理）：{_e}", flush=True)
 
 
 _PROACTIVE_LOCK = threading.Lock()      # 巡检互斥（后台线程 vs 面板按钮）
@@ -2889,7 +2899,7 @@ def _mem_items(cid: str) -> list:
 
 
 def _messages_rows() -> list:
-    """读 messages.jsonl 的**尾部窗口**（按 mtime+size 缓存 20 秒）。
+    """读 messages.jsonl 的**尾部窗口**（按 mtime+size 缓存 90 秒）。
 
     以前整文件解析：文件每条消息都会变 → mtime 一变缓存就失效，看板每分钟
     把越来越大的文件完整重解析一遍。改成读尾部 8MB（按字节 seek，第一行可能
@@ -3203,10 +3213,9 @@ def _run_job_body(job: dict, cid: str) -> None:
                                   "role": "assistant", "text": text[:800]})
     except Exception as e:                                 # noqa: BLE001
         ok, err = False, f"{type(e).__name__}: {e}"[:300]
-        # 只有「预算拦下」把原因写进气泡：其它失败可能已经流式吐了一半，
-        # 那半句留在 text 里会被导出成她说过的话（markdown 导出不标错误）。
-        # 用模块级别名：在 except 里再 import 一次，万一它失败会把原异常顶掉
-        text = f"（{e}）" if isinstance(e, _BudgetStop) else ""
+        # 失败行一律不写 text：面板的 ⚠ 行和导出都已经带 `error`，
+        # 再写一份就成了「同一句既当她的气泡又当错误说明」
+        text = ""
     if ok:
         # 心情按「这一轮真的说了什么」记 —— 失败的那轮不算（她没真正回应）
         _note_mood(cid, job.get("text"), text)
@@ -5745,7 +5754,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 rows = _messages_rows()
                 data = P.summarize(rows, days=days, chat_id=chat, top=30)
-                data["chats"] = P.chats(rows)[:40]
+                # 下拉里的「（N 条）」要和旁边的画像同一个口径（都按天数过滤），
+                # 否则「7 天」下会出现「群 X（500）」配「40 条」
+                floor = time.time() - days * 86400 if days else 0.0
+                data["chats"] = P.chats([r for r in rows if _ts(r) >= floor])[:40]
             except Exception as e:                                # noqa: BLE001
                 logger.exception("统计群友画像失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
