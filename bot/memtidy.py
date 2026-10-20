@@ -145,7 +145,7 @@ def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
     groups = []
     dropped: set = set()
     for g in _clusters(rows, th):
-        g = sorted(g, key=lambda i: float(rows[i].get("ts") or 0))
+        g = sorted(g, key=lambda i: _num(rows[i].get("ts")))
         keep_idx = g[-1]                        # 最新的那条当代表
         keep = dict(rows[keep_idx])
         drop = []
@@ -268,7 +268,10 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
     merged_by_keep = {}
     keep_drops: dict = {}
     for g in (p or {}).get("groups") or []:
-        keep_drops[_key(g.get("keep") or {})] = [_key(d) for d in (g.get("drop") or [])]
+        kk = _key(g.get("keep") or {})
+        # 同键的 drop（文件里完全重复的行）连 keep 自己都算进去了：留着会让
+        # hits 翻倍、还写不出两份 —— 这里也过滤掉
+        keep_drops[kk] = [_key(d) for d in (g.get("drop") or []) if _key(d) != kk]
 
     lock = getattr(mem_mod, "_LOCK", None)
     ctx = lock if lock is not None else _NullLock()

@@ -207,6 +207,23 @@ def main():
     kept = [t for t in ("主人怕黑", "主人怕黑。") if t in left or t in arch]
     check("7d.1 被归档组的内容一定还在（主线或归档里）", len(kept) >= 1, str((left, arch)))
 
+    section("7e. 非数字 ts 不能把整理打挂")
+    p7 = M.plan([{"ts": "abc", "text": "手改的一行"},
+                 {"ts": "abc", "text": "手改的一行"},        # 完全重复
+                 {"ts": 1, "text": "正常的"}], threshold=0.45)
+    check("7e.1 非数字 ts 不抛异常", p7["counts"]["total"] == 3, str(p7["counts"]))
+    tmp6 = Path(tempfile.mkdtemp(prefix="klee-memtidy8-"))
+    (tmp6 / "memories").mkdir()
+    f6 = tmp6 / "memories" / "atri.jsonl"
+    f6.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in
+                            [{"ts": "abc", "text": "手改的一行"},
+                             {"ts": "abc", "text": "手改的一行"},
+                             {"ts": 1, "text": "正常的"}]) + "\n", encoding="utf-8")
+    M.apply(tmp6, "atri", p7)
+    left6 = [r["text"] for r in M._read(f6)]
+    check("7e.2 重复行不会把整组删光", any("手改的一行" in t for t in left6), str(left6))
+    check("7e.3 正常那行还在", any("正常的" in t for t in left6), str(left6))
+
     section("8. 幂等 / 空数据")
     p0 = M.plan([], threshold=0.45)
     check("8.1 空列表不炸", p0["counts"]["total"] == 0)

@@ -5757,7 +5757,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 下拉里的「（N 条）」要和旁边的画像同一个口径（都按天数过滤），
                 # 否则「7 天」下会出现「群 X（500）」配「40 条」
                 floor = time.time() - days * 86400 if days else 0.0
-                data["chats"] = P.chats([r for r in rows if _ts(r) >= floor])[:40]
+                data["chats"] = P.chats(
+                    [r for r in rows if _ts(r) > 0 and _ts(r) >= floor])[:40]
             except Exception as e:                                # noqa: BLE001
                 logger.exception("统计群友画像失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)

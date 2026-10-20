@@ -126,16 +126,7 @@ class MessageIndex:
                 log.info("消息索引规则变了（epoch %s → %s），重建一次", epoch or "无", self.EPOCH)
                 con.executescript("DROP TABLE IF EXISTS msg_fts; DROP TABLE IF EXISTS msg;")
                 con.executescript(SCHEMA)
-                self._offsets = {}
-                # 偏移量必须真的清掉：bump 了 epoch、表也删了，但偏移量文件说
-                # 「已经读到文件末尾」的话，重启后会因为 epoch 一致而永远不再索引
-                try:
-                    self.state_path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError as e:
-                    log.warning("索引重建后偏移量文件删不掉（强制写空）：%s", e)
-                    self._save_offsets()
+                self._reset_offsets()
                 con.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('epoch', ?)",
                             (str(self.EPOCH),))
             # 列检查放在 epoch 重建之后：刚重建过的表一定是新结构，再查一遍会
@@ -148,12 +139,23 @@ class MessageIndex:
                 log.info("消息索引缺少列 %s，重建（一次性）", ",".join(missing))
                 con.executescript("DROP TABLE IF EXISTS msg_fts; DROP TABLE IF EXISTS msg;")
                 con.executescript(SCHEMA)
-                try:
-                    self.state_path.unlink()          # 偏移量清零，下轮从头发一遍
-                except OSError:
-                    pass
-                self._offsets = {}
+                self._reset_offsets()      # 偏移量清零，下轮从头发一遍
             con.executescript(SCHEMA_INDEXES)
+
+    def _reset_offsets(self) -> None:
+        """重建索引后清偏移量：删不掉就**强制写空**。
+
+        偏移量文件说「已经读到文件末尾」而表是空的，重启后会因为 `size == off`
+        直接 continue —— 历史消息永远不会重新入库，而且没有任何报错。
+        """
+        self._offsets = {}
+        try:
+            self.state_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("索引重建后偏移量文件删不掉（强制写空）：%s", e)
+            self._save_offsets()
 
     def _load_offsets(self) -> dict:
         try:

@@ -5930,7 +5930,7 @@ async function viewBoard(target){
           <button data-d="30" class="${ppDays === 30 ? "on" : ""}" onclick="ppSet(30)">30 天</button>
           <button data-d="90" class="${ppDays === 90 ? "on" : ""}" onclick="ppSet(90)">90 天</button>
         </span>
-        <button class="btn tiny" onclick="ppLoad(1)">⟳ 刷新</button>
+        <button class="btn tiny" onclick="ppLoad()">⟳ 刷新</button>
       </span>
     </div>
     <div id="ppBox" class="kv" style="margin-top:6px">读取中…</div>
@@ -5983,11 +5983,11 @@ let insDays = 30, insSrc = "messages";
 let ppDays = 30, ppChatSel = "";   // 选中项要跨重绘保留
 /* 名字不能叫 ppChat：那个 id 的元素在 document 上有同名属性，
    内联处理器里 `ppChat(...)` 会先解析成 <select> 元素 → TypeError */
-function ppPick(v){ ppChatSel = v || ""; ppLoad(1); }
+function ppPick(v){ ppChatSel = v || ""; ppLoad(); }
 function ppSet(d){ ppDays = d;
   document.querySelectorAll("#ppDays button").forEach(b => b.classList.toggle("on", +b.dataset.d === d));
-  ppLoad(1); }
-async function ppLoad(force){
+  ppLoad(); }
+async function ppLoad(){
   const box = $("ppBox"), sel = $("ppChat");
   if (!box) return;
   // 以模块变量为准：viewBoard 重绘时 #ppChat 是空的（还没填 option），
@@ -6020,7 +6020,7 @@ async function ppLoad(force){
   }
   // 选中项失效（群已滑出列表）时，上面这份数据是按失效的 id 拉的：
   // 用修正后的参数重拉一次，否则下拉说「全部会话」而数字是某个群
-  if (chat !== ppChatSel) return ppLoad(force);
+  if (chat !== ppChatSel) return ppLoad();
   ppRender(d);
 }
 function ppRender(d){
