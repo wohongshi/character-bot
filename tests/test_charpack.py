@@ -192,6 +192,26 @@ try:
 except ValueError as e:
     check("插件超 60 个 → 拒绝导出（不静默截断）", "超过导入上限" in str(e), str(e))
 
+# 上限边界：校验必须在 character.json / pack.json 追加**之后**做，
+# 否则「240 个文件」「贴着 64MB」这类边界会放行一个装不回去的包
+_ob, _of = charpack.MAX_PACK_BYTES, charpack.MAX_PACK_FILES
+try:
+    charpack.MAX_PACK_BYTES = 1024
+    try:
+        charpack.build_pack(ROOT, STORE, "hutao", kb_dir=KBD)
+        check("解压总量超限 → 拒绝（含两个 json）", False)
+    except ValueError as e:
+        check("解压总量超限 → 拒绝（含两个 json）", "解压后" in str(e), str(e))
+    charpack.MAX_PACK_BYTES = _ob
+    charpack.MAX_PACK_FILES = 3
+    try:
+        charpack.build_pack(ROOT, STORE, "hutao", kb_dir=KBD)
+        check("文件数超限 → 拒绝（含两个 json）", False)
+    except ValueError as e:
+        check("文件数超限 → 拒绝（含两个 json）", "个文件" in str(e), str(e))
+finally:
+    charpack.MAX_PACK_BYTES, charpack.MAX_PACK_FILES = _ob, _of
+
 print("[5c] dry 预览不打包")
 blob_d, name_d, man_d = charpack.build_pack(ROOT, STORE, "hutao", kb_dir=KBD, zip_too=False)
 check("dry 不返回字节", blob_d == b"")

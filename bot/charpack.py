@@ -229,17 +229,6 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
             body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kb_rows)
             files.append((f"kb/{cid}.jsonl", body.encode("utf-8")))
 
-    # 导入端还有总量/文件数上限（64MB、240 个文件）：超了同样装不回去，
-    # 在这里一次算清楚（语料是最大头，2 万条中文 chunk 完全可能超）。
-    # +2 = 下面还会追加的 character.json 与 pack.json（导入端按 zip 条目数算，
-    # 漏掉这两个就会在 239/240 这种边界上放行一个装不回去的包）。
-    total_bytes = sum(len(b) for _, b in files)
-    if len(files) + 2 > MAX_PACK_FILES:
-        raise ValueError(f"包里有 {len(files) + 2} 个文件，超过导入上限 {MAX_PACK_FILES} 个")
-    if total_bytes > MAX_PACK_BYTES:
-        raise ValueError(f"解压后 {total_bytes // 1048576} MB，超过导入上限 "
-                         f"{MAX_PACK_BYTES // 1048576} MB（先把语料导小一点）")
-
     if include_plugins and not plugs:
         # 导入端硬性要求至少一个插件；导出一个必然被拒的包只会让人白折腾
         raise ValueError("这个角色没有专属插件，导出的包装不回去（导入要求至少一个）")
@@ -262,6 +251,16 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
                   (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")))
     files.append(("pack.json",
                   (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")))
+
+    # 导入端的两道上限：zip 条目数 >240、**解压后**总量 >64MB（按所有条目求和）。
+    # 校验必须放在 character.json / pack.json 追加**之后** —— 早一步算就会在
+    # 「240 个文件」「贴着 64MB」这些边界上放行一个装不回去的包。
+    total_bytes = sum(len(b) for _, b in files)
+    if len(files) > MAX_PACK_FILES:
+        raise ValueError(f"包里有 {len(files)} 个文件，超过导入上限 {MAX_PACK_FILES} 个")
+    if total_bytes > MAX_PACK_BYTES:
+        raise ValueError(f"解压后 {total_bytes // 1048576} MB，超过导入上限 "
+                         f"{MAX_PACK_BYTES // 1048576} MB（先把语料导小一点）")
 
     if not zip_too:
         return b"", f"{cid}-pack.zip", manifest
