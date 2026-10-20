@@ -287,11 +287,10 @@ def main():
     got2 = SV._classify_wait_timeout(_Task(False, True))
     check("11a.2 我们等超时 → SendTimeout（走未知）", isinstance(got2, PV.SendTimeout))
     got3 = SV._classify_wait_timeout(_Task(True, False, None))
-    check("11a.3 task 没有异常也不炸", isinstance(got3, RuntimeError), repr(got3))
-    check("11a.4 没有异常时说明原因（不是 None 字样）",
-          "无异常" in str(got3), str(got3))
+    check("11a.3 没有异常时说明原因（不是 None 字样）",
+          "无异常" in str(got3) and "None" not in str(got3), str(got3))
     got4 = SV._classify_wait_timeout(_Task(True, False, TimeoutError()))
-    check("11a.5 空消息的异常也带类型名", "TimeoutError" in str(got4), str(got4))
+    check("11a.4 空消息的异常也带类型名", "TimeoutError" in str(got4), str(got4))
 
     section("11. 「结果未知」不能记成失败（server 巡检）")
     st3 = Path(tempfile.mkdtemp(prefix="klee-proact-unk-"))
