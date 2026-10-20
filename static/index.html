@@ -7085,12 +7085,18 @@ function ctlRenderCmds(){
                    : '<span class="kv" style="flex:none;min-width:44px"></span>'}
     </div>`).join("");
 }
+function ctlFindRow(name, plugin){
+  // 同名命令可能有两条（通用 + 角色专属）：只按 code 文本找会拿错行，
+  // 提交出去的就是「第一行的值 + 第二行的插件名」
+  return [...document.querySelectorAll("#ctlCmds .ctl-cmd")]
+    .find(x => (x.querySelector("code") || {}).textContent === "." + name
+            && (x.dataset.plugin || "") === (plugin || ""));
+}
 async function ctlSetCmd(name, field, plugin){
   // 只提交被改动的那一项：服务端是**按字段合并**的，两个字段一起发会把
   // 「没动的那一项」从「跟随插件默认」变成一条显式覆盖 —— 以后插件默认值
   // 放宽或收紧都不再生效（那正是这个设计要避免的静默覆盖）。
-  const row = [...document.querySelectorAll("#ctlCmds .ctl-cmd")]
-    .find(x => (x.querySelector("code") || {}).textContent === "." + name);
+  const row = ctlFindRow(name, plugin);
   if (!row){ flash("找不到这一行"); return; }
   const sel = row.querySelector(`[data-k="${field}"]`);
   if (!sel) return;

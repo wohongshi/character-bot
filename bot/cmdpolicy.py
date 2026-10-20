@@ -130,6 +130,10 @@ def set_override(features_dir: Path | str, *, command: str = "", plugin: str = "
             data.setdefault(kind, {})[key] = clean
         else:
             (data.get(kind) or {}).pop(key, None)
+            if command:
+                # 兼容老数据：升级前写的是纯命令名，只清新键的话旧键继续生效，
+                # 面板会显示「已回到插件默认」但其实没回
+                (data.get(kind) or {}).pop(command, None)
         return save(features_dir, data)
 
 
@@ -138,9 +142,12 @@ def effective(cmd: object, data: dict) -> dict:
     name = str(getattr(cmd, "name", "") or "")
     plugin = str(getattr(cmd, "plugin", "") or "")
     cmds = data.get("commands") or {}
-    # 先查「插件:命令」：跨角色同名命令共存之后（通用 .抱抱 vs 亚托莉 .抱抱），
-    # 只按名字查会让两行互相串——收紧一行，另一行跟着变。
-    cmd_ov = cmds.get(f"{plugin}:{name}") or cmds.get(name) or {}
+    # 「插件:命令」优先，但**逐字段**合并：老版本面板写的是纯命令名，
+    # 如果新键整行遮住旧键，只改了作用域的那次保存会把旧的「仅主人」丢掉
+    # （等于悄悄放宽权限）—— 这正是按字段合并要防的那类静默回归。
+    legacy = cmds.get(name) or {}
+    qual = cmds.get(f"{plugin}:{name}") or {}
+    cmd_ov = ({**legacy, **qual} if (legacy or qual) else {})
     plug_ov = (data.get("plugins") or {}).get(plugin) or {}
     scope = str(cmd_ov.get("scope") or plug_ov.get("scope") or "") \
         or str(getattr(cmd, "scope", "all") or "all")

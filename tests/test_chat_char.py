@@ -570,6 +570,23 @@ check("notice 事件里角色是这个群的", seen_notice.get("char") == "hutao
 check("notice 里 active_character_info 也对", seen_notice.get("name") == "胡桃",
       str(seen_notice))
 
+# 事件会话 id 优先问适配器（Telegram 这类形态不是 group:x）
+class _TgAdapter:
+    def chat_id_of(self, is_group, group_id, user_id):
+        return f"tg:{group_id or user_id}"
+
+
+_rt_adapters = getattr(rt, "adapters", None)
+rt.adapters = {"telegram": _TgAdapter()}
+try:
+    check("事件会话 id 走适配器", rt._event_chat_id(
+        {"post_type": "notice", "group_id": "42", "_source": "telegram"}) == "tg:42")
+    check("适配器拿不到/没来源就退回 group:/private:",
+          rt._event_chat_id({"post_type": "notice", "group_id": "42"}) == "group:42"
+          and rt._event_chat_id({"post_type": "notice", "user_id": "7"}) == "private:7")
+finally:
+    rt.adapters = _rt_adapters if _rt_adapters is not None else {}
+
 # ============ 4) 命令插件 chatrole ============
 print("[4] .角色 命令")
 ONLY = TMP / "feat2"

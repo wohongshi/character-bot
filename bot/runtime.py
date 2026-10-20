@@ -442,12 +442,29 @@ class BotRuntime(RuntimeFeatures):
         return self._character
 
     def _event_chat_id(self, ev: dict) -> str:
-        """notice / request 事件属于哪个会话（群事件 → group:id，其余 → private:uid）。"""
+        """notice / request 事件属于哪个会话。
+
+        优先问适配器（`chat_id_of` 允许平台覆盖，Telegram 之类不是 `group:x` 形态），
+        拿不到才退回 `group:` / `private:` —— 否则绑定表里的 key 对不上，
+        `char_for()` 永远查不到，角色又退回全局。
+        """
         gid = str(ev.get("group_id") or "")
-        if gid:
-            return f"group:{gid}"
         uid = str(ev.get("user_id") or (ev.get("sender") or {}).get("user_id") or "")
-        return f"private:{uid}" if uid else ""
+        if not gid and not uid:
+            return ""
+        src = str(ev.get("_source") or "")
+        ad = None
+        if src:
+            ad = (getattr(self, "adapters", {}) or {}).get(src)
+        fn = getattr(ad, "chat_id_of", None)
+        if callable(fn):
+            try:
+                got = str(fn(bool(gid), gid, uid) or "")
+                if got:
+                    return got
+            except Exception:                                      # noqa: BLE001
+                pass
+        return f"group:{gid}" if gid else f"private:{uid}"
 
     def _persona(self) -> str:
         name = self.active_character_info.get("name") or "角色"

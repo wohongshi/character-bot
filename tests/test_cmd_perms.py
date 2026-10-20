@@ -103,6 +103,23 @@ def main():
         except CP.PolicyError:
             check(f"1.6 拒绝{why}", True)
     CP.set_override(tmp, command="a", plugin="p", permission="owner")
+    # 老键（纯命令名）与新键（插件:命令）逐字段合并：改作用域不能把旧权限丢掉
+    CP.set_override(tmp, command="legacy", permission="owner")
+    CP.set_override(tmp, command="legacy", plugin="pl", scope="dm")
+    class _Cmd:
+        name = "legacy"
+        plugin = "pl"
+        scope = "both"
+        permission = "all"
+    _eff = CP.effective(_Cmd(), CP.load(tmp))
+    check("1.6c 新键只覆盖改过的字段（旧权限还在）",
+          _eff["permission"] == "owner" and _eff["scope"] == "dm", str(_eff))
+    # 复位要连老键一起清，否则「默认」点了不生效
+    CP.set_override(tmp, command="legacy", plugin="pl", scope="", permission="")
+    check("1.6d 复位把老键也清掉",
+          CP.load(tmp)["commands"].get("legacy") is None
+          and CP.load(tmp)["commands"].get("pl:legacy") is None,
+          str(CP.load(tmp)["commands"]))
     check("1.6b 命令+插件 → 存成 插件:命令",
           CP.load(tmp)["commands"].get("p:a") == {"permission": "owner"},
           str(CP.load(tmp)))
