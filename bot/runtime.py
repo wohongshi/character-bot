@@ -1298,7 +1298,9 @@ class BotRuntime(RuntimeFeatures):
                     raise RuntimeError(res.get("error") or "agent 没有给出回复")
             except Exception as e:                                 # noqa: BLE001
                 from .llm import BudgetExceeded
-                if isinstance(e, BudgetExceeded):
+                # `agent.run` 会把底层异常包成 AgentError（raise ... from e），
+                # 所以还要看 __cause__，否则这个分支永远不命中
+                if isinstance(e, BudgetExceeded) or isinstance(e.__cause__, BudgetExceeded):
                     # 预算停掉时不必回退普通聊天（那一层同样会被拦），
                     # 也不算 agent 故障：直接说原因
                     logger.info("预算拦下这一轮（agent）：%s", e)

@@ -333,6 +333,20 @@ def main():
         check("11.5 SendTimeout 是 UnknownResult 的子类（面板只认前者）",
               issubclass(PV.SendTimeout, PV.UnknownResult))
 
+        from bot.llm import BudgetExceeded as _BE
+
+        def _budget_stop(chat_id, **k):
+            raise _BE("今天到上限了")
+        SV._proactive_send = _budget_stop
+        PV.mark_unknown(st3, "group:zz", "清掉占位让间隔闸放行", now=0)   # 否则被 6h 间隔挡住
+        acts_b = SV._proactive_tick(now=now + 30, rng=Rng(0.0))
+        row_b = (acts_b or [{}])[0]
+        check("11.7 预算拦下标 skipped（不是失败）",
+              row_b.get("skipped") is True and row_b.get("ok") is None, str(row_b))
+        check("11.8 预算拦下不累计 fails（这一段之前一次失败都没有）",
+              int(PV.get_chat(st3, "group:zz").get("fails") or 0) == 0,
+              str(PV.get_chat(st3, "group:zz")))
+
         def _hard(chat_id, **k):
             raise RuntimeError("发送超时（传输层）")     # 传输层真失败：要计失败
         SV._proactive_send = _hard

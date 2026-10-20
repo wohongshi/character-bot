@@ -76,6 +76,13 @@ def main():
     by = {p["name"]: p for p in r["people"]}
     check("2b.1 别的群的助手消息不吃掉本群待配对",
           by["甲"]["replied"] == 1, str(by["甲"]["replied"]))
+    rows3 = [u(300, cid="group:1", uid="u1", name="甲"),
+             u(295, cid="group:2", uid="u2", name="乙"),
+             a(290, cid="group:1")]
+    r3 = P.summarize(rows3, now=NOW)
+    by3 = {p["name"]: p for p in r3["people"]}
+    check("2b.3 别的群的用户消息也不吃掉本群配对",
+          by3["甲"]["replied"] == 1, str(by3["甲"]["replied"]))
     r2 = P.summarize([u(300, cid="group:1", uid="u1", name="甲"), a(299, cid="group:1"),
                       a(298, cid="group:1")], now=NOW)
     check("2b.2 同一条只算回一次", r2["people"][0]["replied"] == 1,

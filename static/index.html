@@ -4178,14 +4178,20 @@ function memTidyInvalidate(){
   const go = $("memTidyGo");
   if (go) go.style.display = "none";
 }
+function memTidyParams(){
+  return {threshold: Number((($("memTh") || {}).value) || 0.45),
+          stale_days: Number((($("memStale") || {}).value) || 0)};
+}
 async function memTidyPreview(btn){
   btn = btn || {};
   const out = $("memTidyOut"), go = $("memTidyGo");
+  // 参数在**发请求前**快照一份：比对要几秒，期间用户可能改了阈值 ——
+  // URL 和 memPlanParams 必须来自同一份，否则装回去的是「旧计划 + 新参数」
+  const args = memTidyParams();
   if (out) out.innerHTML = `<div class="kv">比对中…（${ACTIVE.id} 的记忆）</div>`;
   btn.disabled = true;
   const d = await api("/api/memories/tidy?character=" + encodeURIComponent(ACTIVE.id) +
-    "&threshold=" + ($("memTh") ? $("memTh").value : 0.45) +
-    "&stale_days=" + ($("memStale") ? $("memStale").value : 0));
+    "&threshold=" + args.threshold + "&stale_days=" + args.stale_days);
   btn.disabled = false;
   if (!d || !d.ok){
     memTidyInvalidate();          // 上一次的计划不能留着被点
@@ -4193,8 +4199,7 @@ async function memTidyPreview(btn){
     return;
   }
   memPlan = d;
-  memPlanParams = {threshold: Number((($("memTh") || {}).value) || 0.45),
-                   stale_days: Number((($("memStale") || {}).value) || 0)};
+  memPlanParams = args;          // 和这次请求的 URL 同一份
   const c = d.counts || {};
   if (!c.groups && !c.stale){
     if (out) out.innerHTML = `<div class="kv">没有可以合并的（${c.total} 条记忆里没有近似重复）。</div>`;
@@ -4216,10 +4221,9 @@ async function memTidyPreview(btn){
   if (go) go.style.display = "";
 }
 async function memTidyApply(btn){
-  if (!memPlan){ flash("先预演一次"); return; }
+  if (!memPlan || !memPlanParams){ flash("先预演一次"); return; }
   if (!confirm("确认整理？会写盘（先备份 .bak），合并掉的句子只保留最新那条。")) return;
   btn.disabled = true; btn.textContent = "整理中…";
-  if (!memPlanParams){ flash("参数变了，先重新预演一次"); return; }
   const d = await post("/api/memories/tidy", {
     character: ACTIVE.id,
     // 用**预演时**的参数：不然改完数字直接点确认，实际合并范围和刚才看到的不一致
@@ -6655,7 +6659,8 @@ async function pvTick(btn){
   if (!d || !d.ok){ flash("巡检失败：" + ((d && d.error) || "未知")); return; }
   const acts = (d.actions || []);
   flash(acts.length ? acts.map(a => !a.send ? a.reason
-      : (a.unknown ? "结果未知：" + (a.error || "")
+      : (a.skipped ? "跳过：" + (a.reason || "")
+         : a.unknown ? "结果未知：" + (a.error || "")
          : a.ok === false ? "失败：" + (a.error || "未知") : "发了")).join("；")
     : "没有开着的会话");
   pvLoad(true);

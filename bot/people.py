@@ -66,7 +66,9 @@ def summarize(rows: list, *, now: float | None = None, days: int = 0,
 
     people: dict = {}
     replies_total = 0
-    last_user = None            # (ts, cid, uid, name)
+    # 按会话保存「待配对的那句用户消息」。以前只有一个全局槽位，
+    # 全局口径下 A 群用户 → B 群用户 → A 群助手 这种交错会让 A 那条配不上。
+    pending: dict = {}
     for ts, role, cid, text, uid, name in seq:
         if role == "user":
             key = uid or (f"name:{name}" if name else f"anon:{cid}")
@@ -91,21 +93,18 @@ def summarize(rows: list, *, now: float | None = None, days: int = 0,
             # 拿 id 当名字的记录，后面带了真名也要能更新过来
             if name and p["name"] in (p["user_id"], UNKNOWN, ""):
                 p["name"] = name
-            last_user = (ts, cid, key)
+            pending[cid] = (ts, key)
             continue
-        # 助手消息：算作「回了前面那个人」
-        if last_user is None:
+        # 助手消息：算作「回了本会话前面那个人」（一句话只算回一次）
+        pu = pending.pop(cid, None)
+        if pu is None:
             continue
-        uts, ucid, ukey = last_user
-        if ucid == cid and 0 <= ts - uts <= REPLY_WINDOW:
+        uts, ukey = pu
+        if 0 <= ts - uts <= REPLY_WINDOW:
             p = people.get(ukey)
             if p is not None:
                 p["replied"] += 1
                 replies_total += 1
-        # 只在**同一个会话**的那条用户消息被消费掉时才清空：别的群的助手消息
-        # 不该把本群待配对的那条顶掉（全局口径下这种交错很常见）
-        if ucid == cid:
-            last_user = None
 
     items = []
     for p in people.values():
