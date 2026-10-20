@@ -2577,6 +2577,26 @@ def _messages_of(chat_id: str, n: int = 4, *, tail_bytes: int = 1_048_576) -> li
     return out[-max(1, int(n or 4)):]
 
 
+def _classify_wait_timeout(task) -> BaseException:
+    """`wait_for` 抛 TimeoutError 之后：这次到底是哪种超时。
+
+    3.11 起 `asyncio.TimeoutError` 就是内置 `TimeoutError`（OSError 子类），
+    光看异常类型分不出「我们等超时」和「send 自己被 socket 超时打回来」。
+    用 task 状态分：`wait_for` 超时会把 task cancel 掉；`send` 自己抛的则 task 已结束。
+
+    - 已结束 → 真·发送失败（返回 RuntimeError，外层按 mark_fail 处理，带原始原因）
+    - 被取消 → 我们的 90 秒到了，结果未知（`SendTimeout` → `mark_unknown`）
+    """
+    from bot import proactive as pv        # 本文件都是函数内 import（模块加载要有兜底）
+    if task.done() and not task.cancelled():
+        try:
+            detail = task.exception()
+        except Exception:                                         # noqa: BLE001
+            detail = "未知"
+        return RuntimeError(f"发送超时（传输层）：{detail}")
+    return pv.SendTimeout("发送超时（90 秒）")
+
+
 def _clean_proactive(text: str) -> str:
     """把她主动说的那句收拾干净：一句话、去掉引号和自言自语的前缀。"""
     s = str(text or "").strip()
@@ -2614,13 +2634,7 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
         try:
             return await asyncio.wait_for(task, timeout=90)
         except asyncio.TimeoutError:
-            # 3.11 起 asyncio.TimeoutError 就是内置 TimeoutError（OSError 子类），
-            # 按类型分不出「我们等超时」和「send 自己被 socket 超时打回来」。
-            # 用 task 状态分：wait_for 超时会 cancel task；send 自己抛的则 task 已结束。
-            if task.done() and not task.cancelled():
-                # 真·发送失败：换成外层不会误判的类型，让它走 mark_fail
-                raise RuntimeError("发送超时（传输层）") from None
-            raise pv.SendTimeout("发送超时（90 秒）") from None
+            raise _classify_wait_timeout(task) from None
 
     fut = asyncio.run_coroutine_threadsafe(_do(), BOT.loop)
     try:

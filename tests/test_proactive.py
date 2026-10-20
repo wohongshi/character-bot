@@ -266,6 +266,31 @@ def main():
     check("10.4 长度封顶", len(SV._clean_proactive("字" * 500)) == 200)
     check("10.5 空白返回空串", SV._clean_proactive("   ") == "")
 
+    section("11a. 超时分类（不启 loop 也能测）")
+
+    class _Task:
+        def __init__(self, done, cancelled=False, exc=None):
+            self._d, self._c, self._e = done, cancelled, exc
+
+        def done(self):
+            return self._d
+
+        def cancelled(self):
+            return self._c
+
+        def exception(self):
+            if self._e is None:
+                raise RuntimeError("no exception")
+            return self._e
+
+    got = SV._classify_wait_timeout(_Task(True, False, TimeoutError("读取超时")))
+    check("11a.1 传输层超时 → 普通 RuntimeError（走失败）",
+          type(got) is RuntimeError and "读取超时" in str(got), repr(got))
+    got2 = SV._classify_wait_timeout(_Task(False, True))
+    check("11a.2 我们等超时 → SendTimeout（走未知）", isinstance(got2, PV.SendTimeout))
+    got3 = SV._classify_wait_timeout(_Task(True, False, None))
+    check("11a.3 task 没有异常也不炸", isinstance(got3, RuntimeError), repr(got3))
+
     section("11. 「结果未知」不能记成失败（server 巡检）")
     st3 = Path(tempfile.mkdtemp(prefix="klee-proact-unk-"))
     PV.set_chat(st3, "group:zz", on=True, per_day=3, idle_h=1)
