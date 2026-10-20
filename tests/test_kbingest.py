@@ -162,6 +162,11 @@ def main():
     got = IG.load_seen(tmp, "big")
     check("7.3 FIFO 截断", len(got) == IG.SEEN_MAX, str(len(got)))
     check("7.4 留的是新的", got[-1] == f"h{IG.SEEN_MAX + 49}")
+    (tmp / "kb_ingest.json").write_text('{"atri": "abc123"}', encoding="utf-8")
+    IG.save_seen(tmp, "atri", ["zzz"])
+    got_bad = IG.load_seen(tmp, "atri")
+    check("7.4b 值被手改成字符串时不把每个字符当指纹",
+          got_bad == ["zzz"], str(got_bad))
     (tmp / "kb_ingest.json").write_text("{坏 json", encoding="utf-8")
     check("7.5 坏文件当成空表", IG.load_seen(tmp, "atri") == [])
     IG.save_seen(tmp, "atri", ["z"])

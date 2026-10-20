@@ -109,6 +109,15 @@ def main():
     check("5.7 clear 返回清掉的条数", st.clear() == 5 and len(st) == 0)
     check("5.8 清空后再 add 正常", st.add(PB.snapshot([PB.block("user", "user", "z")],
                                                       chat_id="c", character="x")) is not None)
+    # 单会话封顶时，删掉的必须是**这个会话**最旧的那条（以前按下标边删边前移，
+    # 交错会话时会删到别人的快照、留下自己的旧的）
+    st9 = PB.Store(max_captures=10, per_chat=2)
+    for i, cid in enumerate(["c1", "c2", "c1", "c2", "c1"]):
+        st9.add(PB.snapshot([PB.block("user", "user", f"{cid}-{i}")], chat_id=cid,
+                            character="x", ts=float(i), user_text=f"{cid}-{i}"))
+    got9 = [x["user_text"] for x in st9.recent(10)]     # recent 是摘要（不含块正文）
+    check("5.9 交错会话只淘汰自己的旧快照",
+          sorted(got9) == ["c1-2", "c1-4", "c2-1", "c2-3"], str(got9))
 
     section("6. split_system / split_msgs：面板侧反推")
     src = ("人格\n\n【QQ 聊天规则】直接说话\n【你记得的事】a\n【你现在的状态】b\n"
@@ -187,12 +196,29 @@ def main():
     check("9.5 群聊会加「群聊身份」", any(b["key"] == "who" for b in pv2["blocks"]))
     check("9.6 关掉知识库就不检索", not any(b["key"] == "kb" for b in pv2["blocks"]))
     check("9.7 群聊 chat_id 解析对", pv2["chat_id"] == "group:777", pv2["chat_id"])
+    rt.config["kb_url"] = "http://127.0.0.1:1"          # 打不通的端口
+    pbad = rt.build_preview("x", chat_id="private:42", kb=True)
+    check("9.7b 知识库挂了要能看出来（不是静默「没命中」）", bool(pbad.get("kb_error")),
+          repr(pbad.get("kb_error")))
+    rt.config.pop("kb_url", None)
     pv4 = rt.build_preview("x", chat_id="web:studio-main")
     check("9.8 面板会话的 id 原样保留", pv4["chat_id"] == "web:studio-main", pv4["chat_id"])
     pv5 = rt.build_preview("x", chat_id="10086", is_group=False)
     check("9.9 裸 QQ 号推导成私聊", pv5["chat_id"] == "private:10086", pv5["chat_id"])
     pv6 = rt.build_preview("x", chat_id="777", is_group=True, kb=False)
     check("9.10 裸群号推导成群聊", pv6["chat_id"] == "group:777", pv6["chat_id"])
+
+    section("9c. 面板会话的「前情提要」")
+    import json as _json
+    (tmp / "state").mkdir(parents=True, exist_ok=True)
+    (tmp / "state" / "summaries.json").write_text(_json.dumps(
+        {f"{rt.active_character}:studio-main": {"text": "之前聊过提拉米苏", "n": 3,
+                                               "ts": 1.0}}, ensure_ascii=False),
+        encoding="utf-8")
+    pvw = rt.build_preview("x", chat_id="web:studio-main", kb=False)
+    check("9c.1 面板会话能读到提要（key 是 {角色}:{会话}）",
+          any(b["key"] == "summary" for b in pvw["blocks"]),
+          str([b["key"] for b in pvw["blocks"]]))
 
     section("9b. 「不当主人」时 is_owner 必须为假")
     pv3 = rt.build_preview("x", chat_id="private:42", as_owner=False)

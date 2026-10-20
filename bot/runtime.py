@@ -589,7 +589,8 @@ class BotRuntime(RuntimeFeatures):
             return SimpleNamespace(success=False)
 
     # ---------- 事件 ----------
-    def _kb_context(self, text: str, *, log_hits: bool = True) -> str:
+    def _kb_context(self, text: str, *, log_hits: bool = True,
+                    errors: dict | None = None) -> str:
         if not self.config.get("kb_enabled", True):
             return ""
         try:
@@ -624,6 +625,8 @@ class BotRuntime(RuntimeFeatures):
             return ctx_text
         except Exception as e:                                     # noqa: BLE001
             logger.debug("KB 检索失败: %s", e)
+            if errors is not None:      # 面板「试跑」要能区分「库挂了」和「没命中」
+                errors["kb"] = f"{type(e).__name__}: {e}"
             return ""
 
     async def _run_event_hooks(self, kind: str, ev: dict) -> None:
@@ -1220,16 +1223,17 @@ class BotRuntime(RuntimeFeatures):
         # 拿不到只会等；list() 读的是 GIL 保护下的快照，最坏情况少/多一条，
         # 而这只影响调试视图，不影响真实请求。
         hist = list(self.hist.get(self._hist_key(chat)) or [])
-        kb_text, kb_err = "", ""
+        kb_text, kb_errs = "", {}
         if kb:
-            try:
-                kb_text = self._kb_context(text, log_hits=False) or ""
-            except Exception as e:                                 # noqa: BLE001
-                kb_err = f"{type(e).__name__}: {e}"
+            kb_text = self._kb_context(text, log_hits=False, errors=kb_errs) or ""
+        kb_err = str(kb_errs.get("kb") or "")
         summary = ""
         try:
             from . import context as ctx_mod
-            summary = str((ctx_mod.peek(self.state_dir, f"{self.active_character}:{chat}")
+            # 面板把提要存在 `{cid}:{session}`（不含 web: 前缀），这里要跟它对齐，
+            # 否则试跑永远看不到「前情提要」——又一次「调试器说假话」。
+            ctx_key = chat[4:] if chat.startswith("web:") else chat
+            summary = str((ctx_mod.peek(self.state_dir, f"{self.active_character}:{ctx_key}")
                            or {}).get("text") or "")
         except Exception:                                          # noqa: BLE001
             summary = ""

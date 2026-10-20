@@ -2577,6 +2577,23 @@ def _messages_of(chat_id: str, n: int = 4, *, tail_bytes: int = 1_048_576) -> li
     return out[-max(1, int(n or 4)):]
 
 
+async def _note_proactive_sent(rt, chat_id: str, text: str) -> None:
+    """把「她自己说的这句」补进消息流和历史（面板能看见、下一轮也能接上）。"""
+    ts = time.time()
+    try:
+        _append_jsonl(MSG_JSONL, {"ts": ts, "chat_id": str(chat_id), "role": "assistant",
+                                  "text": str(text or "")[:800], "proactive": True})
+    except Exception as e:                                        # noqa: BLE001
+        logger.info("写消息流失败：%s", e)
+    key = rt._hist_key(str(chat_id))                              # noqa: SLF001（同包内部）
+    async with rt._hist_lock:                                     # noqa: SLF001
+        hist = rt.hist.setdefault(key, [])
+        hist.append({"role": "assistant", "content": str(text or "")[:800], "ts": ts})
+        del hist[:-max(2, rt.hist_limit * 2)]
+        blob = json.dumps(rt.hist, ensure_ascii=False, indent=2) + "\n"
+    await asyncio.to_thread(rt._write_text_atomic, rt.hist_path, blob)   # noqa: SLF001
+
+
 def _classify_wait_timeout(task) -> BaseException:
     """`wait_for` 抛 TimeoutError 之后：这次到底是哪种超时。
 
@@ -2638,9 +2655,16 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
         # 传输层可能照样把消息发出去，而我们这边却记成失败 → 下一轮重复发。
         task = asyncio.ensure_future(rt.send(chat_id, text, sentence_split=True))
         try:
-            return await asyncio.wait_for(task, timeout=90)
+            res = await asyncio.wait_for(task, timeout=90)
         except asyncio.TimeoutError:
             raise _classify_wait_timeout(task) from None
+        # 发成功之后补记账：面板消息流要能看见这句，历史里也要有 ——
+        # 否则用户回她的时候，模型不知道「自己说过什么」（容易重复或自相矛盾）。
+        try:
+            await _note_proactive_sent(rt, chat_id, text)
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("主动消息补记历史失败：%s", e)
+        return res
 
     fut = asyncio.run_coroutine_threadsafe(_do(), BOT.loop)
     try:
@@ -6400,6 +6424,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "removed": pv.remove_chat(_state_dir(), chat_id)})
                     return
                 if u.path == "/api/proactive/test":
+                    # 和巡检共用一把锁：巡检正在给这个会话生成/发送时，手动再点一次
+                    # 会绕过「最小间隔」写出两条（mark_sent 是发完才回写的）
+                    if not _PROACTIVE_LOCK.acquire(blocking=False):
+                        self._json({"ok": False, "error": "巡检正在跑，等几秒再试"}, 409)
+                        return
                     try:
                         got = _proactive_send(chat_id)
                     except pv.UnknownResult as e:
@@ -6408,6 +6437,8 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"ok": True, "unknown": True, "chat_id": chat_id,
                                     "error": str(e)})
                         return
+                    finally:
+                        _PROACTIVE_LOCK.release()
                     self._json({"ok": True, **got})
                     return
                 cfg = pv.set_chat(_state_dir(), chat_id, on=body.get("on"),
@@ -6473,7 +6504,9 @@ class Handler(BaseHTTPRequestHandler):
                 logger.exception("提示词试跑失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
                 return
-            base = st.latest(chat or None, rt.active_character)
+            # 基线和试跑用**同一个会话**：面板选「最近一次（全部会话）」时 chat 是空的，
+            # 拿别的会话的块去比，会显示出一大截纯属虚构的 delta
+            base = st.latest(chat or out.get("chat_id") or None, rt.active_character)
             out["ok"] = True
             out["diff"] = _pb.diff(base or {}, out)
             out["has_base"] = bool(base)

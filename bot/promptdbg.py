@@ -150,13 +150,15 @@ class Store:
             return {}
         with self._lock:
             self._items.append(snap)
-            # 单会话封顶
-            mine = [i for i, x in enumerate(self._items)
-                    if x.get("chat_id") == snap.get("chat_id")
-                    and x.get("character") == snap.get("character")]
-            for i in mine[:-self.per_chat]:
-                del self._items[i]
-            del self._items[:-self.max_captures]
+            # 单会话封顶：**先在集合里标出要丢的，再一次性重建**。
+            # 边算下标边 del 会让后面每个下标都前移一位（删掉的是「新的」，留下的反而是旧的）；
+            # 多会话交错时甚至会删到别的会话的快照。
+            same = lambda x: (x.get("chat_id") == snap.get("chat_id")
+                              and x.get("character") == snap.get("character"))
+            mine = [i for i, x in enumerate(self._items) if same(x)]
+            drop = set(mine[:-self.per_chat])
+            kept = [x for i, x in enumerate(self._items) if i not in drop]
+            self._items = kept[-self.max_captures:]
         return snap
 
     def latest(self, chat_id: str | None = None, character: str | None = None) -> dict:

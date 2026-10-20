@@ -161,7 +161,10 @@ def save_seen(state_dir: Path | str, character: str, hashes: list) -> None:
             d = {}
         if not isinstance(d, dict):
             d = {}
-        merged = [str(x) for x in (d.get(key) or []) if isinstance(x, str)]
+        # 文件被手改坏（"atri": "abc123"）时不能把字符串当列表迭代 ——
+        # 那会把每个字符都写成一条指纹，原来记的全丢
+        val = d.get(key)
+        merged = [str(x) for x in val if isinstance(x, str)] if isinstance(val, list) else []
         seen = set(merged)
         for h in hashes:
             if h and h not in seen:
