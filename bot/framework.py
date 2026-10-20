@@ -541,7 +541,10 @@ class FeatureAPI:
         if not ids:
             raise ValueError("这个运行环境没有角色库")
         rec = chat_char.set_binding(self._state_root(), chat_id, cid, by=by, valid_ids=ids)
-        return str(rec.get("id") or "")
+        cid2 = str(rec.get("id") or "")
+        # 绑上就把它装上：下一条消息就要用，别等第一次用到才装（会慢一拍）
+        self._manager.ensure_character(cid2)
+        return cid2
 
     def _state_root(self) -> Path:
         d = getattr(getattr(self._manager, "adapter", None), "state_dir", None)
@@ -701,6 +704,23 @@ class FeatureManager:
         self._lock = threading.RLock()      # 装载/快照/注册互斥（HTTP 线程会读快照）
         self.active_character = str(getattr(adapter, "active_character", "") or "klee")
         self.active_character_info = dict(getattr(adapter, "active_character_info", {}) or {})
+        # ---- 按角色按需装载 ----
+        # 会话绑定之后，每个群都可能是不同角色；六个角色的插件全注册等于
+        # 「谁写错一个插件都能影响所有人」，而且 100 多个模块白占内存。
+        # 现在只装载**在用**的角色（全局当前 + 已绑定 + 面板选中的），
+        # 其余插件留在 `_dormant` 里等第一次用到时再装。
+        cfg_all = getattr(adapter, "config", None)
+        cfg_all = cfg_all if isinstance(cfg_all, dict) else {}
+        self.lazy_characters = bool(cfg_all.get("lazy_plugins", True))
+        try:
+            self.max_loaded_characters = max(1, int(cfg_all.get("max_loaded_characters") or 4))
+        except (TypeError, ValueError):
+            self.max_loaded_characters = 4
+        self._loaded_chars: set[str] = set()
+        self._dormant: Dict[str, Path] = {}         # 未装载的角色插件：name → 文件
+        self._char_touch: Dict[str, float] = {}      # LRU：角色 → 上次用到的时间
+        self._enabled_cfg: Any = []
+        self._settings: dict = {}
 
     # ---------- 装载 ----------
     def scaffold(self) -> None:
@@ -781,6 +801,9 @@ class FeatureManager:
         if corrupt:
             enabled_cfg = []                      # fail-closed：坏配置不放开默认插件
         settings = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
+        self._enabled_cfg, self._settings = enabled_cfg, settings
+        self._dormant = {}
+        self._loaded_chars = self._want_characters()
 
         self._register_builtin()
         self._purge_modules()
@@ -1031,6 +1054,143 @@ class FeatureManager:
             if p.startswith(root + os.sep) or p == root:
                 sys.modules.pop(name, None)
 
+    def _drop_modules(self, name: str) -> None:
+        """摘掉某个插件在 sys.modules 里的模块（卸载/重装都不能留旧对象）。
+
+        `_load_one` 每次用 `onebot_feature_<name>_<ms>` 这个唯一名 exec：
+        不摘的话，每「卸了再装」一次就多一份模块对象（连同它 import 的东西），
+        长跑下来是实打实的内存增长。
+        """
+        for mod_name, mod in list(sys.modules.items()):
+            if not mod_name.startswith(f"onebot_feature_{name}_"):
+                continue
+            f = getattr(mod, "__file__", "") or ""
+            if Path(f).name == f"{name}.py" or mod_name.startswith(f"onebot_feature_{name}_"):
+                sys.modules.pop(mod_name, None)
+
+    # ---------- 按角色按需装载 ----------
+    def _want_characters(self) -> set[str]:
+        """这次装载应该**真的注册**哪些角色。
+
+        来源三处：全局当前角色、适配器给的「在用角色」（运行时 = 已绑定的会话）、
+        以及面板正在看的角色。适配器没提供时至少装上全局那个。
+        """
+        want = {str(self.active_character or "").strip().lower()} - {""}
+        extra = getattr(self.adapter, "loaded_characters", None)
+        if isinstance(extra, (set, frozenset, list, tuple)):
+            want |= {str(x).strip().lower() for x in extra if str(x).strip()}
+        return want
+
+    def ensure_character(self, cid: str) -> bool:
+        """确保这个角色的插件已注册。已注册 → False（便宜，可每条消息调）。"""
+        cid = str(cid or "").strip().lower()
+        if not cid:
+            return False
+        self._char_touch[cid] = time.time()
+        if not self.lazy_characters or cid in self._loaded_chars:
+            return False
+        with self._lock:
+            if cid in self._loaded_chars:
+                return False
+            self._loaded_chars.add(cid)
+            todo = []
+            for name, path in list(self._dormant.items()):
+                info = self.plugins.get(name) or {}
+                chars = {str(x).strip().lower() for x in (info.get("characters") or ())}
+                if chars & self._loaded_chars:
+                    todo.append((name, path))
+            for name, path in todo:
+                self._dormant.pop(name, None)
+                try:
+                    self._load_one(path, self._enabled_cfg, self._settings)
+                except Exception as e:                            # noqa: BLE001
+                    logger.warning("OneBot: 按需装载插件 %s 失败 — %s", name, e)
+            return bool(todo) or True
+
+    def release_character(self, cid: str) -> list[str]:
+        """卸掉这个角色的插件（只卸「没有别的已加载角色在用」的那些）。"""
+        cid = str(cid or "").strip().lower()
+        if not self.lazy_characters or cid not in self._loaded_chars:
+            return []
+        with self._lock:
+            self._loaded_chars.discard(cid)
+            freed = []
+            for name, info in list(self.plugins.items()):
+                chars = {str(x).strip().lower() for x in (info.get("characters") or ())}
+                if not chars or not info.get("registered"):
+                    continue
+                if chars & self._loaded_chars:      # 还有别的在用角色
+                    continue
+                self._unregister_plugin(name)
+                info["registered"] = False
+                info["enabled"] = False
+                path = self.dir / str(info.get("file") or f"{name}.py")
+                self._dormant[name] = path
+                freed.append(name)
+            logger.info("OneBot: 角色 %s 的插件已卸载（%d 个）", cid, len(freed))
+            return freed
+
+    def _unregister_plugin(self, name: str) -> None:
+        """把一个插件的注册痕迹全摘掉：命令 / 钩子 / NLU / 工具 / 页面。
+
+        只摘这个插件自己的：同名的另一条命令（另一个角色的）要留着 ——
+        所以按**条目**过滤 `_cmd_all`，而不是按 key 删。
+        """
+        self._cmd_all = {k: [c for c in v if c.plugin != name]
+                         for k, v in self._cmd_all.items()}
+        self._rebuild_cmd_tables()
+        for attr in ("hooks_in", "hooks_out", "hooks_notice", "hooks_request"):
+            setattr(self, attr, [h for h in getattr(self, attr, []) if h.plugin != name])
+        self.nlu_rules = [r for r in self.nlu_rules if r.plugin != name]
+        toolbox.unregister_plugin(name, self)
+        self.pages.pop(name, None)
+        self._drop_modules(name)
+
+    def _rebuild_cmd_tables(self) -> None:
+        """从 `_cmd_all` 重建 `commands`（别名 → 首选）并丢掉空键。"""
+        self._cmd_all = {k: v for k, v in self._cmd_all.items() if v}
+        self.commands = {k: v[0] for k, v in self._cmd_all.items() if v}
+
+    def update_loaded(self, characters) -> dict:
+        """把「在用角色」名单同步给管理器：该装的装上，超出上限的 LRU 卸掉。
+
+        名单 = 全局当前 + 所有绑定 + 面板选中的。`protected` 里的一律不卸。
+        """
+        want = {str(x).strip().lower() for x in (characters or ()) if str(x).strip()}
+        want.add(str(self.active_character or "").strip().lower())
+        for cid in sorted(want):
+            self.ensure_character(cid)
+        freed = []
+        if self.lazy_characters:
+            # 「必须留着」= 全局 + 所有绑定的（卸了就等于把绑定弄坏）。
+            # 上限只管**额外**装进来的角色（面板预览、以前用过一次的），
+            # 所以绑定数本身就超过上限时全部保留，只记一条日志。
+            extra = [c for c in self._loaded_chars if c not in want]
+            extra.sort(key=lambda c: self._char_touch.get(c, 0.0))     # 最久没用先卸
+            while extra and len(self._loaded_chars) > self.max_loaded_characters:
+                cid = extra.pop(0)
+                freed.extend(self.release_character(cid))
+            if len(self._loaded_chars) > self.max_loaded_characters:
+                logger.info("在用的角色 %d 个，超过按需装载上限 %d（绑定的不卸）",
+                            len(self._loaded_chars), self.max_loaded_characters)
+        return {"loaded": sorted(self._loaded_chars), "required": sorted(want),
+                "dormant": len(self._dormant), "released": freed}
+
+    def loaded_characters(self) -> dict:
+        """面板用：哪些角色已加载、有多少插件待命、上限多少。"""
+        per: Dict[str, int] = {}
+        for info in self.plugins.values():
+            if self.lazy_characters and not info.get("registered"):
+                continue
+            for c in (info.get("characters") or ()):
+                per[str(c)] = per.get(str(c), 0) + 1
+        loaded = (sorted(self._loaded_chars) if self.lazy_characters
+                  else sorted(per.keys()))
+        return {"lazy": bool(self.lazy_characters), "loaded": loaded,
+                "per": per, "dormant": len(self._dormant),
+                "max": int(self.max_loaded_characters),
+                "touch": {k: round(v, 1) for k, v in self._char_touch.items()}}
+
     def _load_one(self, path: Path, enabled_cfg: Any, settings: dict) -> None:
         name = path.stem
         info = {"description": "", "title": name, "version": "", "enabled": False,
@@ -1091,12 +1251,19 @@ class FeatureManager:
 
         if info["locked"]:
             # `enabled` 在面板上的含义**不变**：当前全局角色能不能用。
-            # 但注册不再跟着它走 —— 会话绑定（bot/chat_char.py）会让别的群
-            # 用别的角色，所以角色限定插件必须全都注册，分发时按角色门控
-            # （命令在 explain_command 拦，钩子在 run_*_hooks 拦）。
+            # 注册与否看「这个角色是否在用」：按需装载时，没在用的角色插件
+            # 只登记元信息（面板还看得见），不执行、不注册命令 —— 一个写坏的
+            # 角色插件就不会影响别的群。
             info["enabled"] = self._char_now(self.active_character) in info["characters"]
             info["lock_reason"] = ("当前角色可用" if info["enabled"]
                                    else "仅 " + "/".join(info["characters"]) + " 可用")
+            want = {str(x).strip().lower() for x in info["characters"]}
+            if self.lazy_characters and not (want & self._loaded_chars):
+                info["registered"] = False
+                info["dormant"] = True
+                self.plugins[name] = info
+                self._dormant[name] = path
+                return
             info["registered"] = True
         else:
             info["enabled"] = _plugin_enabled(

@@ -922,6 +922,10 @@ body[data-density="wide"] .card{padding:20px 24px}
 }
 .btn.tabon{background:var(--ui-accent);color:#fff;border-color:transparent}
 .tag{border-radius:999px;border:1px solid color-mix(in srgb,var(--ink) 10%,transparent);background:color-mix(in srgb,var(--surface-2) 70%, transparent)}
+/* 按需装载的角色小牌：已加载的描边点亮，未加载的淡一点 */
+.lptag{opacity:.55}
+.lptag.on{opacity:1;border-color:color-mix(in srgb,var(--green) 45%,var(--line));
+  color:var(--green)}
 /* 花费行：一条会话一行（名字 + 数字 + 进度条） */
 .urow{padding:7px 0;border-bottom:1px solid var(--line)}
 .ucbtn{min-width:64px;justify-content:center}
@@ -5433,6 +5437,7 @@ async function viewChars(){
   const d = await api("/api/characters");
   if (!d || !d.ok){ $("view").innerHTML = `<h2 class="page">🎭 角色</h2><div class="kv">✗ 读不到角色列表</div>`; return; }
   charData = d;
+  window.__chars = d.items || [];      // 按需装载那张卡也读它
   if (!charSel) charSel = d.active;
   if (!d.items.some(c => c.id === charSel)) charSel = d.active;
   const items = d.items.slice().sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
@@ -5504,8 +5509,49 @@ async function viewChars(){
       <button class="btn tiny" style="flex:0 0 auto;min-width:72px" onclick="ccAdd()">固定</button>
     </div>
     <div class="kv" id="ccMsg" style="margin-top:6px"></div>
+  </div>
+  <div class="card" style="margin-top:14px" id="lpCard">
+    <h3>🧩 插件按需装载 <span class="kv" style="font-family:var(--font-body)">只装在用的角色</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="lpLoad()">刷新</button></h3>
+    <div class="kv" id="lpMeta" style="margin-top:6px"></div>
+    <div id="lpList" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"></div>
   </div>`;
   ccLoad();
+  lpLoad();
+}
+
+/* ---- 插件按需装载：哪些角色真的装了、哪些在待命 ---- */
+async function lpLoad(){
+  const box = $("lpList"), meta = $("lpMeta");
+  if (!box) return;
+  const d = await api("/api/characters/loaded");
+  if (!d || !d.ok){
+    if (meta) meta.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  const chars = (charData && charData.items) || window.__chars || [];
+  const loaded = new Set(d.loaded || []);
+  const fixed = new Set(d.fixed || []);          // 全局 + 绑定了的：不能卸
+  if (meta) meta.innerHTML = d.lazy
+    ? `只装在用的角色：现在 <b>${loaded.size}</b> 个已加载（上限 ${d.max} 个），`
+      + `另有 <b>${d.dormant}</b> 个插件在待命 —— 绑定或切到那个角色时会自动装上。`
+    : `现在是<b>全部角色都装载</b>（按需装载关着），总共 ${(d.per ? Object.keys(d.per).length : 0)} 个角色、`
+      + `${d.dormant === 0 ? "无" : d.dormant} 个待命。`;
+  box.innerHTML = chars.map(c => {
+    const on = loaded.has(c.id);
+    const locked = fixed.has(c.id);
+    const why = locked ? (c.id === d.global ? "当前角色" : "有会话绑着")
+                       : (on ? "点一下卸载" : "用到时自动装");
+    return `<span class="tag lptag ${on ? "on" : ""}" title="${esc(why)}"
+      ${on && !locked ? `style="cursor:pointer" onclick="lpUnload(${jsq(c.id)})"` : ""}>
+      ${esc((c.emoji || "") + " " + c.name)}${on ? " ✓" : ""}</span>`;
+  }).join("");
+}
+async function lpUnload(cid){
+  const d = await post("/api/characters/unload", {id: cid});
+  if (!d || !d.ok){ flash("✗ " + ((d && d.error) || "卸载失败")); return; }
+  lpLoad();
+  flash(`✓ 已卸载 ${cid}（${(d.released || []).length} 个插件转入待命）`);
 }
 
 /* ---- 导出角色包：人格 + 主题 + 专属插件 + 语料，能原样装回去 ---- */
@@ -5981,6 +6027,14 @@ const CFG_GROUPS = [
      {k:"kb_topk", label:"召回条数"},
      {k:"kb_threshold", label:"相似度阈值", hint:"小语料角色 0.35–0.45"},
      {k:"kb_max_chars", label:"注入字数上限"},
+   ]},
+  {id: "lazy", emoji: "🎭", title: "角色插件装载", open: false,
+   note: "只装在用的角色；没在用的等第一次用到再装",
+   fields: [
+     {k:"lazy_plugins", label:"按需装载", bool:true,
+      hint:"开会省内存、也能挡住「某个角色插件写坏影响所有人」；关掉等于全部角色都装"},
+     {k:"max_loaded_characters", label:"同时装载的角色数上限",
+      hint:"绑定了的角色一定会装，超过上限时先卸「最久没用」的那些"},
    ]},
   {id: "media", emoji: "🖼️", title: "图片与语音", open: false,
    note: "看图上限、TTS 音色与条数",

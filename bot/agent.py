@@ -360,7 +360,8 @@ def tool_kb_search(args: dict, ctx: ToolContext) -> str:
     except (TypeError, ValueError):
         k = 4
     body = json.dumps({"text": q, "k": k, "threshold": 0.35,
-                       "max_chars": 1200, "character": ctx.character}).encode("utf-8")
+                       "max_chars": 1200, "character": ctx.character,
+                       "strict": True}).encode("utf-8")
     req = urllib.request.Request(ctx.kb_url + "/search", data=body,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -368,6 +369,8 @@ def tool_kb_search(args: dict, ctx: ToolContext) -> str:
             d = json.loads(r.read().decode("utf-8", "replace") or "{}")
     except Exception as e:                                       # noqa: BLE001
         return f"知识库查询失败：{type(e).__name__}: {e}"
+    if d.get("ok") is False:      # 严格模式：这个角色没有知识库
+        return f"这个角色还没有知识库：{d.get('error') or '未配置'}"
     chunks = d.get("chunks") or d.get("results") or []
     if not chunks:
         return "知识库里没有相关内容。"

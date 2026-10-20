@@ -441,6 +441,45 @@ class BotRuntime(RuntimeFeatures):
                         chat_id, cid, self._character)
         return self._character
 
+    @property
+    def loaded_characters(self) -> set:
+        """这次装载要预装哪些角色：全局当前 + 所有绑定了的 + 面板选中的。
+
+        插件管理器按它决定「谁真的注册」—— 没在用的角色插件留到第一次
+        用到时再装（`ensure_character`），六套全装上没人用的内存纯属浪费。
+        """
+        want = {str(self._character or "").strip().lower()}
+        try:
+            want |= {str(v.get("id") or "").strip().lower()
+                     for v in chat_char.load(self.state_dir).values()}
+        except Exception as e:                                      # noqa: BLE001
+            logger.info("读会话绑定失败（按需装载只预装全局角色）：%s", e)
+        want |= {str(x).strip().lower() for x in getattr(self, "_pinned_chars", set())}
+        return {c for c in want if c}
+
+    def _sync_loaded(self) -> dict:
+        """把「在用角色」同步给插件管理器：该装的装、多出来的 LRU 卸。"""
+        mgr = getattr(self, "mgr", None)
+        if mgr is None or not hasattr(mgr, "update_loaded"):
+            return {}
+        try:
+            # `loaded_characters` 已经含「面板正在看的角色」—— 它们要真的装上；
+            # 不想要的可卸角色由插件管理器按「不在名单里」判断
+            return mgr.update_loaded(self.loaded_characters)
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("同步按需装载失败（按现有插件继续）：%s", e)
+            return {}
+
+    def pin_character(self, cid: str) -> None:
+        """面板正在看的角色：别在切页途中把它卸了。"""
+        cid = str(cid or "").strip().lower()
+        if not cid:
+            return
+        self._pinned_chars = set(getattr(self, "_pinned_chars", set())) | {cid}
+        if len(self._pinned_chars) > 8:
+            self._pinned_chars = {cid}
+        self._sync_loaded()
+
     def _event_chat_id(self, ev: dict) -> str:
         """notice / request 事件属于哪个会话。
 
@@ -519,6 +558,7 @@ class BotRuntime(RuntimeFeatures):
         info = self.characters.set_active(cid)
         self._character = info["id"]
         self.soul_path = self.characters.soul_path(self._character)
+        self._sync_loaded()
         self._persona_cache = {"key": ("", 0.0), "text": ""}
         self.mgr.set_character(self._character, info)
         logger.info("角色已切换为 %s（%s）", info["name"], info["id"])
@@ -680,21 +720,34 @@ class BotRuntime(RuntimeFeatures):
 
     # ---------- 事件 ----------
     def _kb_context(self, text: str, *, log_hits: bool = True,
-                    errors: dict | None = None) -> str:
+                    errors: dict | None = None, cid: str = "") -> str:
+        """检索这个会话角色的知识库。`cid` 显式传入优先（试跑/调试在别的线程里）。"""
         if not self.config.get("kb_enabled", True):
             return ""
         try:
+            cid = str(cid or self.active_character or "").strip().lower()
+            # 本地先校验：没有这个角色（或角色没有库）就别去问，更别让它
+            # 回落到默认角色的库里 —— 那等于「用别人的语料答话」。
+            if not self.characters.get(cid):
+                return ""
             body = json.dumps({
                 "text": text, "k": int(self.config.get("kb_topk") or 3),
                 "threshold": float(self.config.get("kb_threshold") or 0.5),
                 "max_chars": int(self.config.get("kb_max_chars") or 800),
-                "character": self.active_character,
+                "character": cid, "strict": True,
             }).encode()
             req = urllib.request.Request(
                 str(self.config.get("kb_url") or "http://127.0.0.1:8797").rstrip("/") + "/search",
                 data=body, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=6) as r:       # noqa: S310
                 d = json.loads(r.read().decode("utf-8", "replace") or "{}")
+            if d.get("ok") is False:
+                # 严格模式下「没有这个角色的库」会走到这里：记一次、别注入别人的语料
+                if cid not in getattr(self, "_kb_nokb_chars", set()):
+                    self._kb_nokb_chars = set(getattr(self, "_kb_nokb_chars", set())) | {cid}
+                    logger.info("角色 %s 没有知识库（strict），跳过注入：%s",
+                                cid, str(d.get("error"))[:80])
+                return ""
             chunks = [c for c in (d.get("hits") or d.get("chunks") or d.get("results") or [])
                       if isinstance(c, dict)]
             out = [str(c.get("text") or c.get("content") or "") for c in chunks[:5]]
@@ -804,7 +857,9 @@ class BotRuntime(RuntimeFeatures):
         if ev.get("post_type") in ("notice", "request"):
             chat_id = self._event_chat_id(ev)
             if chat_id:
-                chat_char.set_value(self.char_for(chat_id))
+                cid = self.char_for(chat_id)
+                chat_char.set_value(cid)
+                self.mgr.ensure_character(cid)      # 第一次用到就装它的插件
             if ev.get("post_type") == "notice":
                 await self._run_event_hooks("notice", ev)
                 await self._handle_notice(ev)
@@ -890,7 +945,13 @@ class BotRuntime(RuntimeFeatures):
             self._routes[chat_id] = src
         # 从这一行往下，SOUL / 知识库 / 记忆 / 情绪 / 模型 / 角色限定插件
         # 全部按「这个会话的角色」走（没绑定的会话就是全局角色，行为不变）。
-        chat_char.set_value(self.char_for(chat_id))
+        cid_now = self.char_for(chat_id)
+        chat_char.set_value(cid_now)
+        # 绑定到没预装的角色时，第一次用到就把它的插件装上（字典命中的开销）
+        try:
+            self.mgr.ensure_character(cid_now)
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("按需装载角色 %s 失败（先按现有插件继续）：%s", cid_now, e)
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
         # 注意：ctx 在下面几行才建（日志要早于策略判定，才能记下被拦的消息），
         # 所以这里直接取事件里的昵称，不能读 ctx
@@ -1348,9 +1409,12 @@ class BotRuntime(RuntimeFeatures):
         # 拿不到只会等；list() 读的是 GIL 保护下的快照，最坏情况少/多一条，
         # 而这只影响调试视图，不影响真实请求。
         hist = list(self.hist.get(self._hist_key(chat)) or [])
+        # 这个会话的角色：绑定了谁就用谁的库/记忆/人格（试跑也要说真话）
+        pv_char = self.char_for(chat)
         kb_text, kb_errs = "", {}
         if kb:
-            kb_text = self._kb_context(text, log_hits=False, errors=kb_errs) or ""
+            kb_text = self._kb_context(text, log_hits=False, errors=kb_errs,
+                                       cid=pv_char) or ""
         kb_err = str(kb_errs.get("kb") or "")
         summary = ""
         try:
@@ -1358,7 +1422,7 @@ class BotRuntime(RuntimeFeatures):
             # 面板把提要存在 `{cid}:{session}`（不含 web: 前缀），这里要跟它对齐，
             # 否则试跑永远看不到「前情提要」——又一次「调试器说假话」。
             ctx_key = chat[4:] if chat.startswith("web:") else chat
-            summary = str((ctx_mod.peek(self.state_dir, f"{self.active_character}:{ctx_key}")
+            summary = str((ctx_mod.peek(self.state_dir, f"{pv_char}:{ctx_key}")
                            or {}).get("text") or "")
         except Exception:                                          # noqa: BLE001
             summary = ""
@@ -1367,10 +1431,12 @@ class BotRuntime(RuntimeFeatures):
             # 仅主人可见的块（技能提示等）照样出现 —— 预览再一次说假话
             adapter=_PreviewAdapter(str(self.owner_id or "") if as_owner else "", chat),
             text=text, is_group=bool(is_group), group_id=str(group_id or ""),
-            user_id=uid, user_name=str(user_name or "你"), message_id="")
+            user_id=uid, user_name=str(user_name or "你"), message_id="",
+            # 带着这个会话的角色：人格/记忆/样例/技能提示都会按它取
+            character=pv_char)
         parts = self._compose_blocks(ctx, text, hist=hist, kb=kb_text,
                                      summary=summary, capture=False)
-        snap = promptdbg.snapshot(parts, chat_id=chat, character=self.active_character,
+        snap = promptdbg.snapshot(parts, chat_id=chat, character=pv_char,
                                   source="preview", user_text=text)
         snap.pop("ts", None)
         snap["kb_error"] = kb_err

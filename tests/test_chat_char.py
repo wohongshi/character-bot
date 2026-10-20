@@ -342,6 +342,9 @@ class FakeAdapter:
         self.active_character_info = {}
         self.owner_id = "42"
         self.state_dir = str(STATE)
+        # 这一套测「按角色门控」，不是按需装载：全装
+        # （按需装载单独在 tests/test_lazy_plugins.py 里测）
+        self.config = {"lazy_plugins": False}
 
 
 fm = FeatureManager(FakeAdapter("klee"))
@@ -504,6 +507,7 @@ class A2:
     active_character_info = {}
     owner_id = "1"
     state_dir = str(TMP / "state_x")
+    config = {"lazy_plugins": False}      # 这一套测门控，不测按需装载
 
 
 fm2 = FeatureManager(A2())

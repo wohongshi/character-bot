@@ -71,6 +71,8 @@ class FakeAdapter:
     feature_prefix = "."
     active_character = "klee"
     active_character_info = {"id": "klee", "name": "可莉"}
+    # 这一套测的是「切角色时插件门控」，不是按需装载：要全装
+    config = {"lazy_plugins": False}
 
     def _chat_id(self, is_group, group_id, user_id):
         return f"private:{user_id}"

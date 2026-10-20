@@ -79,6 +79,10 @@ DEFAULT_CONFIG = {
     "kb_topk": 3,
     "kb_threshold": 0.4,          # 小语料角色（6~7 块）相关命中约 0.45，0.5 会全被滤掉
     "kb_max_chars": 800,
+    # 插件按需装载：会话绑定之后每个群可能是不同角色，六个角色的插件全注册
+    # 等于「谁写错一个插件都影响所有人」。开着就只装在用的角色，其余等用到再装。
+    "lazy_plugins": True,
+    "max_loaded_characters": 4,
     # 图片理解（vision 模型在 models.json 的 vision 段选；空 = 走友好降级）
     "vision_enabled": True,
     "vision_max_bytes": 8 * 1024 * 1024,

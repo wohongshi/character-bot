@@ -3344,13 +3344,19 @@ def _kb_context(text: str, cid: str = "") -> str:
         return ""
     cid = str(cid or "").strip().lower() or _active_cid()
     try:
+        if _char_store().get(cid) is None:
+            return ""
+        # strict：角色没有库时**不要**回落到默认角色（klee）的库
         body = json.dumps({"text": text, "k": 4, "threshold": 0.4,
-                           "max_chars": 900, "character": cid}).encode("utf-8")
+                           "max_chars": 900, "character": cid,
+                           "strict": True}).encode("utf-8")
         req = urllib.request.Request(KB_URL.rstrip("/") + "/search", data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=6) as r:          # noqa: S310
             d = json.loads(r.read().decode("utf-8", "replace") or "{}")
     except Exception:                                               # noqa: BLE001
+        return ""
+    if d.get("ok") is False:            # 严格模式：这个角色没有库
         return ""
     chunks = [c for c in (d.get("hits") or d.get("chunks") or d.get("results") or [])
               if isinstance(c, dict)]
@@ -5360,7 +5366,7 @@ _SENSITIVE_GET = frozenset({
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
     "/api/control", "/api/prompt", "/api/proactive", "/api/budget", "/api/people",
     "/api/memories/tidy", "/api/characters/bindings", "/api/characters/export",
-    "/api/characters/examples",
+    "/api/characters/examples", "/api/characters/loaded",
 })
 
 
@@ -5752,6 +5758,20 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/characters/bindings":
             self._json(_char_bind_view())
             return
+        if u.path == "/api/characters/loaded":
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            mgr = getattr(rt, "mgr", None) if rt is not None else None
+            if mgr is None or not hasattr(mgr, "loaded_characters"):
+                self._json({"ok": False, "error": "插件框架还没起来"}, 503)
+                return
+            from bot import chat_char as _cc
+            info = mgr.loaded_characters()
+            bound = {str(v.get("id") or "") for v in _cc.load(STATE_DIR).values()}
+            active = str(rt.active_character) if rt is not None else ""
+            self._json({"ok": True, **info, "global": active,
+                        "bound": sorted(x for x in bound if x),
+                        "fixed": sorted({active} | {x for x in bound if x} - {""})})
+            return
         if u.path == "/api/characters/examples":
             from bot import examples as ex_mod
             cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
@@ -5902,7 +5922,8 @@ class Handler(BaseHTTPRequestHandler):
             cid = (q.get("character") or [""])[0].strip().lower() or _active_cid()
             try:
                 with urllib.request.urlopen(
-                        KB_URL + "/manual?character=" + urllib.request.quote(cid), timeout=8) as r:
+                        KB_URL + "/manual?character=" + urllib.request.quote(cid)
+                        + "&strict=1", timeout=8) as r:
                     self._json(json.load(r))
             except Exception as e:                                  # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
@@ -5924,10 +5945,20 @@ class Handler(BaseHTTPRequestHandler):
                 req = urllib.request.Request(
                     KB_URL + "/search",
                     data=json.dumps({"text": text, "k": k, "threshold": 0.0,
-                                     "max_chars": 4000, "character": cid}).encode(),
+                                     "max_chars": 4000, "character": cid,
+                                     "strict": True}).encode(),
                     headers={"Content-Type": "application/json"})
                 with urllib.request.urlopen(req, timeout=15) as r:
                     self._json(json.load(r))
+            except urllib.error.HTTPError as e:
+                # 严格模式会返回 400（角色没有库）：把知识库的原话放出来，
+                # 别在面板上显示成 "HTTPError: HTTP Error 400"
+                try:
+                    msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+                except (ValueError, OSError):
+                    msg = None
+                self._json({"ok": False, "character": cid,
+                            "error": msg or f"知识库返回 {e.code}"}, 400)
             except Exception as e:  # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             return
@@ -5935,6 +5966,9 @@ class Handler(BaseHTTPRequestHandler):
             if not BOT or not getattr(BOT, "runtime", None):
                 self._json({"ok": False, "error": "bot 未启动"}, 503)
                 return
+            cid_q = (q.get("character") or [""])[0].strip().lower()
+            if cid_q and hasattr(BOT.runtime, "pin_character"):
+                BOT.runtime.pin_character(cid_q)      # 面板在看这个角色 → 装上它
             hub = getattr(BOT.runtime, "skills", None)
             self._json({"ok": True, "skills": hub.skills() if hub else []})
             return
@@ -6410,6 +6444,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "没有指定命令"}, 400)
                 return
             cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            # 这个角色的插件可能还没装（按需装载）：先装上再跑，否则会说「没有技能」
+            if hasattr(rt, "pin_character"):
+                rt.pin_character(cid)
+            elif getattr(rt, "mgr", None) is not None:
+                rt.mgr.ensure_character(cid)
             sink: list[str] = []
             adapter = _WebAdapter(rt, cid, sink=sink)
             t0 = time.time()
@@ -6880,6 +6919,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ("/api/kb/add", "/api/kb/delete"):
             cid = re.sub(r"[^a-z0-9_\-]", "",
                          str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+            if _char_store().get(cid) is None:
+                # 不存在的角色：以前会写进 klee 的库（串库），现在直接拒
+                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                return
             payload = ({"text": str(body.get("text") or ""),
                         "title": str(body.get("title") or ""),
                         "character": cid}
@@ -7323,6 +7366,31 @@ class Handler(BaseHTTPRequestHandler):
                         "note": "已绑定（面板刷新后生效）"})
             return
 
+        if u.path == "/api/characters/unload":
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            mgr = getattr(rt, "mgr", None) if rt is not None else None
+            if mgr is None:
+                self._json({"ok": False, "error": "插件框架还没起来"}, 503)
+                return
+            from bot import chat_char as _cc
+            cid = _cc.clean_id(body.get("id"))
+            if not cid:
+                self._json({"ok": False, "error": "角色 id 不合法"}, 400)
+                return
+            if rt is not None and cid == str(rt.active_character):
+                self._json({"ok": False, "error": "当前角色不能卸载"}, 400)
+                return
+            if cid in {str(v.get("id") or "") for v in _cc.load(STATE_DIR).values()}:
+                self._json({"ok": False,
+                            "error": "这个角色还被会话绑着（先取消绑定再卸载）"}, 400)
+                return
+            freed = mgr.release_character(cid)
+            _PLUG_CACHE.update(ts=0.0, data=None)      # 插件表/命令中心要跟着刷新
+            _CMD_CACHE.update(ts=0.0, data=None, key="")
+            self._json({"ok": True, "released": freed, "freed": len(freed),
+                        **mgr.loaded_characters()})
+            return
+
         if u.path == "/api/characters/bind":
             from bot import chat_char
             chat = chat_char.clean_chat(body.get("chat"))
@@ -7348,6 +7416,10 @@ class Handler(BaseHTTPRequestHandler):
                     chat_char.set_binding(STATE_DIR, chat, cid, by="面板", valid_ids=ids)
                 else:
                     chat_char.clear(STATE_DIR, chat)
+                # 绑上就把它装上（下一条消息就要用）；解绑则重新同步（可能可以卸了）
+                rt = getattr(BOT, "runtime", None) if BOT is not None else None
+                if rt is not None and hasattr(rt, "_sync_loaded"):
+                    rt._sync_loaded()
             except Exception as e:                                 # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 400)
                 return
