@@ -6027,7 +6027,9 @@ function prToggle(){
   const box = $("prBox"), btn = $("prMore");
   // 以 DOM 的实际状态为准：viewOps 每次重建都把 box 设成 display:none，
   // 但 prOpen 是模块级状态，切页回来就会反着（按钮写「收起」其实收着）
-  prOpen = box ? (box.style.display === "none" || !box.style.display) : !prOpen;
+  // `style.display = ""` 是「回到样式表默认」= 显示，只有 "none" 才是收起。
+  // 把空串也当收起，会让按钮永远开着（点第二下没反应）。
+  prOpen = box ? box.style.display === "none" : !prOpen;
   if (box) box.style.display = prOpen ? "" : "none";
   if (btn) btn.textContent = prOpen ? "收起" : "展开";
   if (prOpen) prLoad(true);

@@ -178,6 +178,12 @@ def main():
     check("9.6 关掉知识库就不检索", not any(b["key"] == "kb" for b in pv2["blocks"]))
     check("9.7 群聊 chat_id 解析对", pv2["chat_id"] == "group:777", pv2["chat_id"])
 
+    section("9b. 「不当主人」时 is_owner 必须为假")
+    pv3 = rt.build_preview("x", chat_id="private:42", as_owner=False)
+    check("9b.1 非主人预演里没有「仅主人」的技能块",
+          not any(b.get("key") == "skills" for b in pv3["blocks"]),
+          str([b.get("key") for b in pv3["blocks"]]))
+
     section("10. 捕获失败不能影响回复")
     class Boom(PB.Store):
         def add(self, snap):

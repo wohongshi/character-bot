@@ -120,6 +120,7 @@ def _set_chat_locked(state_dir, chat_id, *, on=None, per_day=None, min_gap_h=Non
                      idle_h=None, chance=None, note=None) -> dict:
     data = load(state_dir)
     chats = data["chats"]
+    existed = chat_id in chats
     cur = _clamp(chats.get(chat_id) or {})
     for k, v in (("on", on), ("per_day", per_day), ("min_gap_h", min_gap_h),
                  ("idle_h", idle_h), ("chance", chance), ("note", note)):
@@ -127,15 +128,15 @@ def _set_chat_locked(state_dir, chat_id, *, on=None, per_day=None, min_gap_h=Non
             continue
         cur[k] = v
     cur = _clamp(cur)
-    # 只有「调用方没显式提到 on，且各项都回到默认」才整条删掉（清理用）。
-    # 面板上的「○ 关」必须**保留这一行** —— 否则点一下开关就等于删配置，
-    # 想再打开得重新加会话。
-    if (on is None and not cur.get("on")
+    # **已经存在的行永远不自动删**：面板的「○ 关」和逐字段保存都不能顺手删配置
+    # （以前全默认就 pop —— 点一下开关、或把一个数字改回默认值，整行就没了）。
+    # 只有「本来没有、且这次全是默认值」才不占位；删除走 remove_chat()。
+    if (not existed and not cur.get("on")
             and not any(cur.get(k) != DEFAULTS[k] for k in
                         ("per_day", "min_gap_h", "idle_h", "chance", "note"))):
         chats.pop(chat_id, None)
     else:
-        if len(chats) >= MAX_CHATS and chat_id not in chats:
+        if len(chats) >= MAX_CHATS and not existed:
             raise ValueError(f"最多 {MAX_CHATS} 个会话")
         chats[chat_id] = cur
     save(state_dir, data)
@@ -309,11 +310,15 @@ def read_log(state_dir: Path | str, limit: int = 20) -> list:
     return list(reversed(out))
 
 
-def last_user_map(path: Path | str, *, tail_bytes: int = 262_144) -> dict:
+def last_user_map(path: Path | str, *, tail_bytes: int = 8_388_608) -> dict:
     """一次扫完文件尾部，返回 `{chat_id: 最后一次用户发言的 ts}`。
 
     巡检要问 50 个会话，逐个 `last_user_ts()` 等于把同一个文件读 50 遍；
     而且 `deque(f, maxlen=n)` 并不会少读 —— 它照样从头读到尾。
+
+    窗口默认 8 MB（本机一天流水也就几百 KB）：窗口太小的话，「很久没聊」的会话
+    会被别人刷出窗口 → 取不到时间 → 被判成「没有对话记录」→ 主动消息恰好对
+    最该发的那批人失效。文件比窗口还大时宁可漏判（不发），也不猜。
     """
     try:
         size = os.path.getsize(path)
@@ -350,6 +355,6 @@ def last_user_map(path: Path | str, *, tail_bytes: int = 262_144) -> dict:
     return out
 
 
-def last_user_ts(path: Path | str, chat_id: str, *, tail_bytes: int = 262_144) -> float:
+def last_user_ts(path: Path | str, chat_id: str, *, tail_bytes: int = 8_388_608) -> float:
     """这个会话最后一次「用户说话」的时间（找不到返回 0）。"""
     return float(last_user_map(path, tail_bytes=tail_bytes).get(str(chat_id or "")) or 0)

@@ -108,6 +108,12 @@ def main():
     PV.set_chat(tmp, "group:4", note="")
     check("4.3c 没提 on 也没别的设置 → 不占位",
           PV.get_chat(tmp, "group:4") == {}, str(PV.get_chat(tmp, "group:4")))
+    # 已存在的行：把一个数字改回默认值，不能把整行删掉（面板逐字段保存的常见路径）
+    PV.set_chat(tmp, "group:5", on=False, per_day=3)
+    PV.set_chat(tmp, "group:5", per_day=2)
+    check("4.3d 已有行改成默认值也保留",
+          PV.get_chat(tmp, "group:5").get("per_day") == 2,
+          str(PV.get_chat(tmp, "group:5")))
     PV.set_chat(tmp, "group:2", on=True)
     check("4.4 remove 返回是否删掉", PV.remove_chat(tmp, "group:2") is True)
     check("4.5 删完就没了", PV.get_chat(tmp, "group:2") == {})
@@ -187,6 +193,21 @@ def main():
     check("8.4 文件不存在返回 0", PV.last_user_ts(st / "nope.jsonl", "group:1") == 0.0)
     mj.write_text('{"ts": 1, "chat_id": "group:1", "role": "user"}\n不是 json\n', encoding="utf-8")
     check("8.5 坏行跳过", PV.last_user_ts(mj, "group:1") == 1.0)
+    big = st / "big.jsonl"
+    rows2 = [{"ts": float(i), "chat_id": "group:1", "role": "user", "text": "x" * 200}
+             for i in range(400)]
+    rows2.append({"ts": 999.0, "chat_id": "group:9", "role": "user", "text": "y"})
+    big.write_text("\n".join(json.dumps(x) for x in rows2) + "\n", encoding="utf-8")
+    check("8.6 窗口内取最新", PV.last_user_map(big, tail_bytes=4096).get("group:9") == 999.0)
+    # 被挤出窗口的会话查不到（这是有意的：宁可漏判不发，也不猜）
+    old_chat = st / "window.jsonl"
+    lines = [json.dumps({"ts": 1.0, "chat_id": "group:old", "role": "user"})]
+    lines += [json.dumps({"ts": 100.0 + i, "chat_id": "group:busy", "role": "user",
+                          "text": "x" * 300}) for i in range(200)]
+    old_chat.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    win = PV.last_user_map(old_chat, tail_bytes=8192)
+    check("8.7 挤出窗口的会话查不到（宁可不发也不猜）", "group:old" not in win, str(list(win)))
+    check("8.8 窗口内的照常取到", win.get("group:busy") == 299.0, str(win.get("group:busy")))
 
     section("9. server 接线：策略拦截判定")
     import server as SV

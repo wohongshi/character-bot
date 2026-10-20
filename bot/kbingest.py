@@ -61,11 +61,12 @@ def _pack(par: str, max_chars: int, overlap: int) -> list:
     """
     queue: list = []
     for sent in _sentences(par):
-        while len(sent) > max_chars:
-            queue.append(sent[:max_chars])
-            sent = sent[max_chars:]
-        if sent:
-            queue.append(sent)
+        i = 0                       # 用索引推进：sent[i:] 每次都复制整串，是 O(n²)
+        while len(sent) - i > max_chars:
+            queue.append(sent[i:i + max_chars])
+            i += max_chars
+        if i < len(sent):
+            queue.append(sent[i:])
     out: list = []
     buf = ""
     for s in queue:

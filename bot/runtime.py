@@ -1220,7 +1220,9 @@ class BotRuntime(RuntimeFeatures):
         except Exception:                                          # noqa: BLE001
             summary = ""
         ctx = FeatureContext(
-            adapter=_PreviewAdapter(str(self.owner_id or "")),
+            # 不看「当主人」时 owner_id 要留空：否则 is_owner 恒为真，
+            # 仅主人可见的块（技能提示等）照样出现 —— 预览再一次说假话
+            adapter=_PreviewAdapter(str(self.owner_id or "") if as_owner else ""),
             text=text, is_group=bool(is_group), group_id=str(group_id or ""),
             user_id=uid, user_name=str(user_name or "你"), message_id="")
         parts = self._compose_blocks(ctx, text, hist=hist, kb=kb_text,
