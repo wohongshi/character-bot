@@ -1455,7 +1455,9 @@ def _web_plugin_dispatch(rt, job: dict, text: str, cid: str):
     adapter = _WebAdapter(rt, cid, sink=captured)
     ctx = FeatureContext(adapter=adapter, text=raw, is_group=False,
                          group_id="", user_id="panel", user_name="主人",
-                         message_id="", mentioned=True, role="owner")
+                         message_id="", mentioned=True, role="owner",
+                         # 面板选的角色：插件里判角色 / 角色限定命令都看它
+                         character=str(cid or ""))
 
     async def _fake_reply(t, **kw):
         for line in str(t).split("\n"):
@@ -3026,9 +3028,15 @@ def _run_job(job: dict) -> None:
     cid = str(job.get("character") or _active_cid())
     job["character"] = cid              # 下面 _delta_sink 要拿它比对
     _run_begin(job, cid)
+    # 面板对话也跑在 worker 线程里（不继承 contextvars）：不 push 的话，
+    # 技能提示 / use_skill / 插件分发都会按**全局**角色解析，
+    # 面板选了别的角色时提示词里挂的还是全局角色的技能。
+    from bot import chat_char as _cc
+    tok = _cc.push(cid)
     try:
         _run_job_body(job, cid)
     finally:
+        _cc.pop(tok)
         _run_end(job, cid)
 
 

@@ -86,7 +86,8 @@ class SkillHub:
         self.mgr = manager
         # 每条消息都要算一次 hint（3 ms/次），把「技能 → 2-gram 集合」缓存起来。
         # 插件热重载会换掉 last_reload_ts，缓存自然失效。
-        self._gram_cache: dict[str, tuple[float, list]] = {}
+        # 角色 → (键, 索引)；键里带 reload 时间戳
+        self._gram_cache: dict[str, tuple[tuple, list]] = {}
 
     # ---------- 目录 ----------
     def skills(self) -> list[dict]:
@@ -205,7 +206,9 @@ class SkillHub:
         # 进程里**第一条消息的角色**会把整份索引占住，别的角色要么查到别人的技能、
         # 要么自己的技能查不到（hint 的相关性挑选直接失效）。
         key = (stamp, self.mgr._char_now())
-        hit = self._gram_cache.get("all")
+        # 按角色分槽：只有一个槽时，两个角色的消息交替进来会**每次都重建**
+        # 整个索引（正好是多角色场景下最贵的情况）。
+        hit = self._gram_cache.get(key[1])
         if hit and hit[0] == key:
             return hit[1]
         out = []
@@ -213,7 +216,9 @@ class SkillHub:
             blob = " ".join([s["name"], s["title"], s["description"]]
                             + [c["name"] + " " + str(c["help"] or "") for c in s["commands"]])
             out.append((s, blob.lower(), self._grams(blob)))
-        self._gram_cache["all"] = (key, out)
+        if len(self._gram_cache) > 16:          # 长跑防膨胀：角色数远小于 16
+            self._gram_cache.clear()
+        self._gram_cache[key[1]] = (key, out)
         return out
 
     # ---------- 检索 ----------

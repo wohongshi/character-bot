@@ -467,6 +467,17 @@ try:
     sr2 = hub.search("同名")
 finally:
     chat_char.pop(sr2_tok)
+# 缓存要按角色分槽：两个角色交替查询不该每次都重建（重建 = 返回不同对象）
+tok1 = chat_char.push("klee")
+a1 = hub._gram_index()
+tok2 = chat_char.push("hutao")
+b1 = hub._gram_index()
+chat_char.pop(tok2)
+a2 = hub._gram_index()
+chat_char.pop(tok1)
+check("技能索引按角色分槽（交替查询不重建）", a1 is a2 and a1 is not b1,
+      f"{id(a1)} {id(a2)} {id(b1)}")
+
 check("技能检索不串角色",
       any(x[1]["name"] == "k" for x in sr1) and any(x[1]["name"] == "h" for x in sr2),
       str([(round(x[0], 2), x[1]["name"]) for x in sr1])[:100])
