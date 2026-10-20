@@ -5542,8 +5542,9 @@ async function lpLoad(){
     const locked = fixed.has(c.id);
     const why = locked ? (c.id === d.global ? "当前角色" : "有会话绑着")
                        : (on ? "点一下卸载" : "用到时自动装");
-    return `<span class="tag lptag ${on ? "on" : ""}" title="${esc(why)}"
-      ${on && !locked ? `style="cursor:pointer" onclick="lpUnload(${jsq(c.id)})"` : ""}>
+    const canUnload = on && !locked && d.lazy;
+    return `<span class="tag lptag ${on ? "on" : ""}" title="${esc(canUnload ? why : (d.lazy ? why : "按需装载关着，全部角色都在装"))}"
+      ${canUnload ? `style="cursor:pointer" onclick="lpUnload(${jsq(c.id)})"` : ""}>
       ${esc((c.emoji || "") + " " + c.name)}${on ? " ✓" : ""}</span>`;
   }).join("");
 }
@@ -6032,7 +6033,7 @@ const CFG_GROUPS = [
    note: "只装在用的角色；没在用的等第一次用到再装",
    fields: [
      {k:"lazy_plugins", label:"按需装载", bool:true,
-      hint:"开会省内存、也能挡住「某个角色插件写坏影响所有人」；关掉等于全部角色都装"},
+      hint:"开会省内存、也能挡住「某个角色插件写坏影响所有人」；关掉等于全部角色都装（保存后几秒内热重载生效）"},
      {k:"max_loaded_characters", label:"同时装载的角色数上限",
       hint:"绑定了的角色一定会装，超过上限时先卸「最久没用」的那些"},
    ]},

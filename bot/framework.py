@@ -709,13 +709,9 @@ class FeatureManager:
         # 「谁写错一个插件都能影响所有人」，而且 100 多个模块白占内存。
         # 现在只装载**在用**的角色（全局当前 + 已绑定 + 面板选中的），
         # 其余插件留在 `_dormant` 里等第一次用到时再装。
-        cfg_all = getattr(adapter, "config", None)
-        cfg_all = cfg_all if isinstance(cfg_all, dict) else {}
-        self.lazy_characters = bool(cfg_all.get("lazy_plugins", True))
-        try:
-            self.max_loaded_characters = max(1, int(cfg_all.get("max_loaded_characters") or 4))
-        except (TypeError, ValueError):
-            self.max_loaded_characters = 4
+        # 默认值；真正的读取在 `_load_locked()` 开头（面板改完要能立刻生效）
+        self.lazy_characters = True
+        self.max_loaded_characters = 4
         self._loaded_chars: set[str] = set()
         self._dormant: Dict[str, Path] = {}         # 未装载的角色插件：name → 文件
         self._char_touch: Dict[str, float] = {}      # LRU：角色 → 上次用到的时间
@@ -768,6 +764,15 @@ class FeatureManager:
         # 指纹在装载**之前**取：装载过程中又改文件的话，下一轮扫描还能发现变化；
         # 取在末尾会把「没被装载进去的那版」当成已处理，改动永远丢失。
         fp_at_start = self._fingerprint()
+        # 每次都按当前配置重算：`apply_config` 只改 adapter.config，不重建 manager，
+        # 读在 __init__ 里的话面板上那个开关就成了「重启才生效」的假开关。
+        cfg_all = getattr(self.adapter, "config", None)
+        cfg_all = cfg_all if isinstance(cfg_all, dict) else {}
+        self.lazy_characters = bool(cfg_all.get("lazy_plugins", True))
+        try:
+            self.max_loaded_characters = max(1, int(cfg_all.get("max_loaded_characters") or 4))
+        except (TypeError, ValueError):
+            self.max_loaded_characters = 4
         self.scaffold()
         # 复位注册表（hits/errors 跨重载保留）。
         # `plugin == "__builtin__"` 的是运行时自带的命令（如 .agent），不来自插件文件，
@@ -1062,10 +1067,11 @@ class FeatureManager:
         长跑下来是实打实的内存增长。
         """
         for mod_name, mod in list(sys.modules.items()):
-            if not mod_name.startswith(f"onebot_feature_{name}_"):
+            if not mod_name.startswith("onebot_feature_"):
                 continue
-            f = getattr(mod, "__file__", "") or ""
-            if Path(f).name == f"{name}.py" or mod_name.startswith(f"onebot_feature_{name}_"):
+            # 只认文件名叫 <name>.py 的：`ledger` 和 `ledger_red` 的模块名前缀一样，
+            # 按前缀删会把另一个插件的模块也摘掉。
+            if Path(getattr(mod, "__file__", "") or "").name == f"{name}.py":
                 sys.modules.pop(mod_name, None)
 
     # ---------- 按角色按需装载 ----------
@@ -1100,12 +1106,22 @@ class FeatureManager:
                 if chars & self._loaded_chars:
                     todo.append((name, path))
             for name, path in todo:
-                self._dormant.pop(name, None)
                 try:
                     self._load_one(path, self._enabled_cfg, self._settings)
                 except Exception as e:                            # noqa: BLE001
                     logger.warning("OneBot: 按需装载插件 %s 失败 — %s", name, e)
-            return bool(todo) or True
+                    self._dormant[name] = path
+                    continue
+                info = self.plugins.get(name) or {}
+                if info.get("error") or not info.get("registered"):
+                    # exec/register 失败：`_load_one` 只在 info 里记 error 就返回，
+                    # 不放进待命的话这个角色整轮进程都再也装不上它
+                    logger.warning("OneBot: 按需装载插件 %s 失败（%s），留待下次重试",
+                                   name, str(info.get("error"))[:80] or "未注册")
+                    self._dormant[name] = path
+                else:
+                    self._dormant.pop(name, None)
+            return bool(todo)
 
     def release_character(self, cid: str) -> list[str]:
         """卸掉这个角色的插件（只卸「没有别的已加载角色在用」的那些）。"""
@@ -1160,36 +1176,46 @@ class FeatureManager:
         want.add(str(self.active_character or "").strip().lower())
         for cid in sorted(want):
             self.ensure_character(cid)
-        freed = []
+        freed: list[str] = []
         if self.lazy_characters:
-            # 「必须留着」= 全局 + 所有绑定的（卸了就等于把绑定弄坏）。
-            # 上限只管**额外**装进来的角色（面板预览、以前用过一次的），
-            # 所以绑定数本身就超过上限时全部保留，只记一条日志。
-            extra = [c for c in self._loaded_chars if c not in want]
-            extra.sort(key=lambda c: self._char_touch.get(c, 0.0))     # 最久没用先卸
-            while extra and len(self._loaded_chars) > self.max_loaded_characters:
-                cid = extra.pop(0)
-                freed.extend(self.release_character(cid))
-            if len(self._loaded_chars) > self.max_loaded_characters:
-                logger.info("在用的角色 %d 个，超过按需装载上限 %d（绑定的不卸）",
-                            len(self._loaded_chars), self.max_loaded_characters)
-        return {"loaded": sorted(self._loaded_chars), "required": sorted(want),
-                "dormant": len(self._dormant), "released": freed}
+            with self._lock:
+                # 「必须留着」= 全局 + 所有绑定的（卸了就等于把绑定弄坏）。
+                # 上限只管**额外**装进来的角色（面板预览、以前用过一次的），
+                # 所以绑定数本身就超过上限时全部保留，只记一条日志。
+                extra = [c for c in self._loaded_chars if c not in want]
+                extra.sort(key=lambda c: self._char_touch.get(c, 0.0))   # 最久没用先卸
+                while extra and len(self._loaded_chars) > self.max_loaded_characters:
+                    cid = extra.pop(0)
+                    freed.extend(self.release_character(cid))
+                if len(self._loaded_chars) > self.max_loaded_characters:
+                    logger.info("在用的角色 %d 个，超过按需装载上限 %d（绑定的不卸）",
+                                len(self._loaded_chars), self.max_loaded_characters)
+        with self._lock:
+            loaded = sorted(self._loaded_chars)
+            n_dormant = len(self._dormant)
+        return {"loaded": loaded, "required": sorted(want),
+                "dormant": n_dormant, "released": freed}
 
     def loaded_characters(self) -> dict:
-        """面板用：哪些角色已加载、有多少插件待命、上限多少。"""
-        per: Dict[str, int] = {}
-        for info in self.plugins.values():
-            if self.lazy_characters and not info.get("registered"):
-                continue
-            for c in (info.get("characters") or ()):
-                per[str(c)] = per.get(str(c), 0) + 1
-        loaded = (sorted(self._loaded_chars) if self.lazy_characters
-                  else sorted(per.keys()))
-        return {"lazy": bool(self.lazy_characters), "loaded": loaded,
-                "per": per, "dormant": len(self._dormant),
-                "max": int(self.max_loaded_characters),
-                "touch": {k: round(v, 1) for k, v in self._char_touch.items()}}
+        """面板用：哪些角色已加载、有多少插件待命、上限多少。
+
+        整段持锁：HTTP 线程读的时候，事件循环那边可能正往 plugins 里插东西
+        （`ensure_character` → `_load_one`），边插边遍历会 RuntimeError。
+        """
+        with self._lock:
+            per: Dict[str, int] = {}
+            for info in list(self.plugins.values()):
+                if self.lazy_characters and not info.get("registered"):
+                    continue
+                for c in (info.get("characters") or ()):
+                    per[str(c)] = per.get(str(c), 0) + 1
+            loaded = (sorted(self._loaded_chars) if self.lazy_characters
+                      else sorted(per.keys()))
+            out = {"lazy": bool(self.lazy_characters), "loaded": loaded,
+                   "per": per, "dormant": len(self._dormant),
+                   "max": int(self.max_loaded_characters),
+                   "touch": {k: round(v, 1) for k, v in self._char_touch.items()}}
+        return out
 
     def _load_one(self, path: Path, enabled_cfg: Any, settings: dict) -> None:
         name = path.stem

@@ -471,14 +471,22 @@ class BotRuntime(RuntimeFeatures):
             return {}
 
     def pin_character(self, cid: str) -> None:
-        """面板正在看的角色：别在切页途中把它卸了。"""
+        """面板**此刻**在看的角色：先装上、别在切页途中被 LRU 卸掉。
+
+        只保留「当前这一个」：以前是累加（上限 8），浏览过的角色全被当成
+        "must keep"，按需装载的上限就形同虚设，内存一路涨。
+        """
         cid = str(cid or "").strip().lower()
-        if not cid:
-            return
-        self._pinned_chars = set(getattr(self, "_pinned_chars", set())) | {cid}
-        if len(self._pinned_chars) > 8:
-            self._pinned_chars = {cid}
+        if not cid or not self.characters.get(cid):
+            return                      # 不存在的角色不 pin（也别占一个装载名额）
+        self._pinned_chars = {cid}
         self._sync_loaded()
+
+    def unpin_character(self, cid: str) -> None:
+        cid = str(cid or "").strip().lower()
+        pins = set(getattr(self, "_pinned_chars", set()))
+        if cid and pins - {cid} != pins:
+            self._pinned_chars = pins - {cid}
 
     def _event_chat_id(self, ev: dict) -> str:
         """notice / request 事件属于哪个会话。
@@ -859,7 +867,8 @@ class BotRuntime(RuntimeFeatures):
             if chat_id:
                 cid = self.char_for(chat_id)
                 chat_char.set_value(cid)
-                self.mgr.ensure_character(cid)      # 第一次用到就装它的插件
+                # 第一次用到就装它的插件；装插件是同步 IO + exec，别占着事件循环
+                await asyncio.to_thread(self.mgr.ensure_character, cid)
             if ev.get("post_type") == "notice":
                 await self._run_event_hooks("notice", ev)
                 await self._handle_notice(ev)
@@ -947,9 +956,11 @@ class BotRuntime(RuntimeFeatures):
         # 全部按「这个会话的角色」走（没绑定的会话就是全局角色，行为不变）。
         cid_now = self.char_for(chat_id)
         chat_char.set_value(cid_now)
-        # 绑定到没预装的角色时，第一次用到就把它的插件装上（字典命中的开销）
+        # 绑定到没预装的角色时，第一次用到就把它的插件装上。
+        # `to_thread`：装插件要读文件 + exec + register，还持有 manager 的锁，
+        # 在事件循环里同步跑会把心跳、别的群的消息一起卡住。
         try:
-            self.mgr.ensure_character(cid_now)
+            await asyncio.to_thread(self.mgr.ensure_character, cid_now)
         except Exception as e:                                      # noqa: BLE001
             logger.warning("按需装载角色 %s 失败（先按现有插件继续）：%s", cid_now, e)
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
@@ -1408,9 +1419,10 @@ class BotRuntime(RuntimeFeatures):
         # 不抢 _hist_lock：它是 asyncio 锁（这里是面板线程的同步调用），
         # 拿不到只会等；list() 读的是 GIL 保护下的快照，最坏情况少/多一条，
         # 而这只影响调试视图，不影响真实请求。
-        hist = list(self.hist.get(self._hist_key(chat)) or [])
         # 这个会话的角色：绑定了谁就用谁的库/记忆/人格（试跑也要说真话）
         pv_char = self.char_for(chat)
+        # 历史也按这个角色取（`_hist_key` 用的是 ContextVar，HTTP 线程里是空的）
+        hist = list(self.hist.get(f"{pv_char}:{chat}") or [])
         kb_text, kb_errs = "", {}
         if kb:
             kb_text = self._kb_context(text, log_hits=False, errors=kb_errs,
@@ -1434,8 +1446,15 @@ class BotRuntime(RuntimeFeatures):
             user_id=uid, user_name=str(user_name or "你"), message_id="",
             # 带着这个会话的角色：人格/记忆/样例/技能提示都会按它取
             character=pv_char)
-        parts = self._compose_blocks(ctx, text, hist=hist, kb=kb_text,
-                                     summary=summary, capture=False)
+        # 人格/记忆/心情/样例/表情包都读 `active_character`（ContextVar）：
+        # HTTP 线程里它是空的，不压一下就还是全局角色的内容，而快照却标着 pv_char
+        from . import chat_char as _cc
+        tok = _cc.push(pv_char)
+        try:
+            parts = self._compose_blocks(ctx, text, hist=hist, kb=kb_text,
+                                         summary=summary, capture=False)
+        finally:
+            _cc.pop(tok)
         snap = promptdbg.snapshot(parts, chat_id=chat, character=pv_char,
                                   source="preview", user_text=text)
         snap.pop("ts", None)
@@ -1675,6 +1694,15 @@ class BotRuntime(RuntimeFeatures):
 
     def apply_config(self, cfg: dict) -> None:
         """保存配置后热更新（在 bot 循环线程里调用）。"""
+        # 按需装载的两个键：改了要**真的**重载插件（开↔关 = 装/不装全部角色），
+        # 不是改个数字就完事 —— 否则面板上那个开关又是「重启才生效」。
+        try:
+            _old = (bool(getattr(self.mgr, "lazy_characters", True)),
+                    int(getattr(self.mgr, "max_loaded_characters", 4)))
+            _new = (bool(cfg.get("lazy_plugins", True)),
+                    max(1, int(cfg.get("max_loaded_characters") or 4)))
+        except (TypeError, ValueError):
+            _old = _new = None
         self.config = dict(cfg)
         self.max_chars = int(cfg.get("max_reply_chars") or 1200)
         self.split_sentences = bool(cfg.get("split_sentences", True))
@@ -1718,6 +1746,18 @@ class BotRuntime(RuntimeFeatures):
         self.setup_extras(cfg, preserve_buckets=True)
 
     # ---------- 状态 ----------
+
+        # 两个键变了 → 重载插件（同步，几秒；配置保存是低频操作）
+        if _old is not None and _old != _new:
+            try:
+                self.mgr.load()
+                self._sync_loaded()
+                logger.info("按需装载已重新生效：lazy=%s max=%s", _new[0], _new[1])
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning("按需装载重载失败（沿用旧状态）：%s", e)
+
+
+
     def metrics(self) -> dict:
         """面板用运行时指标：速率 / 插件命中 / 错误 / 限流。"""
         now = time.time()

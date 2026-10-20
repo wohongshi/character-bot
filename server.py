@@ -5770,7 +5770,7 @@ class Handler(BaseHTTPRequestHandler):
             active = str(rt.active_character) if rt is not None else ""
             self._json({"ok": True, **info, "global": active,
                         "bound": sorted(x for x in bound if x),
-                        "fixed": sorted({active} | {x for x in bound if x} - {""})})
+                        "fixed": sorted(({active} | {x for x in bound if x}) - {""})})
             return
         if u.path == "/api/characters/examples":
             from bot import examples as ex_mod
@@ -5967,8 +5967,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "bot 未启动"}, 503)
                 return
             cid_q = (q.get("character") or [""])[0].strip().lower()
-            if cid_q and hasattr(BOT.runtime, "pin_character"):
-                BOT.runtime.pin_character(cid_q)      # 面板在看这个角色 → 装上它
+            # GET 只读：不 pin（pin 会改「必须保留」名单）。真要看别的角色的
+            # 技能，先让它装上，且只认真的存在的角色（防止脏 query 占名额）。
+            if cid_q and _char_store().get(cid_q) is not None:
+                BOT.runtime.mgr.ensure_character(cid_q)
             hub = getattr(BOT.runtime, "skills", None)
             self._json({"ok": True, "skills": hub.skills() if hub else []})
             return
@@ -7384,8 +7386,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False,
                             "error": "这个角色还被会话绑着（先取消绑定再卸载）"}, 400)
                 return
+            if getattr(mgr, "lazy_characters", True) is False:
+                self._json({"ok": False,
+                            "error": "按需装载关着（全部角色都在装），卸载无效"}, 400)
+                return
+            # 先摘 pin：不然下一次 _sync_loaded 又把它当「面板在看」装回来
+            if rt is not None and hasattr(rt, "unpin_character"):
+                rt.unpin_character(cid)
             freed = mgr.release_character(cid)
-            _PLUG_CACHE.update(ts=0.0, data=None)      # 插件表/命令中心要跟着刷新
+            _PLUG_CACHE.clear()          # 拆成 lite/full 两份后不能 update(ts=…)
             _CMD_CACHE.update(ts=0.0, data=None, key="")
             self._json({"ok": True, "released": freed, "freed": len(freed),
                         **mgr.loaded_characters()})
