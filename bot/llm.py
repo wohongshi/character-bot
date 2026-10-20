@@ -869,12 +869,14 @@ class ModelStore:
                 remain = max(2.0, base - (time.monotonic() - t0))
                 log.warning("便宜模型 %s 不可用（%s），这一轮退回主模型（剩 %.0fs）",
                             model, str(e)[:120], remain)
-                return self._complete_once(
+                res2 = self._complete_once(
                     messages, model=cheap_try.get("model") or None,
                     provider=cheap_try.get("provider") or None,
                     timeout=remain, temperature=temperature, max_tokens=max_tokens,
                     tools=tools, tool_choice=tool_choice, extra_body=extra_body,
                     stream=stream, on_delta=on_delta, _character=character)
+                _require_text(res2)     # 主模型也空回复 = 失败，别把空当成功返回
+                return res2
         emitted = {"any": False}
 
         def _delta(txt):

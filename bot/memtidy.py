@@ -273,13 +273,20 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         present = {_key(r) for r in rows}
         by_key = {_key(r): r for r in rows}
         for kk, drops in list(keep_drops.items()):
+            if kk not in present:
+                # keep 那条被别处删了：别用计划里那份（它已经把 drops 的 hits/scope
+                # 加进去了），也别把 drops 删掉 —— 否则这组内容凭空消失
+                merged_by_keep.pop(kk, None)
+                for d in drops:
+                    drop_ts.discard(d)
+                continue
             alive = [by_key[d] for d in drops if d in present]
             if not alive:
                 merged_by_keep.pop(kk, None)
                 continue
             # 计划可能部分过期（别的进程删了其中一条）：按**实际还在的** drop
             # 重算，别直接抄计划里那份（它已经把那几条的 hits/scope 加进去了）
-            base = by_key.get(kk) or merged_by_keep[kk]
+            base = by_key[kk]
             rec = {**base}
             rec["hits"] = int(base.get("hits") or 0)
             scope = str(base.get("scope") or "")

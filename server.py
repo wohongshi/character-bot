@@ -1742,7 +1742,8 @@ def _scrub_secrets(obj):
 def _err_text(e) -> str:
     """把落盘的 `TypeName: message` 变成一句人话（去内部类名，截断）。"""
     raw = str((e or {}).get("error") or "")
-    return re.sub(r"^[A-Za-z_][\w.]*:\s+", "", raw)[:120]
+    # 剥一层开头的类名，以及「模型接口请求失败：URLError: …」这种包了壳的
+    return re.sub(r"(^|：)[A-Za-z_][\w.]*:\s+", r"\1", raw)[:120]
 
 
 def _export_rows(session: str, cid: str) -> list:
