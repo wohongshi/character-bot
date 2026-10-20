@@ -2610,8 +2610,15 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
     async def _do():
         # wait_for 在**loop 内部**取消：只对 future 设超时不会取消已排队的协程，
         # 传输层可能照样把消息发出去，而我们这边却记成失败 → 下一轮重复发。
-        return await asyncio.wait_for(
-            rt.send(chat_id, text, sentence_split=True), timeout=90)
+        task = asyncio.ensure_future(rt.send(chat_id, text, sentence_split=True))
+        try:
+            return await asyncio.wait_for(task, timeout=90)
+        except asyncio.TimeoutError:
+            # 区分「我们等超时了」和「send 自己抛了 TimeoutError」：
+            # 后者 task 已经结束（异常是它抛的），前者被 wait_for 取消
+            if task.done() and not task.cancelled():
+                raise
+            raise pv.SendTimeout("发送超时（90 秒）") from None
 
     fut = asyncio.run_coroutine_threadsafe(_do(), BOT.loop)
     try:
@@ -6369,7 +6376,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "removed": pv.remove_chat(_state_dir(), chat_id)})
                     return
                 if u.path == "/api/proactive/test":
-                    got = _proactive_send(chat_id)
+                    try:
+                        got = _proactive_send(chat_id)
+                    except pv.UnknownResult as e:
+                        # 结果未知：已经按「已发」占住名额，别让面板说「发不出去」
+                        # （用户会再点一次 → 真重复发）
+                        self._json({"ok": True, "unknown": True, "chat_id": chat_id,
+                                    "error": str(e)})
+                        return
                     self._json({"ok": True, **got})
                     return
                 cfg = pv.set_chat(_state_dir(), chat_id, on=body.get("on"),

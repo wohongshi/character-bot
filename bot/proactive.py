@@ -58,6 +58,15 @@ class UnknownResult(RuntimeError):
     """结果未知（发送超时等）：已经按「已发」记过账，调用方**不要**再记失败。"""
 
 
+class SendTimeout(UnknownResult):
+    """**我们自己**的 90 秒超时（不是传输层抛的 TimeoutError）。
+
+    为什么单开一个类：3.11 起 `asyncio.TimeoutError` 就是内置 `TimeoutError`，
+    而内置 `TimeoutError` 又是 `OSError` 子类 —— 只按异常类型分，会把
+    `rt.send()` 里真实的 socket 超时也算成「结果未知」（既占名额又不计失败）。
+    """
+
+
 def _clamp(cfg: dict, *, now: float | None = None) -> dict:
     out = dict(DEFAULTS)
     for k, (lo, hi) in LIMITS.items():

@@ -304,6 +304,8 @@ def main():
               float(PV.get_chat(st3, "group:zz").get("last_sent_ts") or 0) > 0)
         check("11.4 UnknownResult 是 RuntimeError（兼容旧捕获）",
               issubclass(PV.UnknownResult, RuntimeError))
+        check("11.5 SendTimeout 是 UnknownResult 的子类（面板只认前者）",
+              issubclass(PV.SendTimeout, PV.UnknownResult))
     finally:
         SV.BOT, SV.STATE_DIR, SV.MSG_JSONL = old_bot, old_state, old_msg
         SV._proactive_send = old_send
