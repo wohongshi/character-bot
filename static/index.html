@@ -4796,12 +4796,12 @@ async function viewModels(target){
     <h3>💸 谁在花你的钱 <span class="kv" style="font-family:var(--font-body)">按会话算 token</span></h3>
     <div class="row" style="gap:8px;align-items:center;margin-bottom:8px">
       <button class="btn tiny ucbtn" id="uc7" onclick="ucSet(7)">7 天</button>
-      <button class="btn tiny ucbtn" id="uc1" onclick="ucSet(1)">今天</button>
+      <button class="btn tiny ucbtn" id="uc1" onclick="ucSet(0)">今天</button>
       <button class="btn tiny ucbtn" id="uc30" onclick="ucSet(30)">30 天</button>
       <span class="kv" id="ucSum" style="margin-left:auto"></span>
     </div>
     <div id="ucBox"><div class="kv">读取中…</div></div>
-    <div class="kv" style="margin-top:8px">只记账到模型返回 usage 的调用；「换成便宜模型」的那几轮也记在实际用的模型上。</div>
+    <div class="kv" style="margin-top:8px">网关不返回 usage 时按字符估算（标 <code>est</code>）；「换成便宜模型」的那几轮记在实际用的模型上。</div>
   </div>
   <div class="card">
     <h3>👀 看图模型 <span class="kv" style="font-family:var(--font-body)">留空 = 不看图</span></h3>
@@ -5011,7 +5011,7 @@ async function bgSave(btn){
 /* ---------- 谁在花你的钱：按会话归账 ----------
    数据来自 /api/usage 的 chats（llm 每次调用记一条 usage 行，带 chat 字段）。
    老记录没有 chat → 归到「未记录」，不硬塞给当前会话。 */
-let ucDays = 7;
+let ucDays = 7;                     // 0 = 今天（本地零点起），其它是「最近 N 天」
 /* 7 位数的 token 连写根本读不出来，统一加千分位 */
 function tnum(n){
   const v = Math.round(Number(n) || 0);
@@ -5022,11 +5022,12 @@ async function ucLoad(){
   const box = $("ucBox"), sum = $("ucSum");
   if (!box) return;
   const days = ucDays;                     // 快照：连点几个按钮时，慢的那个不能盖掉新的
-  const d = await api("/api/usage?days=" + days);
+  const q = days === 0 ? "/api/usage?today=1" : "/api/usage?days=" + days;
+  const d = await api(q);
   if (days !== ucDays) return;
   if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
-  for (const k of [1, 7, 30]){
-    const b = $("uc" + k);
+  for (const k of [0, 7, 30]){
+    const b = $("uc" + (k === 0 ? 1 : k));      // 「今天」按钮的 id 是 uc1
     if (b) b.classList.toggle("primary", k === days);
   }
   const rows = d.chats || [];
@@ -5482,7 +5483,7 @@ async function viewChars(){
   <div class="card" style="margin-top:14px">
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <h3 id="charPlugName" style="flex:1;min-width:150px;margin:0">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">不可关闭</span></h3>
-      <button class="btn tiny" style="flex:none" onclick="exportChar(${jsq(cur.id)})">📤 导出角色包</button>
+      <button class="btn tiny" style="flex:none" onclick="exportChar(${jsq(cur.id)}, this)">📤 导出角色包</button>
     </div>
     <div class="kv" id="charPlugBody" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
   </div>
@@ -5503,17 +5504,26 @@ async function viewChars(){
 }
 
 /* ---- 导出角色包：人格 + 主题 + 专属插件 + 语料，能原样装回去 ---- */
-async function exportChar(cid){
-  const q = "/api/characters/export?id=" + encodeURIComponent(cid);
-  let d = null;
-  try { d = await api(q + "&dry=1"); } catch (e) { d = null; }
-  if (!d || !d.ok){ flash("✗ " + ((d && d.error) || "导出失败")); return; }
-  const r = await _blobDownload(q, cid + "-pack.zip");
-  if (!r || !r.ok){ flash("✗ " + ((r && r.error) || "下载失败")); return; }
-  const size = r.bytes > 1048576 ? (r.bytes / 1048576).toFixed(1) + " MB"
-                                 : Math.max(1, Math.round(r.bytes / 1024)) + " KB";
-  const kb = d.kb_rows ? `${d.kb_rows} 块语料` : "没有语料";
-  flash(`✓ 已导出 ${d.name || cid}：人格 ${d.soul_chars} 字 · ${(d.plugins || []).length} 个插件 · ${kb} · ${size}`);
+async function exportChar(cid, btn){
+  // 打包要读语料 + 压缩：过程中把按钮禁掉，连点几下会并发打多份
+  const old = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = "打包中…"; }
+  try {
+    const q = "/api/characters/export?id=" + encodeURIComponent(cid);
+    let d = null;
+    try { d = await api(q + "&dry=1"); } catch (e) { d = null; }
+    if (!d || !d.ok){ flash("✗ " + ((d && d.error) || "导出失败")); return; }
+    const r = await _blobDownload(q, cid + "-pack.zip");
+    if (!r || !r.ok){ flash("✗ " + ((r && r.error) || "下载失败")); return; }
+    const size = r.bytes > 1048576 ? (r.bytes / 1048576).toFixed(1) + " MB"
+                                   : Math.max(1, Math.round(r.bytes / 1024)) + " KB";
+    // 语料读不到时要说清原因（klee-kb 是可选的，别让人以为「角色本来就没有语料」）
+    const kb = d.kb_rows ? `${d.kb_rows} 块语料`
+                         : (d.kb_note ? `语料没导出（${d.kb_note}）` : "没有语料");
+    flash(`✓ 已导出 ${d.name || cid}：人格 ${d.soul_chars} 字 · ${(d.plugins || []).length} 个插件 · ${kb} · ${size}`);
+  } finally {
+    if (btn){ btn.disabled = false; btn.textContent = old || "📤 导出角色包"; }
+  }
 }
 
 /* ---- 会话角色绑定：一个群一个角色（和 QQ 里的 .角色 命令同一个文件） ---- */

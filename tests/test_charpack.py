@@ -130,6 +130,42 @@ try:
 except ValueError as e:
     check("人格太短 → 拒绝导出", "太短" in str(e), str(e))
 
+print("[5b] 装不回去的一律提前拦住")
+# id 规则：角色库允许数字开头/31 位，导入端不允许 → 导出时就该拒
+loose = CharacterStore(TMP / "state_loose", seeds_dir=ROOT / "bot" / "character_seeds")
+loose.add({"id": "9bad", "name": "数字开头", "theme": "hutao"},
+          soul="# 九\n\n" + "测试人格够长。" * 20)
+try:
+    charpack.build_pack(ROOT, loose, "9bad", kb_dir=KBD)
+    check("数字开头的 id 拒绝导出", False)
+except ValueError as e:
+    check("数字开头的 id 拒绝导出", "不符合导入规则" in str(e), str(e))
+
+# 主题目录不在 → 导入端会判「缺少 theme/theme.json」
+notheme = CharacterStore(TMP / "state_nt", seeds_dir=ROOT / "bot" / "character_seeds")
+notheme.add({"id": "notheme", "name": "没主题", "theme": "nope-theme"},
+            soul="# 没主题\n\n" + "测试人格够长。" * 20)
+try:
+    charpack.build_pack(ROOT, notheme, "notheme", kb_dir=KBD)
+    check("主题缺失拒绝导出", False)
+except ValueError as e:
+    check("主题缺失拒绝导出", "theme/theme.json" in str(e), str(e))
+
+# 人格超上限（导入端 60000 字就拒）
+huge = CharacterStore(TMP / "state_huge", seeds_dir=ROOT / "bot" / "character_seeds")
+huge.add({"id": "huge", "name": "超长", "theme": "hutao"}, soul="# 长\n\n" + "字" * 60010)
+try:
+    charpack.build_pack(ROOT, huge, "huge", kb_dir=KBD)
+    check("人格超 60000 字拒绝导出", False)
+except ValueError as e:
+    check("人格超 60000 字拒绝导出", "60000" in str(e), str(e))
+
+print("[5c] dry 预览不打包")
+blob_d, name_d, man_d = charpack.build_pack(ROOT, STORE, "hutao", kb_dir=KBD, zip_too=False)
+check("dry 不返回字节", blob_d == b"")
+check("dry 仍然给清单", man_d["kb_rows"] == 5 and name_d == "hutao-pack.zip", str(man_d["kb_rows"]))
+check("dry 的插件清单一样", man_d["plugins"] == man["plugins"])
+
 print("[6] 导出 → 导入 全链路")
 # 内置角色在任何新 store 里都「已存在」（导入拒绝覆盖），所以这一节用一个
 # 自己造的角色，从「源仓库」导出、装进「另一个仓库」。

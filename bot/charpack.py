@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import sqlite3
 import time
 import zipfile
@@ -41,7 +42,12 @@ ALLOWED = {".json", ".md", ".py", ".css", ".txt", ".jsonl",
            ".jpg", ".jpeg", ".png", ".webp"}
 
 MAX_KB_ROWS = 20000          # 单角色语料上限（再多也不是「角色包」了）
-MAX_PLUGINS = 80
+# 下面几个上限必须**和导入端一致**（server._import_character_zip）：
+# 导出端的唯一目标是「装得回去」，自己更宽松只会产出一个必然被拒的包。
+MAX_PLUGINS = 60             # 导入端：>60 直接拒
+MAX_SOUL = 60000             # 导入端：>60000 字拒
+MIN_SOUL = 80                # 导入端：<80 字拒
+IMPORT_ID = re.compile(r"^[a-z][a-z0-9_-]{1,29}$")
 
 # 不写进 character.json 的字段：运行时/统计出来的东西，导出去只会误导导入端
 _STRIP = ("active", "builtin", "soul_path", "plugins", "theme_name", "theme_version")
@@ -64,7 +70,8 @@ def resolve_db_dir(cfg: dict | None, root: Path) -> Path:
     return Path(root).parent / "klee-kb" / "data"
 
 
-def read_kb(db_dir: Path | str, cid: str) -> tuple[list[dict], str]:
+def read_kb(db_dir: Path | str, cid: str, *, count_only: bool = False
+            ) -> tuple[list[dict], str]:
     """读某个角色的全部语料块。返回 (rows, 说明)；读不到就是 ([], 原因)。
 
     只读模式打开：导出绝不能因为拿不到写锁而卡住正在跑的知识库检索。
@@ -80,6 +87,15 @@ def read_kb(db_dir: Path | str, cid: str) -> tuple[list[dict], str]:
         cols = {str(r[1]) for r in con.execute("PRAGMA table_info(chunks)")}
         if "text" not in cols:
             return [], "语料库里没有 chunks.text（版本不匹配）"
+        if count_only:
+            # 只数条数：面板的 dry 预览要显示「多少块语料」，没必要把正文全读出来
+            try:
+                n = int(con.execute(
+                    "SELECT COUNT(*) FROM chunks WHERE trim(COALESCE(text,'')) <> ''"
+                ).fetchone()[0])
+            except sqlite3.Error as e:
+                return [], f"读语料库失败：{e}"
+            return [{}] * min(n, MAX_KB_ROWS), ""
         pick = [c for c in ("text", "title", "source", "type") if c in cols]
         sql = f"SELECT {', '.join(pick)} FROM chunks LIMIT {int(MAX_KB_ROWS)}"
         rows = []
@@ -143,22 +159,31 @@ def _theme_files(root: Path, theme: str) -> list[tuple[str, bytes]]:
 
 def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
                kb_dir: Path | str | None = None,
-               include_kb: bool = True, include_plugins: bool = True) -> tuple[bytes, str, dict]:
-    """组装 zip。返回 (bytes, 文件名, 清单)；角色不存在/没有插件时抛 ValueError。"""
+               include_kb: bool = True, include_plugins: bool = True,
+               zip_too: bool = True) -> tuple[bytes, str, dict]:
+    """组装 zip。返回 (bytes, 文件名, 清单)；角色不存在/装不回去时抛 ValueError。
+
+    `zip_too=False` 只出清单（面板的 dry 预览）：不读语料正文、不压缩。
+    """
     root = Path(root)
     cid = str(cid or "").strip().lower()
     info = store.get(cid)
     if not info:
         raise ValueError(f"没有角色 {cid!r}")
+    if not IMPORT_ID.match(cid):
+        # 角色库允许数字开头 / 31-32 位，导入端不允许 —— 这种 id 导出去装不回来
+        raise ValueError(f"角色 id {cid!r} 不符合导入规则（小写字母开头、2-30 位）")
 
     soul_path = store.soul_path(cid)
     try:
         soul = soul_path.read_text(encoding="utf-8")
     except OSError as e:
         raise ValueError(f"读不到人格文件（{soul_path.name}）：{e}") from None
-    if len(soul.strip()) < 80:
+    if len(soul.strip()) < MIN_SOUL:
         # 导入端要求 ≥80 字；导出一个装不回去的包毫无意义
-        raise ValueError("人格文件太短（不足 80 字），装了也进不去")
+        raise ValueError(f"人格文件太短（不足 {MIN_SOUL} 字），装了也进不去")
+    if len(soul) > MAX_SOUL:
+        raise ValueError(f"人格文件超过 {MAX_SOUL} 字，装了也进不去")
 
     payload = {k: v for k, v in dict(info).items() if k not in _STRIP}
     payload.pop("seed", None)                 # 见模块说明：那是本地播种用的文件名
@@ -167,7 +192,20 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
 
     files: list[tuple[str, bytes]] = []
     files.append(("SOUL.md", soul.encode("utf-8")))
-    files.extend(_theme_files(root, payload["theme"]))
+    theme_files = _theme_files(root, payload["theme"])
+    # 导入端硬性要求 theme/theme.json 存在、能解析、有 name。角色定义允许任意
+    # theme token（面板加角色不校验），所以「主题目录不在」的角色必须在这里拦住，
+    # 否则又是一个「导出成功、装不回去」的包。
+    tj = next((blob for name, blob in theme_files if name == "theme/theme.json"), None)
+    if tj is None:
+        raise ValueError("这个角色的主题文件缺失（theme/theme.json），装回去会被拒")
+    try:
+        meta = json.loads(tj.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise ValueError("主题文件 theme.json 不是合法 JSON，装回去会被拒") from None
+    if not isinstance(meta, dict) or not str(meta.get("name") or "").strip():
+        raise ValueError("主题文件 theme.json 缺少 name，装回去会被拒")
+    files.extend(theme_files)
 
     plugs = _plugin_files(Path(plugins_dir or (root / "bot" / "features")), cid) \
         if include_plugins else []
@@ -178,8 +216,8 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
     if include_kb:
         if kb_dir is None:
             kb_dir = resolve_db_dir({}, root)
-        kb_rows, kb_note = read_kb(kb_dir, cid)
-        if kb_rows:
+        kb_rows, kb_note = read_kb(kb_dir, cid, count_only=not zip_too)
+        if kb_rows and zip_too:
             # 一行一块：导入端按行解析，混进换行会把它拆碎
             body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kb_rows)
             files.append((f"kb/{cid}.jsonl", body.encode("utf-8")))
@@ -206,6 +244,9 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
                   (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")))
     files.append(("pack.json",
                   (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")))
+
+    if not zip_too:
+        return b"", f"{cid}-pack.zip", manifest
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:

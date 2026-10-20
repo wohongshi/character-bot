@@ -110,6 +110,22 @@ check("按 total 从大到小", [c["chat"] for c in d["chats"]][:2] == ["group:1
 check("总账不变（还是 538）", d["totals"]["total"] == 538, str(d["totals"]["total"]))
 check("坏行不影响解析", d["rows"] == 5, str(d["rows"]))
 
+# 「今天」按本地零点算，不是滚动 24 小时
+lt = time.localtime()
+midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+rows.append({"ts": midnight - 60, "provider": "p", "model": "m", "character": "klee",
+             "chat": "group:zz", "prompt_tokens": 7, "completion_tokens": 3,
+             "total_tokens": 10, "ms": 10.0})       # 昨天 23:59
+SV.USAGE_JSONL.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                          encoding="utf-8")
+dt = SV._usage_summary(today=True)
+check("今天不含昨天 23:59 的花费", all(c["chat"] != "group:zz" for c in dt["chats"]),
+      str([c["chat"] for c in dt["chats"]]))
+check("滚动 24 小时会把它算进来（这就是差异）",
+      any(c["chat"] == "group:zz" for c in SV._usage_summary(1)["chats"]))
+SV.USAGE_JSONL.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[:-1]),
+                          encoding="utf-8")
+
 d1 = SV._usage_summary(1)
 check("按天数过滤（1 天只剩 4 条）", d1["rows"] == 4, str(d1["rows"]))
 check("今天的 group:2 不见了", all(c["chat"] != "group:2" for c in d1["chats"]))

@@ -2027,7 +2027,7 @@ def _usage_record(rec: dict) -> None:
             pass
 
 
-def _usage_rows(days: int = 7) -> list[dict]:
+def _usage_rows(days: int = 7, *, today: bool = False) -> list[dict]:
     rows = []
     try:
         with open(USAGE_JSONL, "r", encoding="utf-8", errors="replace") as f:
@@ -2043,14 +2043,20 @@ def _usage_rows(days: int = 7) -> list[dict]:
                     rows.append(r)
     except OSError:
         return []
-    if days > 0:
+    if today:
+        # 「今天」= 本地零点起。用 now-86400 的滚动窗口会把昨天下午的花费算进
+        # 今天（和上面预算卡的「今天」口径不一致，凌晨看尤其离谱）。
+        lt = time.localtime()
+        floor = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        rows = [r for r in rows if float(r.get("ts") or 0) >= floor]
+    elif days > 0:
         floor = time.time() - days * 86400
         rows = [r for r in rows if float(r.get("ts") or 0) >= floor]
     return rows
 
 
-def _usage_summary(days: int = 7) -> dict:
-    rows = _usage_rows(days)
+def _usage_summary(days: int = 7, *, today: bool = False) -> dict:
+    rows = _usage_rows(days, today=today)
     tot = {"requests": 0, "prompt": 0, "completion": 0, "total": 0, "ms": 0.0,
            "est": 0, "fallback": 0, "fails": 0}
     by_model: dict[str, dict] = {}
@@ -2104,7 +2110,7 @@ def _usage_summary(days: int = 7) -> dict:
     chars = sorted(by_char.values(), key=lambda x: -x["total"])[:8]
     chats = sorted(by_chat.values(), key=lambda x: -x["total"])[:8]
     series = sorted(by_day.values(), key=lambda x: x["date"])
-    return {"ok": True, "days": days, "rows": len(rows),
+    return {"ok": True, "days": days, "today": bool(today), "rows": len(rows),
             "totals": {**tot, "avg_ms": round(tot["ms"] / tot["requests"], 1) if tot["requests"] else 0},
             "models": models, "characters": chars, "chats": chats, "daily": series,
             "hint": "数字来自模型返回的 usage；网关不返回时按字符估算（标 est）"}
@@ -3145,9 +3151,13 @@ def _run_job_body(job: dict, cid: str) -> None:
                     # 注意：闭包里别用后面才赋值的 `mm`（那是普通聊天的模型），
                     # 这里用的是这一轮的角色模型 mm0 —— 名字写错就是 UnboundLocalError，
                     # 而它会被下面的 except 吞掉，表现成「压缩从来没生效」。
+                    #
+                    # 记账参数（character/chat）也要带：压缩是另一次模型调用，
+                    # 不传就被算成「未记录」—— 正是这次要堵的漏账。
                     return BOT.models.chat(
                         m, provider=str(mm0.get("provider") or ""),
-                        model=str(mm0.get("model") or ""), **kw)
+                        model=str(mm0.get("model") or ""),
+                        character=cid, chat="web:" + str(job.get("session") or ""), **kw)
                 pl = ctx_mod.build(
                     [{"role": e.get("role"), "content": str(e.get("text") or ""),
                       "id": e.get("id") or e.get("ts")} for e in hist],
@@ -5710,7 +5720,9 @@ class Handler(BaseHTTPRequestHandler):
                     STUDIO_HOME, _char_store(), cid, plugins_dir=FEATURES_DIR,
                     kb_dir=charpack.resolve_db_dir(BOT.config if BOT else {}, STUDIO_HOME),
                     include_kb=str((q.get("kb") or ["1"])[0]).strip() != "0",
-                    include_plugins=str((q.get("plugins") or ["1"])[0]).strip() != "0")
+                    include_plugins=str((q.get("plugins") or ["1"])[0]).strip() != "0",
+                    # dry 只出清单：不读语料正文、不压缩（否则面板点一次就打两遍包）
+                    zip_too=not dry)
             except ValueError as e:
                 self._json({"ok": False, "error": str(e)}, 400)
                 return
@@ -5960,7 +5972,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(_selfcheck())
             return
         if u.path == "/api/usage":
-            self._json(_usage_summary(_int_param(q, "days", 7, lo=0, hi=365)))
+            today = str((q.get("today") or [""])[0]).strip() in ("1", "true", "yes")
+            self._json(_usage_summary(_int_param(q, "days", 7, lo=0, hi=365), today=today))
             return
         if u.path == "/api/stickers":
             from bot import stickers as st

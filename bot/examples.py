@@ -23,6 +23,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
 log = logging.getLogger("klee.bot.examples")
@@ -34,6 +36,10 @@ MAX_CHARS = 1200          # 注入上限（含标题行）
 FILE = "examples.json"
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+# 面板与 `.样例加` 可能同时保存（ThreadingHTTPServer）：读-改-写整段持锁，
+# 临时文件名也要每次调用唯一 —— 只带 pid 时两个线程会写同一个 tmp，
+# 一个 os.replace 之后另一个就 FileNotFoundError（而且可能发出去半份）。
+_LOCK = threading.RLock()
 
 
 def _clean_id(cid) -> str:
@@ -94,9 +100,16 @@ def save(state_dir: Path | str, cid: str, items) -> list[dict]:
     p = path_for(state_dir, cid)
     p.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"items": clean}, ensure_ascii=False, indent=2) + "\n"
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-    tmp.write_text(body, encoding="utf-8")
-    os.replace(tmp, p)
+    with _LOCK:
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp")
+        try:
+            tmp.write_text(body, encoding="utf-8")
+            os.replace(tmp, p)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
     return clean
 
 
@@ -129,13 +142,13 @@ def render(state_dir: Path | str, cid: str) -> str:
         return ""
     head = "【说话样例（照这个语气、这个句长说话；不要照抄内容）】"
     lines = [head]
-    used = len(head)
     for it in items:
         line = f"用户：{it['user']}\n你：{it['bot']}"
-        if used + len(line) > MAX_CHARS:
+        # 按**拼接后**的长度判：只累加各段会漏掉 join 插入的换行，
+        # 8 条时能超上限 7 个字符
+        if len("\n".join(lines + [line])) > MAX_CHARS:
             break
         lines.append(line)
-        used += len(line)
     return "" if len(lines) == 1 else "\n".join(lines)
 
 

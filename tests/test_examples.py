@@ -186,28 +186,38 @@ class C:
 
 
 cmd = fm.commands["样例"]
+cmd_add = fm.commands["样例加"]
+cmd_del = fm.commands["样例删"]
 
 
 def say(args, **kw):
     return str(asyncio.run(cmd.handler(C(args, **kw))) or "")
 
 
+def say2(cmd_obj, args, **kw):
+    return str(asyncio.run(cmd_obj.handler(C(args, **kw))) or "")
+
+
 check("空 → 提示还没样例", "还没有说话样例" in say([]), say([]))
-_r = say(["加", "你好呀|哟，来啦～"])          # 只调一次：detail 参数里再调一次会加两遍
+_r = say2(cmd_add, ["你好呀|哟，来啦～"])      # 只调一次：detail 里再调会加两遍
 check("加一条（竖线分隔）", "加好了" in _r, _r)
 check("真的落盘了", ex.load(TMP / "state3", "klee") == [{"user": "你好呀", "bot": "哟，来啦～"}],
       str(ex.load(TMP / "state3", "klee")))
-say(["加", "在吗|在的"])
+say2(cmd_add, ["在吗|在的"])
 out = say([])
 check("列表有两条带序号", "1. 用户" in out and "2. 用户" in out, out[:80])
-check("全角竖线也认", "加好了" in say(["加", "吃了吗｜吃了"]))
-check("缺分隔符 → 说写法", "写法" in say(["加", "只有一句"]))
-_d = say(["删", "2"])                    # 同上：只调一次
+check("全角竖线也认", "加好了" in say2(cmd_add, ["吃了吗｜吃了"]))
+check("缺分隔符 → 说写法", "写法" in say2(cmd_add, ["只有一句"]))
+_d = say2(cmd_del, ["2"])               # 同上：只调一次
 check("删第 2 条", "删掉了第 2 条" in _d, _d)
 check("删完剩两条", len(ex.load(TMP / "state3", "klee")) == 2)
-check("删不存在的序号 → 报错", "没删成" in say(["删", "99"]))
-check("序号不是数字 → 报错", "不是序号" in say(["删", "abc"]))
+check("删不存在的序号 → 报错", "没删成" in say2(cmd_del, ["99"]))
+check("序号不是数字 → 报错", "不是序号" in say2(cmd_del, ["abc"]))
 check("别名 .说话样例 指向同一条", fm.commands["说话样例"] is cmd)
+check(".样例加 是独立命令（紧贴写法也能命中）", fm.commands["样例加"] is cmd_add)
+check(".样例删 是独立命令", fm.commands["样例删"] is cmd_del)
+check("旧写法「.样例 加 …」不再静默落进聊天",
+      "单独一条命令" in say(["加", "你好|哟"]), say(["加", "你好|哟"]))
 
 v = fm.explain_command(FeatureContext(adapter=Ad(), text=".样例", is_group=True, group_id="1",
                                       user_id="9", user_name="m", message_id="", role="member",

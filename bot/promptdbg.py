@@ -32,6 +32,7 @@ LABELS = {
     "memory": "长期记忆",
     "mood": "当前心情",
     "stickers": "表情包清单",
+    "examples": "说话样例",
     "kb": "知识库命中",
     "summary": "前情提要",
     "hist": "历史对话",
@@ -51,6 +52,7 @@ _MARKS = (
     ("【你记得的事】", "memory"),
     ("【你现在的状态】", "mood"),
     ("【表情】", "stickers"),
+    ("【说话样例", "examples"),
     ("【相关背景资料", "kb"),
     ("【前情提要", "summary"),
 )
