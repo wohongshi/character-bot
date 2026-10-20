@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from . import adapters as adapters_mod
+from . import chat_char
 from . import promptdbg
 from .adapters.base import AdapterError, BaseAdapter
 from .features_ext import RuntimeFeatures
@@ -226,7 +227,6 @@ class BotRuntime(RuntimeFeatures):
         self._member_cache: dict = {}
         self._event_ts: deque = deque(maxlen=2000)     # 消息时间戳（速率统计）
         self._event_lock = threading.Lock()             # HTTP 线程读快照时防 deque 变更
-        self._persona_cache = {"mtime": 0.0, "text": ""}
         self.hist_path = self.state_dir / "bot_history.json"
         self.msg_log = self.state_dir / "messages.jsonl"      # 面板「消息」页读这里
         self.requests_log = self.state_dir / "requests.jsonl"  # 好友/入群请求（只记录，不自动通过）
@@ -234,9 +234,12 @@ class BotRuntime(RuntimeFeatures):
         self.hist = loaded if isinstance(loaded, dict) else {}
         self.hist_limit = int(config.get("history_messages") or 12)
         self.characters = characters or CharacterStore(self.state_dir)
-        self.active_character = self.characters.active_id()
-        self.active_character_info = self.characters.active()
-        self.soul_path = self.characters.soul_path(self.active_character)
+        # `_character` 是**全局**当前角色（面板 🎭 页切的那个）。
+        # 对外读的 `active_character` 是属性：处理某个会话的消息时优先用
+        # 会话绑定（bot/chat_char.py），其余时候就是它。
+        self._character = self.characters.active_id()
+        self._persona_cache = {"key": ("", 0.0), "text": ""}
+        self.soul_path = self.characters.soul_path(self._character)
         self.stats = {"events": 0, "commands": 0, "chats": 0, "sent": 0, "errors": 0,
                       "images": 0, "vision": 0, "vision_fail": 0, "vision_skip": 0,
                       "agent_runs": 0, "agent_tool_calls": 0, "agent_errors": 0,
@@ -392,20 +395,69 @@ class BotRuntime(RuntimeFeatures):
     def _chat_id(is_group: bool, group_id: str, user_id: str) -> str:
         return f"group:{group_id}" if is_group else f"private:{user_id}"
 
+    # ---------- 此刻是谁：会话绑定优先 ----------
+    @property
+    def active_character(self) -> str:
+        """此刻生效的角色：会话绑定优先，否则全局当前角色。
+
+        处理某个会话的消息时（`handle_event` 里设好 ContextVar）它是那个会话
+        的角色；面板 / 后台任务里没有上下文，就是面板切的那个。
+        """
+        return chat_char.current() or self._character
+
+    @property
+    def active_character_info(self) -> dict:
+        return self.characters.get(self.active_character) or {}
+
+    def soul_path_for(self, cid: str) -> Path:
+        """角色的 SOUL 路径。
+
+        全局那个用构造时给的 `soul_path`（测试/自定义部署会指到别处），
+        会话绑定出来的角色按角色库取 —— 否则一个群会被喂到全局角色的 SOUL。
+        """
+        cid = str(cid or "")
+        if cid == self._character:
+            return self.soul_path
+        return self.characters.soul_path(cid)
+
+    def char_for(self, chat_id: str) -> str:
+        """这个会话该用哪个角色：显式绑定优先，绑定指向已删角色 → 全局。
+
+        面板里的对话（`web:`）永远用全局角色：那条回复走的是服务端另一条路径，
+        绑上了也不会生效，不如不认。
+        """
+        if not chat_char.is_bindable(chat_id):
+            return self._character
+        try:
+            cid = chat_char.get(self.state_dir, chat_id)
+        except Exception as e:                                      # noqa: BLE001
+            logger.info("会话 %s 的角色绑定读取失败（按全局角色）：%s", chat_id, e)
+            cid = ""
+        if cid:
+            info = self.characters.get(cid)
+            if info:
+                return str(info.get("id") or cid)
+            logger.info("会话 %s 绑定的角色 %s 已不存在，按全局角色 %s",
+                        chat_id, cid, self._character)
+        return self._character
+
     def _persona(self) -> str:
         name = self.active_character_info.get("name") or "角色"
         fallback = f"你是{name}，用自然的短句聊天，像在手机上发消息。"
+        path = self.soul_path_for(self.active_character)
         try:
-            m = self.soul_path.stat().st_mtime
+            m = path.stat().st_mtime
         except OSError:
             return fallback
-        if m != self._persona_cache["mtime"]:
+        # 缓存 key 必须带路径：两个角色的 SOUL 若 mtime 相同（复制出来的文件），
+        # 只比 mtime 会把上一个人的 SOUL 喂给这个人。
+        key = (str(path), m)
+        if key != self._persona_cache.get("key"):
             try:
-                self._persona_cache = {"mtime": m,
-                                       "text": self.soul_path.read_text(encoding="utf-8")}
+                self._persona_cache = {"key": key, "text": path.read_text(encoding="utf-8")}
             except OSError:
                 pass
-        return self._persona_cache["text"] or fallback
+        return self._persona_cache.get("text") or fallback
 
     async def start(self) -> None:
         """在 bot 事件循环里启动插件看护（目录/config.json/.reload 变化 → 热重载）。"""
@@ -435,11 +487,10 @@ class BotRuntime(RuntimeFeatures):
     def set_character(self, cid: str) -> dict:
         """切换角色：SOUL / 知识库 / 插件门控一起换；历史按角色隔离，不用清。"""
         info = self.characters.set_active(cid)
-        self.active_character = info["id"]
-        self.active_character_info = info
-        self.soul_path = self.characters.soul_path(self.active_character)
-        self._persona_cache = {"mtime": 0.0, "text": ""}
-        self.mgr.set_character(self.active_character, info)
+        self._character = info["id"]
+        self.soul_path = self.characters.soul_path(self._character)
+        self._persona_cache = {"key": ("", 0.0), "text": ""}
+        self.mgr.set_character(self._character, info)
         logger.info("角色已切换为 %s（%s）", info["name"], info["id"])
         return info
 
@@ -703,11 +754,16 @@ class BotRuntime(RuntimeFeatures):
                     "blocks_all": self.group_policy == "disabled" and bool(is_group)}
 
     async def handle_event(self, ev: dict) -> None:
+        # 一条事件一个「此刻的角色」作用域：同一个 task 连着处理多条事件时，
+        # 上一条的会话绑定不能漏给下一条（`_handle` 里再 set，最后由 pop 还原）。
+        tok = chat_char.push("")
         try:
             await self._handle(ev)
         except Exception:                                          # noqa: BLE001
             self.stats["errors"] += 1
             logger.exception("事件处理异常")
+        finally:
+            chat_char.pop(tok)
 
     async def _handle(self, ev: dict) -> None:
         if not isinstance(ev, dict):
@@ -796,6 +852,9 @@ class BotRuntime(RuntimeFeatures):
                    else self._chat_id(is_group, group_id, user_id))
         if src:
             self._routes[chat_id] = src
+        # 从这一行往下，SOUL / 知识库 / 记忆 / 情绪 / 模型 / 角色限定插件
+        # 全部按「这个会话的角色」走（没绑定的会话就是全局角色，行为不变）。
+        chat_char.set_value(self.char_for(chat_id))
         self._last_inbound[chat_id] = (str(ev.get("message_id") or ""), user_id)
         # 注意：ctx 在下面几行才建（日志要早于策略判定，才能记下被拦的消息），
         # 所以这里直接取事件里的昵称，不能读 ctx
@@ -819,6 +878,7 @@ class BotRuntime(RuntimeFeatures):
             role=str(sender.get("role") or ""),
         )
         ctx.images = images
+        ctx.character = self.active_character
 
         # 1) 入站钩子（违禁词/复读等）—— 群里没 @ 也生效
         if not await self.mgr.run_message_hooks(ctx):
@@ -886,7 +946,7 @@ class BotRuntime(RuntimeFeatures):
         # 3) 自然语言（只有被叫到/私聊/开放模式才尝试）
         if allow_chat:
             # NLU 拿用户原话匹配（带 [引用: …] 前缀会匹配不上）
-            hit = self.mgr.nlu_match(dispatch_text.strip())
+            hit = self.mgr.nlu_match(dispatch_text.strip(), ctx.character)
             if hit:
                 ctx.text = self.feature_prefix + strip_prefix(hit, getattr(self.mgr, "prefix_chars", None))
                 if await self.mgr.handle_command(ctx):
@@ -1347,7 +1407,8 @@ class BotRuntime(RuntimeFeatures):
                 await self.send(chat_id, "呜……脑袋卡住了，等等再试好不好～",
                                 reply_to=ctx.message_id)
                 return
-        reply = await self.mgr.run_reply_hooks(chat_id, ctx.is_group, reply)
+        reply = await self.mgr.run_reply_hooks(chat_id, ctx.is_group, reply,
+                                               character=self.active_character)
         # 表情标记 → 真的发图。洗在「写历史」之前：历史里只留那句人话，
         # 不然下次把它当上下文喂回去时，模型会以为自己在念标记。
         try:

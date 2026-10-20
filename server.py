@@ -2691,6 +2691,18 @@ def _clean_proactive(text: str) -> str:
 
 
 def _proactive_send(chat_id: str, *, now=None) -> dict:
+    """按这个会话的角色发一条主动消息（没绑定 → 全局角色，行为不变）。"""
+    from bot import chat_char
+    rt = getattr(BOT, "runtime", None) if BOT else None
+    tok = chat_char.push(rt.char_for(chat_id)
+                         if rt is not None and hasattr(rt, "char_for") else "")
+    try:
+        return _proactive_send_inner(chat_id, now=now)
+    finally:
+        chat_char.pop(tok)
+
+
+def _proactive_send_inner(chat_id: str, *, now=None) -> dict:
     """真的发一条：模型写一句 → 走 runtime.send（限流/分句/引用都照旧）。"""
     from bot import proactive as pv
     rt = getattr(BOT, "runtime", None) if BOT else None
@@ -3862,6 +3874,82 @@ def _characters_uncached() -> dict:
             "kb_online": bool(health.get("ok")), "kb_default": health.get("default", "")}
 
 
+def _chat_labels(limit: int = 40) -> list:
+    """消息流里出现过的会话（id / 条数 / 最近说话的人）。
+
+    只用来给「会话绑定」下拉当标签：面板要知道 `group:1077339356` 是哪个群、
+    有没有人说话。不查 NapCat（掉登录态时也能用），也不额外读文件。
+    """
+    rows = _messages_rows()
+    seen = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        cid = str(r.get("chat_id") or "")
+        if not cid:
+            continue
+        d = seen.setdefault(cid, {"chat": cid, "n": 0, "last": 0.0, "who": ""})
+        d["n"] += 1
+        try:
+            ts = float(r.get("ts") or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if ts >= d["last"]:
+            d["last"] = ts
+            if r.get("role") == "user" and r.get("name"):
+                d["who"] = str(r.get("name"))[:40]
+    return sorted(seen.values(), key=lambda x: -float(x["last"] or 0))[:limit]
+
+
+def _char_bind_view() -> dict:
+    """会话角色绑定的面板视图。
+
+    `stale` = 绑定的角色已经被删掉的会话（读的时候按「跟随全局」处理，
+    但要让用户看得见并一键清掉，否则那个会话会永远安静地跟着全局）。
+    """
+    from bot import chat_char
+    store = _char_store()
+    chars = [{"id": c["id"], "name": c["name"], "emoji": c.get("emoji") or ""}
+             for c in store.list()]
+    by_id = {c["id"]: c for c in chars}
+    try:
+        binds = chat_char.load(STATE_DIR)
+    except Exception as e:                                         # noqa: BLE001
+        return {"ok": False, "error": f"读不到绑定文件：{type(e).__name__}: {e}"}
+    chats = _chat_labels()
+    label = {c["chat"]: c for c in chats}
+    # 补上「有过事件但最近没说话」的会话（群策略/主动消息那边记着的），
+    # 否则刚建好的群在绑定时根本选不到。
+    try:
+        for cid in (_control_snapshot().get("known_chats") or []):
+            cid = str(cid if not isinstance(cid, dict) else cid.get("id") or "")
+            if cid and cid not in label:
+                chats.append({"chat": cid, "n": 0, "last": 0.0, "who": ""})
+                label[cid] = chats[-1]
+    except Exception:                                              # noqa: BLE001
+        pass
+    rows = []
+    for chat, rec in binds.items():
+        c = by_id.get(str(rec.get("id") or "")) or {}
+        info = label.get(chat) or {}
+        rows.append({
+            "chat": chat, "id": str(rec.get("id") or ""),
+            "name": str(c.get("name") or rec.get("id") or ""),
+            "emoji": str(c.get("emoji") or ""),
+            "ts": float(rec.get("ts") or 0), "by": str(rec.get("by") or ""),
+            "n": int(info.get("n") or 0), "last": float(info.get("last") or 0),
+            "who": str(info.get("who") or ""), "ok": bool(c),
+        })
+    rows.sort(key=lambda r: -r["ts"])
+    bound = set(binds)
+    return {"ok": True, "global": store.active_id(), "characters": chars,
+            "bindings": rows,
+            # 下拉候选：说过的会话 + 已绑定的（说过的在前，按最近活跃排）
+            "chats": [c for c in chats if c["chat"] not in bound
+                      and chat_char.is_bindable(c["chat"])][:40],
+            "stale": [r["chat"] for r in rows if not r["ok"]]}
+
+
 def _requests(n: int = 30) -> list:
     rows = _read_jsonl(STATE_DIR / "requests.jsonl")
     items = [r for r in rows if isinstance(r, dict) and r.get("kind")]
@@ -4008,6 +4096,20 @@ def _callback_url(ingress: str) -> dict:
             "absolute": bool(base)}
 
 
+def _cmd_count_for(cid: str) -> int:
+    """这个角色能用多少条命令（体检卡片上的那个数）。"""
+    mgr = getattr(getattr(BOT, "runtime", None), "mgr", None) if BOT is not None else None
+    if mgr is None:
+        return 0
+    fn = getattr(mgr, "all_commands", None)
+    every = list(fn()) if callable(fn) else list({id(c): c for c in
+                                                  (mgr.commands or {}).values()}.values())
+    ok = getattr(mgr, "_char_ok", None)
+    if not callable(ok):
+        return len(every)
+    return sum(1 for c in every if ok(getattr(c, "characters", ()), cid))
+
+
 def _plugin_audit() -> dict:
     """插件体检：找出「装了但没生效、而且没人告诉你」的那些情况。
 
@@ -4029,11 +4131,13 @@ def _plugin_audit() -> dict:
         return {"ok": False, "error": "插件框架还没起来", "issues": [], "counts": {}}
 
     # 已注册的命令：name → 命令对象（别名也指向同一个对象）
+    every = list(mgr.all_commands() if hasattr(mgr, "all_commands") else
+                 {id(c): c for c in (mgr.commands or {}).values()}.values())
     reg = {}
-    for cmd in {id(c): c for c in (mgr.commands or {}).values()}.values():
+    for cmd in every:
         reg.setdefault(cmd.plugin, set()).add(cmd.name)
     by_name = {}
-    for c in {id(c): c for c in (mgr.commands or {}).values()}.values():
+    for c in every:
         for k in [c.name.lower(), *[a.lower() for a in c.aliases]]:
             by_name.setdefault(k, c)
 
@@ -4159,7 +4263,10 @@ def _plugin_audit() -> dict:
             "counts": {"error": sum(1 for i in issues if i["level"] == "error"),
                        "warn": sum(1 for i in issues if i["level"] == "warn"),
                        "plugins": len(mgr.plugins or {}),
-                       "commands": len({id(c): c for c in (mgr.commands or {}).values()})},
+                       # 面板上按「当前角色」显示（全量 340+ 条会让「117 条」看着不对）；
+                       # 全量另给一个键，排查撞名时要看得到
+                       "commands": _cmd_count_for(_active_cid()),
+                       "commands_all": len({id(c): c for c in (mgr.commands or {}).values()})},
             "checked_at": time.strftime("%H:%M:%S")}
 
 
@@ -4534,10 +4641,16 @@ def _commands_list() -> dict:
     meta = _plugin_meta()
     out, seen = [], set()
     if isinstance(raw, dict):
-        for k, cmd in list(raw.items()):
+        # 全部命令（含同名不同角色的），只留这个角色能用的 —— 面板上摆着
+        # 别的角色的命令，点一下发现「没有这条命令」比不显示更糟。
+        every = (list(mgr.all_commands()) if hasattr(mgr, "all_commands")
+                 else {id(c): c for c in raw.values()}.values())
+        for cmd in every:
             name = str(getattr(cmd, "name", "") or "").strip()
-            if not name or name.lower() != str(k).lower():
-                continue                        # 别名：同一个命令只列一次
+            if not name:
+                continue
+            if not mgr._char_ok(getattr(cmd, "characters", ()), cid):
+                continue                        # 别的角色的专属命令
             if name.lower() in seen:
                 continue
             seen.add(name.lower())
@@ -5173,7 +5286,7 @@ _SENSITIVE_GET = frozenset({
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
     "/api/control", "/api/prompt", "/api/proactive", "/api/budget", "/api/people",
-    "/api/memories/tidy",
+    "/api/memories/tidy", "/api/characters/bindings",
 })
 
 
@@ -5561,6 +5674,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/characters":
             self._json(_characters_get())
+            return
+        if u.path == "/api/characters/bindings":
+            self._json(_char_bind_view())
             return
         if u.path == "/api/ui":
             cid = (q.get("character") or [""])[0].strip().lower() or _char_store().active_id()
@@ -6528,7 +6644,12 @@ class Handler(BaseHTTPRequestHandler):
                     if BOT else "mention",
                     chat_id=str(body.get("chat_id") or "")[:80],
                     group_id=str(body.get("group_id") or "")[:32],
-                    model_ready=bool(model.get("model")))
+                    model_ready=bool(model.get("model")),
+                    # 试跑必须用**这个会话**的角色：绑了胡桃的群试跑可莉的命令
+                    # 会说「能跑」，真发一条却没反应
+                    character=(rt.char_for(str(body.get("chat_id") or "")[:80])
+                               if rt is not None and hasattr(rt, "char_for")
+                               else ""))
             except Exception as e:                                # noqa: BLE001
                 logger.exception("模拟失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
@@ -7062,6 +7183,33 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"ok": True, "character": info, "theme": theme_id,
                         "note": "已绑定（面板刷新后生效）"})
+            return
+
+        if u.path == "/api/characters/bind":
+            from bot import chat_char
+            chat = chat_char.clean_chat(body.get("chat"))
+            cid = chat_char.clean_id(body.get("id"))
+            if not chat:
+                self._json({"ok": False, "error": "会话 id 不合法"}, 400)
+                return
+            if not chat_char.is_bindable(chat):
+                self._json({"ok": False,
+                            "error": "面板里的对话不参与固定（它跟着面板上选的角色）"}, 400)
+                return
+            ids = {c["id"] for c in _char_store().list()}
+            try:
+                if cid:
+                    if cid not in ids:
+                        self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                        return
+                    chat_char.set_binding(STATE_DIR, chat, cid, by="面板", valid_ids=ids)
+                else:
+                    chat_char.clear(STATE_DIR, chat)
+            except Exception as e:                                 # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 400)
+                return
+            self._json({**_char_bind_view(),
+                        "note": "已保存（下一条消息就按新角色回，不用重启）"})
             return
 
         if u.path == "/api/characters/switch":

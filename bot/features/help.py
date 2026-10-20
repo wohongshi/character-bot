@@ -59,7 +59,7 @@ _GROUPS = [
         # 涂山红红
         "红线", "姻缘", "护短", "狐火", "尾巴", "涂山", "判词", "苦情树", "守夜", "契",
         "试爪", "妖盟令", "来客", "喝酒", "旧伤", "取名", "山雨", "教一招", "月下", "续缘")),
-    ("🧰", "小工具", (150, 154, 190), ("help", "features")),
+    ("🧰", "小工具", (150, 154, 190), ("help", "features", "角色", "本群角色", "绑角色")),
 ]
 
 # —— 长图配色（与祈愿卡同族）——
@@ -264,10 +264,14 @@ def register(api):
     settings = dict(getattr(api, "settings", None) or {})
     card_on = _opt_bool(settings.get("card"), True)        # settings.card=false → 只发文字
 
-    me = str((getattr(api, "character", {}) or {}).get("name") or "可莉")
+    # 不要在 register 时把名字钉死：通用插件在会话绑定到别的角色时也要说对话
+    # （原来这里读一次 api.character，绑定胡桃的群里会写成「可莉的小本领」）。
+    def _me() -> str:
+        return str((getattr(api, "character", {}) or {}).get("name") or "可莉")
 
     async def help_cmd(ctx):
-        cmds = api.commands_help()
+        me = _me()
+        cmds = api.commands_help(getattr(ctx, "character", "") or api.character_id)
         if not cmds:
             await ctx.reply(f"{me}现在只会聊天呀～")
             return

@@ -61,7 +61,7 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
              user_id: str = "10001", user_name: str = "访客", role: str = "member",
              owner_id: str = "", base_policy: str = "mention",
              chat_id: str = "", group_id: str = "", now: float | None = None,
-             model_ready: bool = True) -> dict:
+             model_ready: bool = True, character: str = "") -> dict:
     """跑一遍判定链。返回 `{steps, action, text, command, reason}`。
 
     `action` 取 `ignore` / `command` / `rule_reply` / `model` 之一，
@@ -73,6 +73,9 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
     raw = str(text or "")[:MAX_TEXT]
     steps: list[dict] = []
     chat = chat_id or (f"group:{group_id}" if is_group else f"private:{user_id}")
+    # 本会话生效的角色：没给就用管理器此刻的角色（= 全局）。
+    # 试跑必须和真实分发用同一个，否则「试跑说能跑、群里没反应」。
+    char = str(character or "").strip().lower() or (mgr._char_now() if hasattr(mgr, "_char_now") else "")
 
     def done(action: str, reason: str, extra: dict | None = None) -> dict:
         out = {"text": raw, "chat_id": chat, "is_group": bool(is_group),
@@ -101,6 +104,8 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
         # 私聊只在**显式设过** disabled 时才不接（全局「群聊策略」不该连私聊一起哑）。
         return done("ignore", "这个会话被设成「完全不理」，连命令也不接",
                     {"policy": pol})
+    steps.append(_step("char", "本会话角色", "info",
+                       f"{char or '（未知）'}（角色专属命令只对这个角色生效）"))
     if pol["quiet"]:
         steps.append(_step("quiet", "静默时段", "info",
                            f"{'~'.join(pol.get('quiet_win') or [])}：只接命令，不聊天"))
@@ -111,7 +116,8 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
     ctx = FeatureContext(adapter=_FakeAdapter(owner_id), text=raw,
                          is_group=bool(is_group), group_id=str(group_id or ""),
                          user_id=str(user_id or ""), user_name=str(user_name or ""),
-                         message_id="", mentioned=bool(mentioned), role=str(role or ""))
+                         message_id="", mentioned=bool(mentioned), role=str(role or ""),
+                         character=char)
     verdict = mgr.explain_command(ctx)
     if verdict["action"] == "run":
         cmd = verdict["cmd"]
@@ -155,7 +161,8 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
             probe = FeatureContext(adapter=_FakeAdapter(owner_id), text=pre + full,
                                    is_group=bool(is_group), group_id=str(group_id or ""),
                                    user_id=str(user_id or ""), user_name=str(user_name or ""),
-                                   message_id="", mentioned=bool(mentioned), role=str(role or ""))
+                                   message_id="", mentioned=bool(mentioned), role=str(role or ""),
+                                   character=char)
             v2 = mgr.explain_command(probe) if token else {"action": "none"}
             exists = v2.get("action") in ("run", "skip")
             if v2.get("action") == "skip":
@@ -201,7 +208,7 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
 
     # 5) NLU（自然语言触发）
     try:
-        nlu = mgr.nlu_match(raw.strip())
+        nlu = mgr.nlu_match(raw.strip(), char)
     except Exception as e:                                         # noqa: BLE001
         nlu = None
         steps.append(_step("nlu", "自然语言触发", "skip", f"匹配失败：{e}"))
@@ -215,7 +222,8 @@ def simulate(*, text: str, mgr, state_dir: Path | str, rules_items=None,
         probe = FeatureContext(adapter=_FakeAdapter(owner_id), text=_prefix(mgr) + full,
                                is_group=bool(is_group), group_id=str(group_id or ""),
                                user_id=str(user_id or ""), user_name=str(user_name or ""),
-                               message_id="", mentioned=bool(mentioned), role=str(role or ""))
+                               message_id="", mentioned=bool(mentioned), role=str(role or ""),
+                               character=char)
         v3 = mgr.explain_command(probe) if token else {"action": "none"}
         exists = v3.get("action") in ("run", "skip")
         if v3.get("action") == "skip":

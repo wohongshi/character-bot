@@ -159,7 +159,8 @@
     "timestamptools",
     "cronexpr",
     "stickers_cmd",
-    "mood"
+    "mood",
+    "chatrole"
   ],
   "settings": {
     "keyword": {

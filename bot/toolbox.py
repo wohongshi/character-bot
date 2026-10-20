@@ -52,7 +52,7 @@ class ToolError(ValueError):
 
 def register(plugin: str, name: str, handler: Callable, *, description: str = "",
              parameters: dict | None = None, system: bool = False,
-             owner: Any = None) -> None:
+             owner: Any = None, characters=()) -> None:
     """登记一个工具。同名覆盖（热重载时后装的为准）。
 
     `owner` 是「谁装的」（一般是 FeatureManager 实例）。有了它，
@@ -72,6 +72,10 @@ def register(plugin: str, name: str, handler: Callable, *, description: str = ""
         "plugin": str(plugin or ""),
         "system": bool(system),
         "owner": owner,
+        # 角色限定插件登记的工具只对该角色可见（空 = 通用）。
+        # 现在没有角色限定插件登记工具，但会话绑定之后这件事随时会成立：
+        # 漏了它，胡桃的工具会出现在可莉的群里。
+        "characters": tuple(str(x).strip().lower() for x in (characters or ()) if str(x).strip()),
     }
     with _LOCK:
         TOOLS[n] = spec
@@ -138,12 +142,21 @@ def resolve(configured: Any) -> List[str]:
                 base = [str(x).strip() for x in configured]
             except TypeError:
                 base = []
+    from . import chat_char
+    who = chat_char.current()          # "" = 没有会话上下文（面板 / 单测）→ 不过滤
     out: List[str] = []
     with _LOCK:
         for n in base:
             n = str(n).strip()
-            if n and n in TOOLS and n not in out:
-                out.append(n)
+            if not n or n in out:
+                continue
+            t = TOOLS.get(n)
+            if t is None:
+                continue
+            own = t.get("characters") or ()
+            if own and who and who not in own:
+                continue
+            out.append(n)
     return out
 
 

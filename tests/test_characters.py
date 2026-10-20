@@ -12,7 +12,7 @@ STUDIO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(STUDIO))
 
 from bot.characters import CharacterStore, CHARACTERS
-from bot.framework import FeatureManager
+from bot.framework import FeatureContext, FeatureManager
 
 TMP = Path(tempfile.gettempdir()) / "klee_char_test"
 if TMP.exists():
@@ -149,7 +149,18 @@ check("2.1 通用插件按白名单启用", snap["common"]["enabled"] and not sn
 check("2.2 klee 时：双角色限定启用", snap["shared"]["enabled"] and snap["shared"]["locked"])
 check("2.3 klee 时：胡桃限定停用", not snap["onlyhutao"]["enabled"], str(snap["onlyhutao"]))
 check("2.4 klee 时：昔莲限定停用", not snap["cyrene"]["enabled"])
-check("2.5 角色限定命令没注册", "hutao_only" not in mgr.commands and "cyrene_only" not in mgr.commands)
+# 现在角色限定插件**全部注册**（会话绑定会让同一个群的另一个角色生效），
+# 门控挪到了分发层：别的角色的命令查表能查到，但 explain_command 判 none。
+def _act(name, char):
+    ctx = FeatureContext(adapter=ad, text="." + name, is_group=False, group_id="",
+                         user_id="1", user_name="t", message_id="", character=char)
+    return mgr.explain_command(ctx)["action"]
+
+
+check("2.5 角色限定命令：注册了，但别的角色跑不了",
+      "hutao_only" in mgr.commands and _act("hutao_only", "klee") == "none"
+      and _act("hutao_only", "hutao") == "run",
+      str((_act("hutao_only", "klee"), _act("hutao_only", "hutao"))))
 
 # 把通用插件从白名单拿掉 → 应该真的停；角色限定不受白名单影响
 cfg = {"enabled": [], "settings": {}}
@@ -164,7 +175,8 @@ snap = {p["name"]: p for p in mgr.snapshot()["plugins"]}
 check("2.8 切到胡桃：胡桃限定启用", snap["onlyhutao"]["enabled"])
 check("2.9 切到胡桃：双角色限定仍启用", snap["shared"]["enabled"])
 check("2.10 切到胡桃：昔莲限定停用", not snap["cyrene"]["enabled"])
-check("2.11 命令随角色变化", "hutao_only" in mgr.commands and "cyrene_only" not in mgr.commands)
+check("2.11 命令按角色门控（不是从表里删掉）",
+      _act("hutao_only", "hutao") == "run" and _act("cyrene_only", "hutao") == "none")
 
 mgr.set_character("cyrene", {"id": "cyrene", "name": "昔莲"})
 snap = {p["name"]: p for p in mgr.snapshot()["plugins"]}

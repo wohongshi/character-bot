@@ -922,6 +922,8 @@ body[data-density="wide"] .card{padding:20px 24px}
 }
 .btn.tabon{background:var(--ui-accent);color:#fff;border-color:transparent}
 .tag{border-radius:999px;border:1px solid color-mix(in srgb,var(--ink) 10%,transparent);background:color-mix(in srgb,var(--surface-2) 70%, transparent)}
+/* 会话绑定里「这个角色已经删了」的标签：红边框、不填色，别抢视觉 */
+.tag.ccbad{border-color:var(--red);color:var(--red);background:transparent}
 
 /* 对话 */
 #chatWrap{display:flex;flex-direction:column;height:100%;min-height:520px;gap:10px}
@@ -4378,9 +4380,10 @@ async function kbSearch(){
 /* ================= 插件工坊 ================= */
 let plFiles = [], plSel = null, plCfg = null, plTab = "file", plMeta = {};
 /* ---------- 插件体检 ----------
-   命令名/别名是全局唯一的：撞名时框架只写一行日志、把整条命令丢掉，
+   同一个角色内命令名/别名必须唯一：撞名时框架只写一行日志、把整条命令丢掉，
    面板上看不出来（插件显示正常、命令就是不在）。这里把这类「静默失效」
-   翻出来 —— 项目已经因此丢过 .字数 和 .draw 两次。 */
+   翻出来 —— 项目已经因此丢过 .字数 和 .draw 两次。
+   （跨角色同名是允许的：两份的角色集合不相交就都留着，按会话角色挑。） */
 async function plugAudit(){
   const box = $("auditBox");
   if (!box) return;
@@ -5351,7 +5354,89 @@ async function viewChars(){
   <div class="card" style="margin-top:14px">
     <h3 id="charPlugName">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">不可关闭</span></h3>
     <div class="kv" id="charPlugBody" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
+  </div>
+  <div class="card" style="margin-top:14px" id="ccCard">
+    <h3>🔒 每个会话跟着谁</h3>
+    <div class="kv" id="ccMeta" style="margin-top:6px"></div>
+    <div id="ccList" style="margin-top:8px"><div class="kv">读取中…</div></div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <select id="ccChat" style="flex:1 1 140px;min-width:0"></select>
+      <select id="ccChar" style="flex:0 1 132px;min-width:0"></select>
+      <input type="text" id="ccChatId" style="flex:1 1 150px;min-width:0"
+             placeholder="或手填：group:123456 / private:10001">
+      <button class="btn tiny" style="flex:0 0 auto;min-width:72px" onclick="ccAdd()">固定</button>
+    </div>
+    <div class="kv" id="ccMsg" style="margin-top:6px"></div>
   </div>`;
+  ccLoad();
+}
+
+/* ---- 会话角色绑定：一个群一个角色（和 QQ 里的 .角色 命令同一个文件） ---- */
+async function ccLoad(){
+  const box = $("ccList");
+  if (!box) return;
+  const d = await api("/api/characters/bindings");
+  if (!d || !d.ok){
+    box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  ccRender(d);
+}
+function ccRender(d){
+  const box = $("ccList");
+  if (!box) return;
+  const chars = d.characters || [];
+  const g = chars.find(c => c.id === d.global) || {};
+  const meta = $("ccMeta");
+  if (meta) meta.innerHTML = `QQ 的群和私聊可以各自固定一个角色；没固定的跟着当前角色（现在：<b>${esc(g.name || d.global || "—")}</b>）。群里发 <code>.角色 <名字></code> 也能设。`;
+  const optAll = (sel, keep) => {
+    if (sel && !sel.options.length){
+      sel.innerHTML = chars.map(c => `<option value="${esc(c.id)}">${esc((c.emoji || "") + " " + c.name)}</option>`).join("");
+    }
+  };
+  optAll($("ccChar"));
+  const selChat = $("ccChat");
+  if (selChat){
+    const free = d.chats || [];
+    selChat.innerHTML = free.length
+      ? free.map(c => `<option value="${esc(c.chat)}">${esc(prChatLabel(c.chat))}${c.who ? " · " + esc(c.who) : ""}</option>`).join("")
+      : `<option value="">（都固定好了）</option>`;
+  }
+  const rows = (d.bindings || []).map(b => `
+    <div class="opsline" style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <b style="flex:none;min-width:104px">${esc(prChatLabel(b.chat))}</b>
+      ${b.ok ? "" : `<span class="tag ccbad">角色已不在</span>`}
+      <span class="kv" style="flex:1;margin:0;min-width:78px">${b.who ? "最近：" + esc(b.who) : (b.n ? b.n + " 条消息" : "还没说过话")}</span>
+      <select onchange="ccSet(${jsq(b.chat)}, this.value)" style="min-width:132px">
+        <option value="">（跟随当前角色）</option>
+        ${chars.map(c => `<option value="${esc(c.id)}" ${c.id === b.id ? "selected" : ""}>${esc((c.emoji || "") + " " + c.name)}</option>`).join("")}
+      </select>
+    </div>`).join("");
+  box.innerHTML = rows || `<div class="kv">还没有固定任何会话 —— 所有群和私聊都跟着当前角色。</div>`;
+}
+async function ccSet(chat, id){
+  const d = await post("/api/characters/bind", {chat, id});
+  if (!d || !d.ok){
+    const m = $("ccMsg");
+    if (m) m.textContent = "✗ " + ((d && d.error) || "没保存上");
+    return;
+  }
+  ccRender(d);
+  const m = $("ccMsg");
+  if (m) m.textContent = id ? "✓ 已固定（下一条消息就按它回）" : "✓ 已取消固定";
+  flash(id ? "✓ 已固定" : "✓ 已取消");
+}
+async function ccAdd(){
+  const c = $("ccChat"), k = $("ccChar"), t = $("ccChatId");
+  const manual = t ? String(t.value || "").trim() : "";
+  const chat = manual || (c ? c.value : "");
+  if (!chat || !k || !k.value){
+    const m = $("ccMsg");
+    if (m) m.textContent = "先选（或填）一个会话，再挑一个角色";
+    return;
+  }
+  await ccSet(chat, k.value);
+  if (t) t.value = "";
 }
 
 /* ================= 开发规范 ================= */

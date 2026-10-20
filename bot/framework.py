@@ -48,6 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .ext import ExtPlugin, load_spec
 
 from . import cmdpolicy as _cmdpolicy      # 权限/作用域覆盖（热路径与失败兜底共用）
+from . import chat_char                    # 会话绑定的「此刻是谁」（只读 ContextVar）
 from . import toolbox
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,9 @@ class FeatureContext:
     # 命令分发时填充：
     command: str = ""               # 命中的命令名（原始拼写）
     args: List[str] = field(default_factory=list)
+    # 这个会话此刻生效的角色（运行时入口处填）。角色限定插件/命令按它门控；
+    # 空 = 没上下文（模拟器、单测），按全局角色处理。
+    character: str = ""
 
     @property
     def arg_text(self) -> str:
@@ -430,6 +434,9 @@ class _Command:
     help: str
     plugin: str
     priority: int = 100
+    # 角色限定插件登记的命令：只用这几个角色能用（空 = 所有人）。
+    # 由 register_command 从插件信息里填，插件作者不用管。
+    characters: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -437,6 +444,7 @@ class _Hook:
     handler: Callable
     plugin: str
     priority: int = 50
+    characters: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -447,6 +455,7 @@ class _NluRule:
     plugin: str
     priority: int = 100
     seq: int = 0
+    characters: Tuple[str, ...] = ()
 
 
 class FeatureAPI:
@@ -503,7 +512,40 @@ class FeatureAPI:
         """
         toolbox.register(self._plugin, name, handler, description=description,
                          parameters=parameters, system=bool(system or self._system),
-                         owner=self._manager)
+                         owner=self._manager, characters=self._own_chars())
+
+    # —— 会话角色绑定（bot/chat_char.py）：插件不该自己去读那个文件 ——
+    def chat_character(self, chat_id: str) -> str:
+        """这个会话绑定的角色；没绑 → ""（= 跟随全局）。"""
+        return chat_char.get(self._state_root(), chat_id)
+
+    def list_characters(self) -> List[dict]:
+        """全部角色（id / name / en）。适配器没有角色库时返回空表。"""
+        store = getattr(getattr(self._manager, "adapter", None), "characters", None)
+        fn = getattr(store, "list", None)
+        if not callable(fn):
+            return []
+        try:
+            items = fn()
+        except Exception:                                       # noqa: BLE001
+            return []
+        return [{"id": str(c.get("id") or ""), "name": str(c.get("name") or ""),
+                 "en": str(c.get("en") or "")} for c in items if isinstance(c, dict)]
+
+    def bind_chat_character(self, chat_id: str, cid: str, *, by: str = "") -> str:
+        """把会话钉到某个角色；cid 空 = 取消绑定。返回绑定后的角色 id（取消 → ""）。"""
+        ids = [c["id"] for c in self.list_characters()]
+        if not cid:
+            chat_char.clear(self._state_root(), chat_id)
+            return ""
+        if not ids:
+            raise ValueError("这个运行环境没有角色库")
+        rec = chat_char.set_binding(self._state_root(), chat_id, cid, by=by, valid_ids=ids)
+        return str(rec.get("id") or "")
+
+    def _state_root(self) -> Path:
+        d = getattr(getattr(self._manager, "adapter", None), "state_dir", None)
+        return Path(str(d)) if d else Path(os.environ.get("KLEE_STATE_DIR") or "state")
 
     def add_page(self, html, *, title: str = "") -> None:
         """挂一个**插件自带的小页面**（面板抽屉里用 iframe 打开）。
@@ -525,11 +567,38 @@ class FeatureAPI:
     # —— 给插件用的小工具 ——
     @property
     def character_id(self) -> str:
-        return str(getattr(self._manager, "active_character", "") or "klee")
+        """这个插件眼里的「我」是谁。
+
+        角色限定插件 → 它自己声明的角色（在哪个群被调到都是它自己）；
+        通用插件 → 这个会话此刻生效的角色（会话绑定优先，见 bot/chat_char.py）。
+        """
+        own = self._own_chars()
+        if own:
+            cur = self._manager._char_now()
+            return cur if cur in own else own[0]
+        return self._manager._char_now() or "klee"
+
+    def _own_chars(self) -> Tuple[str, ...]:
+        info = self._manager.plugins.get(self._plugin) or {}
+        chars = info.get("characters") if isinstance(info, dict) else ()
+        return tuple(chars) if isinstance(chars, (list, tuple)) else ()
 
     @property
     def character(self) -> dict:
-        return getattr(self._manager, "active_character_info", {}) or {}
+        cid = self.character_id
+        info = getattr(self._manager, "active_character_info", {}) or {}
+        if str(info.get("id") or "") == cid:
+            return info
+        store = getattr(getattr(self._manager, "adapter", None), "characters", None)
+        getter = getattr(store, "get", None)
+        if callable(getter):
+            try:
+                got = getter(cid)
+                if isinstance(got, dict):
+                    return got
+            except Exception:                                  # noqa: BLE001
+                pass
+        return info
 
     @property
     def settings(self) -> dict:
@@ -562,12 +631,29 @@ class FeatureAPI:
         # 主动播报不拆条：提醒/纪念日是一句话的整段语义
         return await adapter.send(chat_id, text, sentence_split=False)
 
-    def commands_help(self) -> List[str]:
-        seen, out = set(), []
-        for cmd in self._manager.sorted_commands():
-            if cmd.name in seen or cmd.permission == "owner":
+    def commands_help(self, character: str = "") -> List[str]:
+        """命令表（`.help` 用）。`character` 给了就只列那个角色能用的。
+
+        同名多条（通用插件的别名 vs 某个角色的专属命令）按角色挑一条，
+        别把两条都列出来（`._抱抱` 出现两遍看着像 bug）。
+        """
+        mgr = self._manager
+        with mgr._lock:
+            keys = list(mgr._cmd_all.keys())
+        picked, seen = [], set()
+        for key in keys:
+            cmd = mgr._pick_cmd(key, character)
+            if cmd is None or id(cmd) in seen:
                 continue
-            seen.add(cmd.name)
+            seen.add(id(cmd))
+            if cmd.permission == "owner":
+                continue
+            if not mgr._char_ok(getattr(cmd, "characters", ()), character):
+                continue
+            picked.append(cmd)
+        picked.sort(key=lambda c: (c.priority, c.name))
+        out = []
+        for cmd in picked:
             if cmd.help:
                 out.append(cmd.help)
             else:
@@ -591,7 +677,9 @@ class FeatureManager:
         # 绝不回退到进程 CWD：那会把任意目录里的 *.py 当插件 exec_module。
         self.dir = Path(raw_dir) if raw_dir else Path(__file__).with_name("features")
         self.prefix_chars = _prefix_chars(getattr(adapter, "feature_prefix", "."))
-        self.commands: Dict[str, _Command] = {}     # 小写名/别名 → _Command
+        self.commands: Dict[str, _Command] = {}     # 小写名/别名 → 首选 _Command（面板枚举用）
+        # 同一个名字下可能有多个角色各自的命令（见 register_command）；这里是全部。
+        self._cmd_all: Dict[str, List[_Command]] = {}
         #: 外部插件（其他语言写的）：name → ExtPlugin。重载时全部关掉重来。
         self.ext_plugins: Dict[str, Any] = {}
         #: 插件自带的小页面：name → {"title": str, "html": str|callable}
@@ -666,6 +754,7 @@ class FeatureManager:
         # 热重载时必须原样保留，否则重载一次就「命令消失」。
         builtin = {k: c for k, c in self.commands.items() if c.plugin == "__builtin__"}
         self.commands = dict(builtin)
+        self._cmd_all = {k: [c] for k, c in builtin.items()}
         self.hooks_in = []
         self.hooks_out = []
         self.hooks_notice = []
@@ -724,6 +813,8 @@ class FeatureManager:
         # 只按「本目录里确实存在、且这次没启用」的插件名摘 —— 不能整表清空：
         # 单测用的是临时插件目录，工具表就靠 bootstrap 那一份。
         for _name, _info in self.plugins.items():
+            if _info.get("registered"):
+                continue
             if not _info.get("enabled"):
                 # 只摘 bootstrap 留下的那份（owner 是哨兵），别把同一进程里
                 # 另一个 FeatureManager 注册的同名工具一起端掉（owner=None 会全摘）。
@@ -999,15 +1090,20 @@ class FeatureManager:
         info["system"] = bool(getattr(module, "SYSTEM", False))
 
         if info["locked"]:
-            info["enabled"] = str(self.active_character).strip().lower() in info["characters"]
+            # `enabled` 在面板上的含义**不变**：当前全局角色能不能用。
+            # 但注册不再跟着它走 —— 会话绑定（bot/chat_char.py）会让别的群
+            # 用别的角色，所以角色限定插件必须全都注册，分发时按角色门控
+            # （命令在 explain_command 拦，钩子在 run_*_hooks 拦）。
+            info["enabled"] = self._char_now(self.active_character) in info["characters"]
             info["lock_reason"] = ("当前角色可用" if info["enabled"]
                                    else "仅 " + "/".join(info["characters"]) + " 可用")
+            info["registered"] = True
         else:
             info["enabled"] = _plugin_enabled(
                 name, enabled_cfg, not bool(getattr(module, "DEFAULT_OFF", False)))
 
         self.plugins[name] = info
-        if not info["enabled"]:
+        if not info["enabled"] and not info.get("registered"):
             return
 
         register = getattr(module, "register", None)
@@ -1022,13 +1118,14 @@ class FeatureManager:
         # 模块级 SYSTEM = True → 这个插件登记的工具也算系统能力（联网、出网这类）
         api._system = bool(getattr(module, "SYSTEM", False))
         # 注册到一半抛异常时，把半截命令/钩子/NLU 撤掉，别让「已停用」的插件还在接消息
-        snapshot = (dict(self.commands), list(self.hooks_in), list(self.hooks_out),
+        snapshot = (dict(self.commands), {k: list(v) for k, v in self._cmd_all.items()},
+                    list(self.hooks_in), list(self.hooks_out),
                     list(self.hooks_notice), list(self.hooks_request),
                     list(self.nlu_rules), self._nlu_seq)
         try:
             register(api)
         except Exception as e:                                # noqa: BLE001
-            (self.commands, self.hooks_in, self.hooks_out,
+            (self.commands, self._cmd_all, self.hooks_in, self.hooks_out,
              self.hooks_notice, self.hooks_request,
              self.nlu_rules, self._nlu_seq) = snapshot
             toolbox.unregister_plugin(name, self)
@@ -1038,24 +1135,78 @@ class FeatureManager:
             logger.warning("OneBot: 插件 %s 注册失败（已回滚半截注册）— %s", name, info["error"])
 
     # ---------- 注册 ----------
+    def _char_now(self, character: str = "") -> str:
+        """此刻生效的角色：显式传入 → 当前上下文 → 全局当前角色。"""
+        want = str(character or "").strip()
+        if not want:
+            want = chat_char.current() or str(getattr(self, "active_character", "") or "")
+        return want.strip().lower()
+
+    def _char_ok(self, characters, character: str = "") -> bool:
+        """空 = 通用（谁都能用）；否则必须命中此刻的角色。"""
+        chars = tuple(characters or ())
+        if not chars:
+            return True
+        return self._char_now(character) in chars
+
+    def _chars_of(self, plugin: str) -> Tuple[str, ...]:
+        """插件声明的角色限定（没有 → 空元组 = 通用）。"""
+        info = self.plugins.get(plugin)
+        if not isinstance(info, dict):
+            return ()
+        chars = info.get("characters")
+        return tuple(chars) if isinstance(chars, (list, tuple)) else ()
+
     def register_command(self, cmd: _Command) -> None:
+        if not cmd.characters:
+            cmd.characters = self._chars_of(cmd.plugin)
         keys = [cmd.name.lower()] + [a.lower() for a in cmd.aliases]
+        # 现在所有角色限定插件都会注册，跨角色的同名命令（如通用插件的别名
+        # 「抱抱」和亚托莉的「抱抱」）必须能共存 —— 否则一个角色的命令会把
+        # 另一个角色的整条命令挤掉（老行为：整条丢弃 + 静默）。
+        # 规则：两份的命令**角色集合不相交**就都留下，按会话角色挑；
+        # 相交（都是通用的 / 同角色重名）才按老规矩丢弃并告警。
+        if any(k in self.commands for k in keys):
+            clash = [self._cmd_all.get(k) or [self.commands.get(k)] for k in keys if k in self.commands]
+            coexist = all(
+                other.characters and cmd.characters
+                and not (set(other.characters) & set(cmd.characters))
+                for group in clash for other in group if other is not None
+            )
+            if coexist:
+                # 撞上的那几个键变成「多条」，**没撞的别名照常占位** ——
+                # 否则一个别名撞了名，这条命令的其它别名会跟着一起消失
+                # （`.抱抱` 撞了，`.拥抱` 明明没人用却敲不出来）。
+                for k in keys:
+                    if k not in self.commands:
+                        self.commands[k] = cmd
+                    self._cmd_all.setdefault(k, []).append(cmd)
+                return
         if any(k in self.commands for k in keys):
             logger.warning("OneBot: 命令 %s（来自 %s）与已有命令重名，忽略", cmd.name, cmd.plugin)
             return
         for k in keys:
             self.commands[k] = cmd
+            self._cmd_all.setdefault(k, []).append(cmd)
 
     def register_message_hook(self, hook: _Hook) -> None:
+        if not hook.characters:
+            hook.characters = self._chars_of(hook.plugin)
         self.hooks_in.append(hook)
 
     def register_reply_hook(self, hook: _Hook) -> None:
+        if not hook.characters:
+            hook.characters = self._chars_of(hook.plugin)
         self.hooks_out.append(hook)
 
     def register_notice_hook(self, hook: _Hook) -> None:
+        if not hook.characters:
+            hook.characters = self._chars_of(hook.plugin)
         self.hooks_notice.append(hook)
 
     def register_request_hook(self, hook: _Hook) -> None:
+        if not hook.characters:
+            hook.characters = self._chars_of(hook.plugin)
         self.hooks_request.append(hook)
 
     def register_nlu(self, pattern: str, cmd: str, plugin: str, priority: int = 100) -> None:
@@ -1067,7 +1218,8 @@ class FeatureManager:
             return
         self._nlu_seq += 1
         self.nlu_rules.append(_NluRule(pattern=rx, cmd=str(cmd), plugin=plugin,
-                                       priority=int(priority), seq=self._nlu_seq))
+                                       priority=int(priority), seq=self._nlu_seq,
+                                       characters=self._chars_of(plugin)))
 
     def set_character(self, cid: str, info: dict | None = None) -> None:
         """切换当前角色并重新装载（角色限定插件的启用状态由 active_character 决定）。"""
@@ -1079,7 +1231,7 @@ class FeatureManager:
                     self.active_character,
                     sum(1 for p in self.plugins.values() if p.get("enabled")))
 
-    def nlu_match(self, text: str) -> Optional[str]:
+    def nlu_match(self, text: str, character: str = "") -> Optional[str]:
         """整句匹配自然语言规则 → 返回替换后的命令行（不含前缀）；没命中返回 None。"""
         t = (text or "").strip()
         if not t:
@@ -1087,6 +1239,8 @@ class FeatureManager:
         with self._lock:
             rules = sorted(self.nlu_rules, key=lambda r: (r.priority, r.seq))
         for r in rules:
+            if not self._char_ok(getattr(r, "characters", ()), character):
+                continue
             m = r.pattern.fullmatch(t)
             if not m:
                 continue
@@ -1104,6 +1258,31 @@ class FeatureManager:
     def sorted_commands(self) -> List[_Command]:
         uniq = {id(c): c for c in self.commands.values()}
         return sorted(uniq.values(), key=lambda c: (c.priority, c.name))
+
+    def all_commands(self) -> List[_Command]:
+        """所有注册上的命令（含同名不同角色的），体检/快照用。"""
+        with self._lock:
+            items = [c for group in self._cmd_all.values() for c in group]
+        return {id(c): c for c in items}.values()
+
+    def _pick_cmd(self, name: str, character: str = "") -> Optional[_Command]:
+        """同名多条命令时，挑这个角色该用的那条。
+
+        优先「角色专属且命中」→ 其次「通用」→ 最后退回第一条（由调用方按
+        角色门控决定它可不可用）。
+        """
+        with self._lock:
+            group = list(self._cmd_all.get(str(name or "").lower()) or [])
+        if not group:
+            return None
+        who = self._char_now(character)
+        for c in group:
+            if c.characters and who in c.characters:
+                return c
+        for c in group:
+            if not c.characters:
+                return c
+        return group[0]
 
     def _register_builtin(self) -> None:
         """框架内置的 .features 管理命令（主人私聊）。"""
@@ -1158,10 +1337,18 @@ class FeatureManager:
                     "kind": "prefix", "reason": "不是命令（没有前缀）"}
         token, args = parsed
         with self._lock:                    # 热重载会在另一个线程重置字典
-            cmd = self.commands.get(token.lower())
+            cmd = self._pick_cmd(token, getattr(ctx, "character", ""))
         if cmd is None:
             return {"action": "none", "token": token, "args": args, "cmd": None,
                     "kind": "unknown", "reason": f"没有命令「{token}」"}
+        # 角色限定命令：本会话不是它的角色 → 当作「没有这条命令」。
+        # 为什么是 none 而不是 skip：skip 会把消息**静默吃掉**；none 则继续
+        # 当成普通聊天（和「这个角色根本没有这条命令」完全一致，也是今天的行为）。
+        if not self._char_ok(getattr(cmd, "characters", ()), getattr(ctx, "character", "")):
+            return {"action": "none", "token": token, "args": args, "cmd": cmd,
+                    "kind": "character",
+                    "reason": (f"「{cmd.name}」是 {'/'.join(cmd.characters)} 的专属命令，"
+                               f"本会话的角色是 {self._char_now(getattr(ctx, 'character', ''))}")}
         scope, perm = cmd.scope, cmd.permission
         source = "插件默认"
         try:
@@ -1241,6 +1428,9 @@ class FeatureManager:
         with self._lock:                    # 快照：热重载会在别的线程重建这个列表
             hooks = list(self.hooks_in)
         for hook in hooks:
+            if not self._char_ok(getattr(hook, "characters", ()),
+                                 getattr(ctx, "character", "")):
+                continue
             try:
                 res = hook.handler(ctx)
                 if inspect.isawaitable(res):
@@ -1273,6 +1463,8 @@ class FeatureManager:
                            raw=dict(ev or {}))
         out = []
         for hook in hooks:
+            if not self._char_ok(getattr(hook, "characters", ()), ""):
+                continue
             try:
                 res = hook.handler(ctx)
                 if inspect.isawaitable(res):
@@ -1285,13 +1477,20 @@ class FeatureManager:
             out.append((hook.plugin, res))
         return out
 
-    async def run_reply_hooks(self, chat_id: str, is_group: bool, text: str) -> str:
-        """出站钩子链；返回改写后的文本。"""
+    async def run_reply_hooks(self, chat_id: str, is_group: bool, text: str,
+                              character: str = "") -> str:
+        """出站钩子链；返回改写后的文本。
+
+        `character`：这条消息是哪个角色在说（角色限定插件只改自己角色的台词）。
+        不给就用 ContextVar / 全局角色。
+        """
 
         sc = _SendCtx(chat_id=chat_id, is_group=is_group)
         with self._lock:
             hooks = list(self.hooks_out)
         for hook in hooks:
+            if not self._char_ok(getattr(hook, "characters", ()), character):
+                continue
             try:
                 res = hook.handler(sc, text)
                 if inspect.isawaitable(res):
@@ -1345,10 +1544,11 @@ class FeatureManager:
         with self._lock:
             items = list(self.plugins.items())
             hits, errors = dict(self.hits), dict(self.errors)
-            commands = sorted({c.name for c in self.sorted_commands()})
+            every = list(self.all_commands())
+            commands = sorted({c.name for c in every})
             cmd_count: Dict[str, int] = {}
             cmd_list: Dict[str, list] = {}
-            for c in {id(x): x for x in self.commands.values()}.values():
+            for c in every:
                 if c.plugin == "__builtin__":
                     continue
                 cmd_count[c.plugin] = cmd_count.get(c.plugin, 0) + 1
