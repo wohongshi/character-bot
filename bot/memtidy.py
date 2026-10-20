@@ -310,7 +310,8 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             rec.pop("merged", None)
             merged_by_keep[kk] = rec
         out, archived = [], []
-        emitted: set = set()
+        written: dict = {}          # key → out 里那条（重复行把 hits/scope 并到这里）
+        deduped = 0
         for r in rows:
             k = _key(r)
             if k in drop_ts:
@@ -319,11 +320,18 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
                 archived.append(r)
                 continue
             if k in merged_by_keep:
-                if k in emitted:
-                    continue     # 文件里完全重复的行：只写一份，别把 hits 记两遍
-                emitted.add(k)
+                if k in written:
+                    # 文件里完全重复的行：只写一份，但 hits/scope 要并进来 ——
+                    # 否则计数凭空消失，面板的「before → after（合并 N）」也对不上
+                    prev = written[k]
+                    prev["hits"] = int(prev.get("hits") or 0) + int(r.get("hits") or 0)
+                    prev["scope"] = _merge_scope(str(r.get("scope") or ""),
+                                                 str(prev.get("scope") or ""))
+                    deduped += 1
+                    continue
                 rec = dict(merged_by_keep[k])
                 rec.pop("merged", None)      # 预演用的计数，不该落进记忆文件
+                written[k] = rec
                 out.append(rec)
             else:
                 out.append(r)
@@ -353,8 +361,9 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             if added:
                 _write(ap, merged)
         _write(path, out)
-    return {"before": len(rows), "after": len(out), "merged": len(drop_ts),
-            "archived": len(archived), "dropped": len(drop_ts)}
+    return {"before": len(rows), "after": len(out),
+            "merged": len(drop_ts) + deduped,
+            "archived": len(archived), "dropped": len(drop_ts), "deduped": deduped}
 
 
 class _NullLock:

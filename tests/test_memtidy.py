@@ -223,6 +223,10 @@ def main():
     left6 = [r["text"] for r in M._read(f6)]
     check("7e.2 重复行不会把整组删光", any("手改的一行" in t for t in left6), str(left6))
     check("7e.3 正常那行还在", any("正常的" in t for t in left6), str(left6))
+    res7e = M.apply(tmp6, "atri", p7)
+    check("7e.4 before/after/merged 三个数对得上",
+          res7e["before"] - res7e["after"] == res7e["merged"] + res7e["archived"],
+          str(res7e))
 
     section("8. 幂等 / 空数据")
     p0 = M.plan([], threshold=0.45)
