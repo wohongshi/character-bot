@@ -60,6 +60,9 @@ def main():
          "kind": "image", "img": "stickers/klee/开心.png", "caption": "给你"},
         {"ts": 1792400300 + 86400, "session": "s1", "character": "klee", "role": "assistant",
          "text": "出错的那条", "error": "RuntimeError: boom"},
+        # 预算拦下那种：text 为空、只有 error —— 也必须被保留并标出来
+        {"ts": 1792400350 + 86400, "session": "s1", "character": "klee", "role": "assistant",
+         "text": "", "error": "BudgetExceeded: 今天的用量到上限了"},
         {"ts": 1792400400, "session": "s2", "character": "klee", "role": "user", "text": "别的会话"},
     ]
     chat = tmp / "chat.jsonl"

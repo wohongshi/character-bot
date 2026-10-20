@@ -1803,7 +1803,9 @@ def _export_html(session: str, cid: str) -> bytes:
             imgs = [str(e["img"])]
         else:
             imgs = [str(r) for r in (e.get("images") or []) if str(r).strip()]
-        if not text and not imgs and not e.get("caption"):
+        # 有 `error` 的行即使 text 为空也要保留：它要渲染成「这一轮出错」，
+        # 否则 HTML 导出会把失败记录整条丢掉（markdown 那边是标出来的）
+        if not text and not imgs and not e.get("caption") and not e.get("error"):
             continue
         pic_html = []
         for ref in imgs:
@@ -1996,7 +1998,7 @@ def _usage_record(rec: dict) -> None:
             _BUDGET_METER.add(int(rec.get("total_tokens") or 0))
         except Exception as e:                                    # noqa: BLE001
             # 静默吞掉的话，预算会永久少计，面板上只看到「今天 0」——闸失效都没线索
-            logger.debug("预算计数失败（这条不计入）：%s", e)
+            logger.info("预算计数失败（这条不计入）：%s", e)
     # 每 500 条检查一次文件大小，别每次都去 stat
     _usage_lines[0] += 1
     if _usage_lines[0] % 500 == 0:
@@ -6636,7 +6638,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 th = float(body.get("threshold") or 0.45)
                 sd = int(float(body.get("stale_days") or 0))
-            except (TypeError, ValueError) as e:
+            except (TypeError, ValueError, OverflowError) as e:
                 self._json({"ok": False, "error": f"参数不对：{e}"}, 400)
                 return
             try:

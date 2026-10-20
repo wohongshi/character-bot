@@ -5914,14 +5914,14 @@ async function viewBoard(target){
       <span class="kv" style="margin:0">📈 对话洞察 <span id="insMeta" class="kv" style="margin:0"></span></span>
       <span class="row" style="gap:6px">
         <span class="ins-seg" id="insDays">
-          <button data-d="7" onclick="insSet(7)">7 天</button>
-          <button data-d="30" class="on" onclick="insSet(30)">30 天</button>
-          <button data-d="90" onclick="insSet(90)">90 天</button>
+          <button data-d="7" class="${insDays === 7 ? "on" : ""}" onclick="insSet(7)">7 天</button>
+          <button data-d="30" class="${insDays === 30 ? "on" : ""}" onclick="insSet(30)">30 天</button>
+          <button data-d="90" class="${insDays === 90 ? "on" : ""}" onclick="insSet(90)">90 天</button>
         </span>
         <span class="ins-seg" id="insSrc">
-          <button data-s="messages" class="on" onclick="insSet(0,'messages')"
+          <button data-s="messages" class="${insSrc === "messages" ? "on" : ""}" onclick="insSet(0,'messages')"
                   title="收发的全部消息（QQ + 面板）">全部</button>
-          <button data-s="chat" onclick="insSet(0,'chat')"
+          <button data-s="chat" class="${insSrc === "chat" ? "on" : ""}" onclick="insSet(0,'chat')"
                   title="面板对话记录（只算面板里聊的）">面板</button>
         </span>
       </span>
