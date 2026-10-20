@@ -310,6 +310,7 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             rec.pop("merged", None)
             merged_by_keep[kk] = rec
         out, archived = [], []
+        emitted: set = set()
         for r in rows:
             k = _key(r)
             if k in drop_ts:
@@ -318,6 +319,9 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
                 archived.append(r)
                 continue
             if k in merged_by_keep:
+                if k in emitted:
+                    continue     # 文件里完全重复的行：只写一份，别把 hits 记两遍
+                emitted.add(k)
                 rec = dict(merged_by_keep[k])
                 rec.pop("merged", None)      # 预演用的计数，不该落进记忆文件
                 out.append(rec)
