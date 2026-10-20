@@ -4880,6 +4880,12 @@ def _models_get() -> dict:
         }
     return {"ok": True, "active": BOT.models.active(), "providers": provs,
             "vision": BOT.models.vision(),
+            # 面板表单回填只能用 raw：解析后的值会把「跟聊天同一个」显示成
+            # 「配了某个具体模型」，保存一次就把它钉死
+            "vision_raw": (BOT.models.vision_raw() if hasattr(BOT.models, "vision_raw")
+                           else BOT.models.vision()),
+            "agent_raw": (BOT.models.agent_raw() if hasattr(BOT.models, "agent_raw")
+                          else (BOT.models.agent() if hasattr(BOT.models, "agent") else {})),
             "agent": BOT.models.agent() if hasattr(BOT.models, "agent") else {},
             "fallbacks": BOT.models.fallbacks() if hasattr(BOT.models, "fallbacks") else [],
             "characters": BOT.models.characters() if hasattr(BOT.models, "characters") else {},
@@ -4912,7 +4918,10 @@ def _agent_get() -> dict:
              "description": t["description"], "plugin": t["plugin"],
              "system": bool(t["system"])}
             for t in toolbox.catalog()],
-        "model": BOT.models.agent() if hasattr(BOT.models, "agent") else {},
+        # 表单回填用**原样**配置（空 = 跟聊天同一个）；下面 model_eff 才是实际会用的
+        "model": (BOT.models.agent_raw() if hasattr(BOT.models, "agent_raw")
+                  else (BOT.models.agent() if hasattr(BOT.models, "agent") else {})),
+        "model_eff": BOT.models.agent() if hasattr(BOT.models, "agent") else {},
         "skills": bool(cfg.get("agent_skills", True)),
     }
 

@@ -4371,7 +4371,9 @@ async function mountAgentCard(){
   const act = (md && md.active) || {};
   const agentCfg = (ag && ag.ok) ? ag : {enabled:false, owner_only:true, max_steps:3,
     timeout:120, tools:[], available_tools:[], model:{}};
+  // model = 原样配置（空 = 跟聊天同一个）；model_eff = 实际会用的，只用来显示
   const agModel = agentCfg.model || {};
+  const agEff = agentCfg.model_eff || (md && md.agent) || {};
   const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || provs[0] || {models: []};
   slot.innerHTML = `
   <div class="card">
@@ -4391,6 +4393,7 @@ async function mountAgentCard(){
         <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
         ${optList(agProv.models, agModel.model).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
+      <span class="kv" style="margin:0">实际在用：${esc(agEff.model || "—")}</span>
     </div>
     <div class="kv" style="margin-top:10px">可用工具 ${(agentCfg.available_tools||[]).length} 个
       <span style="font-weight:400">· 开关在插件页（工具就是插件）</span></div>
@@ -4559,7 +4562,10 @@ async function viewModels(target){
   const provs = (md && md.providers) || [];
   window.__provs = provs;
   const cur = provs.find(p => p.id === act.provider) || provs[0] || {models: []};
-  const vis = (md && md.vision) || {};
+  // 表单回填必须用 raw：`md.vision` 是解析后的（没配时也会带上 provider），
+  // 拿它回填会把「不启用」显示成「启用了某个模型」，一保存就钉死。
+  const vis = Object.assign({}, (md && md.vision_raw) || (md && md.vision) || {});
+  vis.configured = !!((md && md.vision) || {}).configured;
   window.__vis = vis;                     // botSaveVision 用它判断「是不是在清空」
   const visProv = provs.find(p => p.id === (vis.provider || act.provider)) || cur;
   const visModels = visProv.models || [];
@@ -4586,8 +4592,8 @@ async function viewModels(target){
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===vis.provider&&vis.configured?"selected":""}>${esc(p.name||p.id)}</option>`).join("")}
       </select>
       <select id="mvModel" style="min-width:240px">
-        <option value="">（不启用图片理解）</option>
-        ${optList(visModels, vis.configured?vis.model:"").map(m=>`<option ${m===(vis.configured?vis.model:"")?"selected":""}>${esc(m)}</option>`).join("")}
+        <option value="" ${vis.configured?"":"selected"}>（不启用图片理解）</option>
+        ${optList(visModels, vis.model).map(m=>`<option ${m===vis.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
       <button class="btn primary" onclick="botSaveVision()">保存看图模型</button>
     </div>
@@ -4729,8 +4735,9 @@ async function botTestModel(){
 function botFillVisionModels(){
   const p = (window.__provs || []).find(x => x.id === $("mvProv").value);
   const ms = p ? (p.models || []) : (((window.__provs || [])[0] || {}).models || []);
-  const cur = (window.__vis || {}).model || "";
-  $("mvModel").innerHTML = "<option value=\"\">（不启用图片理解）</option>" +
+  // 选中的值以**当前下拉**为准（换供应商时保留用户已经选的那个），没选过才用配置
+  const cur = $("mvModel").value || (window.__vis || {}).model || "";
+  $("mvModel").innerHTML = `<option value="" ${cur?"":"selected"}>（不启用图片理解）</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
 async function botSaveVision(){
@@ -4747,8 +4754,10 @@ async function botSaveVision(){
 function botFillAgentModels(){
   const p = (window.__provs || []).find(x => x.id === $("agProv").value);
   const ms = p ? (p.models || []) : [];
-  $("agModel").innerHTML = '<option value="">跟聊天同一个模型</option>' +
-    ms.map(m=>`<option>${esc(m)}</option>`).join("");
+  // 换供应商时保留用户已经选的（以前重建成第一项 —— 一保存就把工具模型钉死）
+  const cur = $("agModel").value || "";
+  $("agModel").innerHTML = `<option value="" ${cur ? "" : "selected"}>跟聊天同一个模型</option>` +
+    optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
 async function botAgentToolsAll(){
   const d = await post("/api/agent", {tools: null});
@@ -4768,8 +4777,9 @@ async function botSaveAgent(){
     skills: $("agSkills").checked,
     model: {provider: $("agProv").value, model: $("agModel").value},
   });
+  const eff = (d.model_eff || {}).model || "";
   $("agOut").textContent = d.ok
-    ? `✓ 已保存：${d.enabled ? "启用" : "关闭"} · ${d.owner_only ? "仅主人" : "所有人"} · 最多 ${d.max_steps} 步 · 工具 ${d.tools.length} 个 · 技能${d.skills ? "开" : "关"} · 模型 ${d.model.provider} / ${d.model.model}`
+    ? `✓ 已保存：${d.enabled ? "启用" : "关闭"} · ${d.owner_only ? "仅主人" : "所有人"} · 最多 ${d.max_steps} 步 · 工具 ${d.tools.length} 个 · 技能${d.skills ? "开" : "关"} · 模型 ${(d.model || {}).model ? d.model.provider + " / " + d.model.model : "跟聊天同一个（" + eff + "）"}`
     : "✗ " + (d.error || "保存失败");
 }
 /* ---- 模型供应商：地址一填就自动拉模型清单，勾选即可，不用手打 ---- */

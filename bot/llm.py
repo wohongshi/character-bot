@@ -73,6 +73,9 @@ def _estimate(messages: list, text: str) -> dict:
     return {"prompt_tokens": int(pin), "completion_tokens": int(pout),
             "total_tokens": int(pin + pout), "est": True}
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+# models.json 的结构版本。2 = 「agent/vision 的 model 为空就是『跟聊天同一个』」，
+# 且面板读到的必须是**原始配置**而不是解析后的结果（见 ModelStore._load 的迁移）。
+SCHEMA = 2
 _SAVE_LOCK = threading.Lock()
 
 DEFAULT_PROVIDERS = [
@@ -309,7 +312,13 @@ def _read_sse(resp, on_delta=None) -> dict | None:
 class ModelStore:
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._migrated = False
         self.data = self._load()
+        if self._migrated:            # 迁移当场落盘：别等到下一次保存才生效
+            try:
+                self.save()
+            except OSError as e:
+                log.warning("迁移后的模型配置写不回去：%s", e)
 
     def _load(self) -> dict:
         try:
@@ -325,12 +334,54 @@ class ModelStore:
                 if not (isinstance(act, dict) and act.get("provider")):
                     d["active"] = {"provider": provs[0]["id"],
                                    "model": str(provs[0]["models"][0])}
+                d = self._migrate(d)
                 return d
         except (OSError, ValueError) as e:
             log.warning("读取模型配置失败，使用默认配置：%s", e)
-        return {"active": {"provider": DEFAULT_PROVIDERS[0]["id"],
+        return {"_schema": SCHEMA,
+                "active": {"provider": DEFAULT_PROVIDERS[0]["id"],
                            "model": DEFAULT_PROVIDERS[0]["models"][0]},
                 "providers": copy.deepcopy(DEFAULT_PROVIDERS)}
+
+    def _migrate(self, d: dict) -> dict:
+        """把老配置里「被面板写死的伪值」清掉（schema < 2 → 2）。
+
+        老面板把**解析后的** agent/vision 模型当成用户选择回填到表单里：
+        - `/api/agent` 返回 `agent()`，而 `agent()` 在没配时会返回当前 active
+          → 点一次「保存 Agent 设置」就把主模型钉成「工具模型」；
+        - 「看图模型」下拉在未配置时没有 selected 项，浏览器默认选第一项
+          （= 模型清单第一个，通常就是默认模型）→ 点一次「保存看图模型」就把它
+          写成看图模型，而那多半是个纯文本模型。
+        结果就是「不管把主模型改成什么，聊天永远回到那一个」。
+
+        这两条伪值的特征都一样：**等于该 provider 模型清单的第一项**。
+        真·用户选择（比如专挑 `glm-5.3`）不会被误删。
+        """
+        if d.get("_schema") == SCHEMA:
+            return d
+        first: dict = {}
+        for p in d.get("providers") or []:
+            ms = p.get("models") if isinstance(p.get("models"), list) else []
+            if ms:
+                first[str(p.get("id"))] = str(ms[0])
+        cleared = []
+        for sec in ("agent", "vision"):
+            v = d.get(sec)
+            if not isinstance(v, dict):
+                continue
+            model = str(v.get("model") or "").strip()
+            provider = str(v.get("provider") or "").strip()
+            if not model:
+                continue
+            if model == first.get(provider):
+                v["model"] = ""
+                cleared.append(f"{sec}={model}")
+        if cleared:
+            log.warning("模型配置迁移（schema<2）：清掉面板回填写死的 %s —— "
+                        "这两项现在「空 = 跟聊天同一个模型」", "、".join(cleared))
+        d["_schema"] = SCHEMA
+        self._migrated = True
+        return d
 
     def save(self) -> None:
         with _SAVE_LOCK:
@@ -397,6 +448,16 @@ class ModelStore:
             self._save_locked()
 
     # ---------- vision（看图用的模型，和聊天模型可以分开） ----------
+    def vision_raw(self) -> dict:
+        """`models.json` 里 vision 段的**原样**（`model` 为空 = 没配 = 跟聊天同一个）。
+
+        面板必须读这个：`vision()` 是「解析后的可用配置」，拿它回填表单就会
+        把「没配」显示成「配了某个模型」，用户一保存就把默认模型钉成看图模型。
+        """
+        v = self.data.get("vision")
+        v = v if isinstance(v, dict) else {}
+        return {"provider": str(v.get("provider") or ""), "model": str(v.get("model") or "")}
+
     def vision(self) -> dict:
         """`models.json` 的 `vision` 段：{provider, model, configured}。
 
@@ -429,6 +490,16 @@ class ModelStore:
             self._save_locked()
 
     # ---------- agent（工具循环用的模型，可以和聊天模型分开） ----------
+    def agent_raw(self) -> dict:
+        """`models.json` 里 agent 段的原样（`model` 为空 = 跟聊天同一个）。
+
+        同 `vision_raw()`：表单回填必须用这个，否则「没配」会被当成
+        「配了当前主模型」，保存一次就把主模型钉死 —— 之后再改主模型也不生效。
+        """
+        a = self.data.get("agent")
+        a = a if isinstance(a, dict) else {}
+        return {"provider": str(a.get("provider") or ""), "model": str(a.get("model") or "")}
+
     def agent(self) -> dict:
         """`models.json` 的 `agent` 段：{provider, model}。空 = 跟聊天同一个。"""
         a = self.data.get("agent")
@@ -593,6 +664,19 @@ class ModelStore:
             raise ValueError(f"provider {pid} 的 models 必须是非空列表")
         prov["models"] = [str(m).strip() for m in models if str(m).strip()]
         with _SAVE_LOCK:
+            # 正在用的模型不能因为「编辑供应商时没勾选」而从清单里消失：
+            # active()/vision()/agent() 都拿「不在清单里」当失效，会静默回退到
+            # 清单第一项 —— 表现就是「改完模型，过一会儿又变回默认那个」。
+            keep = set()
+            for sec in ("active", "vision", "agent"):
+                v = self.data.get(sec)
+                if isinstance(v, dict) and str(v.get("provider") or "") == pid \
+                        and v.get("model"):
+                    keep.add(str(v["model"]))
+            for v in (self.data.get("characters") or {}).values():
+                if isinstance(v, dict) and str(v.get("provider") or "") == pid and v.get("model"):
+                    keep.add(str(v["model"]))
+            prov["models"] = list(dict.fromkeys([*prov["models"], *sorted(keep)]))
             raw = self.data.setdefault("providers", [])
             for i, p in enumerate(raw):
                 if isinstance(p, dict) and p.get("id") == pid:
