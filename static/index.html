@@ -4376,7 +4376,7 @@ async function mountAgentCard(){
   const agEff = agentCfg.model_eff || (md && md.agent) || {};
   const agProv = provs.find(p => p.id === (agModel.provider || act.provider)) || provs[0] || {models: []};
   window.__agSaved = (agModel.model || "");
-  window.__agTouched = 0;
+  window.__agSel = null;                  // null = 用户没动过下拉，切换供应商时用服务端的值
   slot.innerHTML = `
   <div class="card">
     <h3>🛠️ 工具能力 <span class="kv" style="font-family:var(--font-body)">常开 · 她自己查资料、记事</span></h3>
@@ -4391,7 +4391,7 @@ async function mountAgentCard(){
       <select id="agProv" onchange="botFillAgentModels()" style="min-width:190px">
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===(agModel.provider||act.provider)?"selected":""}>${esc(p.name||p.id)}${p.has_key===false?"（缺 key）":""}</option>`).join("")}
       </select>
-      <select id="agModel" onchange="window.__agTouched=1" style="min-width:240px">
+      <select id="agModel" onchange="window.__agSel=this.value" style="min-width:240px">
         <option value="" ${!agModel.model?"selected":""}>跟聊天同一个模型</option>
         ${optList(agProv.models, agModel.model).map(m=>`<option ${m===agModel.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
@@ -4573,8 +4573,8 @@ async function viewModels(target){
   // 盖掉「不启用」—— 不动下拉直接保存就把那个模型重新登记进来了
   if (!vis.configured){ vis.provider = ""; vis.model = ""; }
   window.__vis = vis;                     // botSaveVision 用它判断「是不是在清空」
-  window.__mvSaved = vis.model || "";     // 换供应商绕一圈回来时用它恢复选择
-  window.__mvTouched = 0;                 // 用户手动动过下拉就不再替他恢复
+  window.__mvSaved = vis.model || "";     // 服务端此刻的值（换供应商绕回来时的兜底）
+  window.__mvSel = null;                  // 用户这次手动选的值（null = 没动过）
   const visProv = provs.find(p => p.id === (vis.provider || act.provider)) || cur;
   const visModels = visProv.models || [];
   $(T).innerHTML = `
@@ -4599,7 +4599,7 @@ async function viewModels(target){
         <option value="">跟聊天同一个</option>
         ${provs.map(p=>`<option value="${esc(p.id)}" ${p.id===vis.provider&&vis.configured?"selected":""}>${esc(p.name||p.id)}</option>`).join("")}
       </select>
-      <select id="mvModel" onchange="window.__mvTouched=1" style="min-width:240px">
+      <select id="mvModel" onchange="window.__mvSel=this.value" style="min-width:240px">
         <option value="" ${vis.configured?"":"selected"}>（不启用图片理解）</option>
         ${optList(visModels, vis.model).map(m=>`<option ${m===vis.model?"selected":""}>${esc(m)}</option>`).join("")}
       </select>
@@ -4741,15 +4741,36 @@ async function botSaveModel(){
       providers: d.providers || (window.__md || {}).providers, vision: d.vision,
       vision_raw: d.vision_raw, agent: d.agent, agent_raw: d.agent_raw});
     window.__provs = d.providers || window.__provs;
-    // 看图下拉的候选是按主 provider 算的：主模型换了就得重画，
-    // 否则它还在列旧 provider 的模型，选一个保存就把别家的模型塞过去
-    if ($("mvProv") && $("mvModel")) botFillVisionModels();
+    // 看图卡片的候选和「当前：xx / yy」都是按主 provider 算的：主模型换了
+    // 整张卡都要跟着走，否则显示的是「已关闭」而服务端其实还开着
+    if (d.vision_raw) window.__mvSaved = d.vision_raw.model || "";
+    if (d.vision) window.__vis = Object.assign({}, window.__vis || {},
+      {configured: !!d.vision.configured, model: (d.vision_raw || {}).model || "",
+       provider: (d.vision_raw || {}).provider || ""});
+    window.__mvSel = null;
+    if ($("mvProv") && $("mvModel")){
+      botFillVisionModels();
+      const out = $("mvOut");
+      if (out) out.textContent = (window.__vis || {}).configured
+        ? `当前：${window.__vis.provider} / ${window.__vis.model}`
+        : "没配（发图时只会请你描述）";
+      const mp = $("mvProv");
+      if (mp) mp.value = (window.__vis || {}).configured ? ((window.__vis || {}).provider || "") : "";
+    }
   }
 }
 async function botTestModel(){
   $("mpOut").textContent = "测试中…（最长 90 秒）";
   const d = await post("/api/models/test", {model: $("mpModel").value});
   $("mpOut").textContent = d.ok ? `✓ ${d.ms}ms —— ${d.reply}` : `✗ ${d.error}`;
+}
+/* 换供应商时的选择：优先「当前下拉里合法的值」→「用户这次显式选的」→「服务端的值」。
+   只记布尔「动没动」是不够的：A→B→A 绕一圈时中间会变成空，布尔会让我们误以为
+   用户就是想清空，于是把钉住的模型悄悄抹掉。 */
+function pickSel(now, sel, saved, ms){
+  if (ms.includes(now)) return now;
+  const want = (sel !== null && sel !== undefined) ? sel : (saved || "");
+  return ms.includes(want) ? want : "";
 }
 function botFillVisionModels(){
   // 「跟聊天同一个」时列出的应该是**主 provider** 的模型，不是列表第一家的
@@ -4762,10 +4783,7 @@ function botFillVisionModels(){
   // 保存时 set_vision → _ensure_model 就把「别的供应商的模型」永久写进这家
   // 选择优先：当前下拉里合法 → 用它；否则（换供应商绕回来）用挂载时的原值；
   // 用户自己动过下拉就尊重他（包括选了「不启用」）
-  const now = $("mvModel").value;
-  const saved = window.__mvSaved || "";
-  const cur = ms.includes(now) ? now
-            : ((!window.__mvTouched && ms.includes(saved)) ? saved : "");
+  const cur = pickSel($("mvModel").value, window.__mvSel, window.__mvSaved, ms);
   $("mvModel").innerHTML = `<option value="" ${cur?"":"selected"}>（不启用图片理解）</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
@@ -4774,6 +4792,13 @@ async function botSaveVision(){
   if (!model && (window.__vis || {}).configured &&
       !confirm("关闭图片理解？以后发图片她只会说看不懂。")) return;
   const d = await post("/api/models", {vision: {provider: $("mvProv").value, model}});
+  if (d.ok){          // 基线跟着服务端走，否则「换供应商绕一圈」会回到挂载时的旧值
+    window.__mvSaved = model;
+    window.__mvSel = null;
+    if (d.vision) window.__vis = Object.assign({}, window.__vis || {},
+      {configured: !!d.vision.configured, model: (d.vision_raw || {}).model || "",
+       provider: (d.vision_raw || {}).provider || ""});
+  }
   const v = (d && d.vision) || {};
   $("mvOut").textContent = d.ok
     ? (v.configured ? `✓ 看图模型：${v.provider} / ${v.model}` : "✓ 已关闭图片理解（发图时会友好说明看不懂）")
@@ -4785,10 +4810,7 @@ function botFillAgentModels(){
   const ms = p ? (p.models || []) : [];
   // 换供应商时保留用户已经选的（以前重建成第一项 —— 一保存就把工具模型钉死）；
   // 但只保留新供应商真的有的，否则会把别家的模型永久塞进这家的清单
-  const now = $("agModel").value;
-  const saved = window.__agSaved || "";
-  const cur = ms.includes(now) ? now
-            : ((!window.__agTouched && ms.includes(saved)) ? saved : "");
+  const cur = pickSel($("agModel").value, window.__agSel, window.__agSaved, ms);
   $("agModel").innerHTML = `<option value="" ${cur ? "" : "selected"}>跟聊天同一个模型</option>` +
     optList(ms, cur).map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("");
 }
@@ -4810,6 +4832,10 @@ async function botSaveAgent(){
     skills: $("agSkills").checked,
     model: {provider: $("agProv").value, model: $("agModel").value},
   });
+  if (d.ok){          // 同上：保存成功后基线必须是服务端现在这个值
+    window.__agSaved = ((d.model || {}).model) || "";
+    window.__agSel = null;
+  }
   const eff = (d.model_eff || {}).model || "";
   $("agOut").textContent = d.ok
     ? `✓ 已保存：${d.enabled ? "启用" : "关闭"} · ${d.owner_only ? "仅主人" : "所有人"} · 最多 ${d.max_steps} 步 · 工具 ${d.tools.length} 个 · 技能${d.skills ? "开" : "关"} · 模型 ${(d.model || {}).model ? d.model.provider + " / " + d.model.model : "跟聊天同一个（" + eff + "）"}`
