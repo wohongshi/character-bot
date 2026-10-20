@@ -57,6 +57,12 @@ def main():
     check("2.4 超长截断", len(big["text"]) == PB.MAX_TEXT)
     check("2.5 截断要标出来", big["cut"] is True)
     check("2.6 chars 记的是原文长度", big["chars"] == PB.MAX_TEXT + 50)
+    check("2.7 真实请求用全文（raw）",
+          len(PB.merge_blocks([big])[0]["content"]) == PB.MAX_TEXT + 50,
+          str(len(PB.merge_blocks([big])[0]["content"])))
+    snap_big = PB.snapshot([big], chat_id="c", character="x")
+    check("2.8 快照里不留 raw（只存展示版）", "raw" not in snap_big["blocks"][0])
+    check("2.9 快照仍记原始字符数", snap_big["blocks"][0]["chars"] == PB.MAX_TEXT + 50)
 
     section("3. merge_blocks：拼回去必须一模一样")
     parts = [PB.block("persona", "system", "P", group="sys"),

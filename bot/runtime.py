@@ -585,7 +585,7 @@ class BotRuntime(RuntimeFeatures):
             return SimpleNamespace(success=False)
 
     # ---------- 事件 ----------
-    def _kb_context(self, text: str) -> str:
+    def _kb_context(self, text: str, *, log_hits: bool = True) -> str:
         if not self.config.get("kb_enabled", True):
             return ""
         try:
@@ -604,7 +604,7 @@ class BotRuntime(RuntimeFeatures):
                       if isinstance(c, dict)]
             out = [str(c.get("text") or c.get("content") or "") for c in chunks[:5]]
             ctx_text = "\n".join(x for x in out if x)[: int(self.config.get("kb_max_chars") or 800)]
-            if chunks:
+            if chunks and log_hits:      # 试跑不记命中（否则排障数据里全是假查询）
                 # 面板「知识库 → 最近命中」按角色读这条日志；写失败不影响聊天。
                 try:
                     row = {
@@ -1188,16 +1188,19 @@ class BotRuntime(RuntimeFeatures):
         """
         text = str(text or "")[:4000]
         cid = str(chat_id or "").strip()
+        owner_uid = str(self.owner_id or "") if as_owner else "10000"
         if cid.startswith("group:"):
-            is_group, group_id = True, cid.split(":", 1)[1]
+            is_group, group_id, uid = True, cid.split(":", 1)[1], owner_uid
         elif cid.startswith("private:"):
+            # 私聊的 uid 必须取会话里的那个人：`ctx.chat_id` 是用 uid 反推的，
+            # 拿主人 id 顶上去会让「记忆」块读成另一个会话（调试器说假话）
             is_group, group_id = False, ""
+            uid = cid.split(":", 1)[1] or owner_uid
         elif cid.isdigit():
-            group_id = cid if is_group else ""
+            is_group, group_id, uid = bool(is_group), cid, owner_uid
         else:
-            group_id = "preview"
+            is_group, group_id, uid = bool(is_group), "preview", owner_uid
             cid = ""
-        uid = str(self.owner_id or "") if as_owner else "10000"
         chat = cid or (f"group:{group_id}" if is_group else f"private:{uid}")
         # 不抢 _hist_lock：它是 asyncio 锁（这里是面板线程的同步调用），
         # 拿不到只会等；list() 读的是 GIL 保护下的快照，最坏情况少/多一条，
@@ -1206,7 +1209,7 @@ class BotRuntime(RuntimeFeatures):
         kb_text, kb_err = "", ""
         if kb:
             try:
-                kb_text = self._kb_context(text) or ""
+                kb_text = self._kb_context(text, log_hits=False) or ""
             except Exception as e:                                 # noqa: BLE001
                 kb_err = f"{type(e).__name__}: {e}"
         summary = ""

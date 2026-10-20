@@ -53,11 +53,22 @@ def _sentences(par: str) -> list:
 
 
 def _pack(par: str, max_chars: int, overlap: int) -> list:
-    """把一个超长段落按句子打包成若干块，块间用「上一块的尾巴」做重叠。"""
+    """把一个超长段落按句子打包成若干块，块间用「上一块的尾巴」做重叠。
+
+    超长「句子」（英文段落、表格行、逗号分隔的人名表根本没有句号）
+    要**硬切成若干段继续走打包**，不能截断 —— 以前截断等于静默丢内容，
+    导入还显示成功。
+    """
+    queue: list = []
+    for sent in _sentences(par):
+        while len(sent) > max_chars:
+            queue.append(sent[:max_chars])
+            sent = sent[max_chars:]
+        if sent:
+            queue.append(sent)
     out: list = []
     buf = ""
-    for sent in _sentences(par):
-        s = sent if len(sent) <= max_chars else sent[:max_chars]
+    for s in queue:
         if buf and len(buf) + len(s) > max_chars:
             out.append(buf)
             tail = ""

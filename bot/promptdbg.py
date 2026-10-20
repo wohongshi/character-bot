@@ -71,34 +71,45 @@ def block(key: str, role: str, text: str, *, group: str | None = None,
           label: str | None = None) -> dict:
     """一个块。`group` 相同的相邻块在合并时拼成同一条消息（system 分段用）。"""
     t = str(text or "")
-    cut = len(t) > MAX_TEXT
     return {
         "key": key,
         "label": label or LABELS.get(key, key),
         "role": role if role in ("system", "user", "assistant") else "system",
         "group": group,
+        # `text` 只给调试视图（截断过）；`raw` 是真正要发出去的全文。
+        # 只留一份截断版会让「合并结果与实际一致」变成假话 ——
+        # 长文粘贴 / 超大 SOUL 会被静默砍掉再发出去。
         "text": t[:MAX_TEXT],
+        "raw": t,
         "chars": len(t),
         "tokens": tokens(t),
-        "cut": cut,
+        "cut": len(t) > MAX_TEXT,
     }
 
 
 def merge_blocks(blocks: list) -> list:
-    """按 `group` 把相邻块拼回消息列表（拼接用空串，保证与手写版本逐字节一致）。"""
+    """按 `group` 把相邻块拼回消息列表（拼接用空串，保证与手写版本逐字节一致）。
+
+    用 `raw`（全文）而不是 `text`（调试视图的截断版）—— 否则真实请求会被砍。
+    """
     out: list = []
     for b in blocks or []:
-        if not isinstance(b, dict) or not str(b.get("text") or ""):
+        if not isinstance(b, dict):
+            continue
+        full = b.get("raw")
+        if full is None:
+            full = b.get("text")
+        if not str(full or ""):
             continue
         g = b.get("group")
         # 同组**且同 role** 才合并：只比 group 的话，后面万一塞进一条 user 块
         # 会被并进 system 里（看起来正常，实际把人说的话变成了设定）
         if out and g and out[-1].get("group") == g and out[-1].get("role") == b.get("role"):
-            out[-1]["content"] += str(b.get("text") or "")
+            out[-1]["content"] += str(full)
             out[-1]["keys"].append(b.get("key"))
             continue
         out.append({"role": b.get("role") or "system",
-                    "content": str(b.get("text") or ""),
+                    "content": str(full),
                     "group": g, "keys": [b.get("key")]})
     return [{"role": m["role"], "content": m["content"]} for m in out]
 
@@ -108,6 +119,8 @@ def snapshot(blocks: list, *, chat_id: str, character: str, source: str = "qq",
     """一次组装的快照。`blocks` 是细粒度块，`msgs` 是合并后的真实请求体。"""
     bs = [b for b in (blocks or []) if isinstance(b, dict) and str(b.get("text") or "")]
     msgs = merge_blocks(bs)
+    # 快照里不留 raw：内存只存展示用的截断版（真实请求已经发完了）
+    bs = [{k: v for k, v in b.items() if k != "raw"} for b in bs]
     chars = sum(int(b.get("chars") or 0) for b in bs)
     return {
         "ts": float(ts if ts is not None else time.time()),

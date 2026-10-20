@@ -71,6 +71,13 @@ def main():
                     max_chars=200, overlap=0, min_chars=60)
     check("2.5 短尾块并进上一块", len(tiny) == 1 and "短。" in tiny[0]["text"],
           str([c["chars"] for c in tiny]))
+    long_line = "、".join(f"名字{i}" for i in range(400))      # 没有句号的超长行
+    cut = IG.split(long_line, max_chars=200, overlap=0, min_chars=10)
+    check("2.6a 没有句号也能切开", len(cut) > 5, str(len(cut)))
+    check("2.6b 一个字符都不许丢",
+          "".join(c["text"] for c in cut) == long_line,
+          f'{sum(c["chars"] for c in cut)} vs {len(long_line)}')
+    check("2.6c 每块不超上限", all(c["chars"] <= 200 for c in cut))
     check("2.6 下限不会把 max_chars 顶破",
           all(c["chars"] <= 200 for c in IG.split(long_par, max_chars=200, overlap=0,
                                                   min_chars=180)))

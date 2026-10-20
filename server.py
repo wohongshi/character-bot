@@ -2480,16 +2480,27 @@ def _kb_ingest(text: str, *, filename: str = "", character: str = "",
                    overlap=overlap, min_chars=min_chars, title=title)
 
     def _add(chunk: dict) -> None:
+        ctitle = str(chunk.get("title") or "")
+        if title and ctitle and ctitle != title:
+            ctitle = f"{title} · {ctitle}"      # 纯文本没有小标题时不重复加前缀
         payload = {"text": chunk["text"],
-                   "title": (f"{title} · {chunk.get('title')}" if title else
-                             str(chunk.get("title") or ""))[:120],
+                   "title": (ctitle or title)[:120],
                    "source": f"import:{title or '粘贴'}"[:160],
                    "character": cid}
         req = urllib.request.Request(
             KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:        # noqa: S310
-            out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:     # noqa: S310
+                out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        except urllib.error.HTTPError as e:
+            # 4xx 的 body 里才有真正的原因（文本太长/参数被拒…），
+            # 只报 "HTTP Error 400" 等于把「错误带块号且看得懂」这条价值丢掉了
+            try:
+                msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+            except (ValueError, OSError):
+                msg = None
+            raise RuntimeError(str(msg or f"知识库返回 {e.code}")) from None
         if not out.get("ok", True):
             raise RuntimeError(str(out.get("error") or "知识库拒绝了这一条"))
 
@@ -2508,6 +2519,9 @@ def _kb_ingest(text: str, *, filename: str = "", character: str = "",
 
 
 # ---------- 主动消息 ----------
+_PROACTIVE_LOCK = threading.Lock()      # 巡检互斥（后台线程 vs 面板按钮）
+
+
 def _proactive_blocked(rt, chat_id: str) -> str:
     """会话策略拦不拦（完全不理 / 静默时段）。返回原因，空串 = 可以发。"""
     try:
@@ -2550,14 +2564,14 @@ def _clean_proactive(text: str) -> str:
     return s[:200].strip()
 
 
-def _proactive_send(chat_id: str, *, now=None, rng=None) -> dict:
+def _proactive_send(chat_id: str, *, now=None) -> dict:
     """真的发一条：模型写一句 → 走 runtime.send（限流/分句/引用都照旧）。"""
     from bot import proactive as pv
     rt = getattr(BOT, "runtime", None) if BOT else None
     if rt is None or BOT.loop is None:
         raise RuntimeError("bot 没在跑")
     now = time.time() if now is None else now
-    intent = pv.pick_intent(now, rng)
+    intent = pv.pick_intent(now)
     recent = "\n".join(f"{'她' if m.get('role') == 'assistant' else '对方'}："
                         f"{str(m.get('text') or '')[:120]}"
                         for m in _messages_of(chat_id, 4)[-2:])
@@ -2581,27 +2595,41 @@ def _proactive_send(chat_id: str, *, now=None, rng=None) -> dict:
 
 
 def _proactive_tick(now=None, rng=None) -> list:
-    """巡检一遍：每个开了的会话单独判定，发的记日志、失败的记失败。"""
+    """巡检一遍：每个开了的会话单独判定，发的记日志、失败的记失败。
+
+    拿不到巡检锁就直接返回 —— 后台线程与面板「现在巡检一次」可能同时进来，
+    两边都基于同一份旧状态通过判定，就会在最小间隔内发两条（`mark_sent`
+    是发完才回写的）。
+    """
     from bot import proactive as pv
     rt = getattr(BOT, "runtime", None) if BOT else None
     if rt is None or BOT.loop is None:
         return []
-    now = time.time() if now is None else now
-    out: list = []
-    for chat_id, cfg in list(pv.load(_state_dir()).get("chats", {}).items()):
-        verdict = pv.decide(cfg, now=now, last_user_ts=pv.last_user_ts(MSG_JSONL, chat_id),
-                            blocked=_proactive_blocked(rt, chat_id), rng=rng)
-        row = {"chat_id": chat_id, "send": bool(verdict["send"]), "reason": verdict["reason"]}
-        if verdict["send"]:
-            try:
-                got = _proactive_send(chat_id, now=now, rng=rng)
-                row.update(ok=True, text=got["text"])
-            except Exception as e:                                # noqa: BLE001
-                pv.mark_fail(_state_dir(), chat_id, f"{type(e).__name__}: {e}", now=now)
-                row.update(ok=False, error=f"{type(e).__name__}: {e}")
-                logger.warning("主动消息发不出去（%s）：%s", chat_id, e)
-        out.append(row)
-    return out
+    if not _PROACTIVE_LOCK.acquire(blocking=False):
+        return [{"chat_id": "", "send": False, "reason": "上一次巡检还没跑完"}]
+    try:
+        now = time.time() if now is None else now
+        data = pv.load(_state_dir())
+        # 一次把整个文件尾部算完：50 个会话不必各读一遍
+        last_seen = pv.last_user_map(MSG_JSONL)
+        out: list = []
+        for chat_id, cfg in list(data.get("chats", {}).items()):
+            verdict = pv.decide(cfg, now=now, last_user_ts=last_seen.get(chat_id, 0.0),
+                                blocked=_proactive_blocked(rt, chat_id), rng=rng)
+            row = {"chat_id": chat_id, "send": bool(verdict["send"]),
+                   "reason": verdict["reason"]}
+            if verdict["send"]:
+                try:
+                    got = _proactive_send(chat_id, now=now)
+                    row.update(ok=True, text=got["text"])
+                except Exception as e:                            # noqa: BLE001
+                    pv.mark_fail(_state_dir(), chat_id, f"{type(e).__name__}: {e}", now=now)
+                    row.update(ok=False, error=f"{type(e).__name__}: {e}")
+                    logger.warning("主动消息发不出去（%s）：%s", chat_id, e)
+            out.append(row)
+        return out
+    finally:
+        _PROACTIVE_LOCK.release()
 
 
 def _proactive_loop() -> None:
@@ -6368,7 +6396,7 @@ class Handler(BaseHTTPRequestHandler):
                 logger.exception("提示词试跑失败")
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
                 return
-            base = st.latest(chat or None)
+            base = st.latest(chat or None, rt.active_character)
             out["ok"] = True
             out["diff"] = _pb.diff(base or {}, out)
             out["has_base"] = bool(base)

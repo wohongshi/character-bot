@@ -99,7 +99,15 @@ def main():
     check("4.2 只改 chance，别的字段不丢", cfg["per_day"] == 3 and cfg["chance"] == 0.5, str(cfg))
     PV.set_chat(tmp, "group:1", on=False, per_day=2, min_gap_h=6, idle_h=12,
                 chance=0.35, note="")
-    check("4.3 全默认且关着就不占位", PV.get_chat(tmp, "group:1") == {}, str(PV.get_chat(tmp, "group:1")))
+    check("4.3 面板「关」要保留这一行（否则一点就删配置）",
+          PV.get_chat(tmp, "group:1").get("on") is False, str(PV.get_chat(tmp, "group:1")))
+    PV.set_chat(tmp, "group:3", on=True)
+    PV.set_chat(tmp, "group:3")
+    check("4.3b 没提 on 且全默认才不占位",
+          PV.get_chat(tmp, "group:3")["on"] is True)
+    PV.set_chat(tmp, "group:4", note="")
+    check("4.3c 没提 on 也没别的设置 → 不占位",
+          PV.get_chat(tmp, "group:4") == {}, str(PV.get_chat(tmp, "group:4")))
     PV.set_chat(tmp, "group:2", on=True)
     check("4.4 remove 返回是否删掉", PV.remove_chat(tmp, "group:2") is True)
     check("4.5 删完就没了", PV.get_chat(tmp, "group:2") == {})

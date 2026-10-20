@@ -6006,16 +6006,17 @@ async function selfFix(id, btn){
 const PBHUE = {persona:"a", rules:"b", tools:"b", skills:"c", memory:"d", mood:"e",
   stickers:"f", kb:"g", summary:"h", hist:"i", who:"j", user:"k", scene:"b",
   system:"i", other:"i"};
-let prData = null, prOpen = false, prChat = "", prSel = "";
+let prData = null, prOpen = false, prChat = "", prSel = "", prAt = 0;
 async function prLoad(force){
   const box = $("prBox");
   if (!box) return;
+  if (!force && prData && Date.now() - prAt < 3000){ prRender(); return; }
   const d = await api("/api/prompt" + (prChat ? "?chat=" + encodeURIComponent(prChat) : ""));
   if (!d || !d.ok){
     box.innerHTML = `<span class="bad">读不到提示词：${esc((d && d.error) || "未知")}</span>`;
     return;
   }
-  prData = d;
+  prData = d; prAt = Date.now();
   prRender();
 }
 async function prPickChat(v){
@@ -6023,8 +6024,10 @@ async function prPickChat(v){
   await prLoad(true);
 }
 function prToggle(){
-  prOpen = !prOpen;
   const box = $("prBox"), btn = $("prMore");
+  // 以 DOM 的实际状态为准：viewOps 每次重建都把 box 设成 display:none，
+  // 但 prOpen 是模块级状态，切页回来就会反着（按钮写「收起」其实收着）
+  prOpen = box ? (box.style.display === "none" || !box.style.display) : !prOpen;
   if (box) box.style.display = prOpen ? "" : "none";
   if (btn) btn.textContent = prOpen ? "收起" : "展开";
   if (prOpen) prLoad(true);
@@ -6192,22 +6195,23 @@ async function kbIngCommit(btn){
     return;
   }
   flash(`入库 ${d.added} 条${d.failed ? "，失败 " + d.failed + " 条" : ""}`);
+  await kbIngPreview();          // 先重画，再插错误：顺序反过来会被整体覆盖
   if (d.failed) $("kbIngOut").insertAdjacentHTML("afterbegin",
     `<div class="kv bad">${esc((d.errors || []).join("；"))}</div>`);
-  kbIngPreview();
 }
 
 /* ================= 管控：命令权限 / 会话策略 / 模拟器 ================= */
 /* ================= 管控：主动消息 ================= */
-let pvData = null;
+let pvData = null, pvAt = 0;
 async function pvLoad(force){
+  if (!force && pvData && Date.now() - pvAt < 3000){ pvRender(); pvRenderLog(); return; }
   const d = await api("/api/proactive");
   if (!d || !d.ok){
     const box = $("pvRows");
     if (box) box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
     return;
   }
-  pvData = d;
+  pvData = d; pvAt = Date.now();
   pvRender();
   pvRenderLog();
 }
@@ -6233,18 +6237,18 @@ function pvRender(){
     const off = !c.on;
     return `<div class="pvrow" data-chat="${esc(id)}">
       <span class="id" style="opacity:${off ? ".55" : "1"}">${esc(prChatLabel(id))}</span>
-      <button class="btn tiny ${c.on ? "primary" : ""}" onclick="pvToggle('${esc(id)}',${!c.on})">
+      <button class="btn tiny ${c.on ? "primary" : ""}" onclick="pvToggle(${jsq(id)},${!c.on})">
         ${c.on ? "● 开" : "○ 关"}</button>
       <label class="kv" style="margin:0">每天 <input type="number" min="0" max="20" value="${c.per_day}"
-        onchange="pvSave('${esc(id)}','per_day',this.value)"> 条</label>
+        onchange="pvSave(${jsq(id)},'per_day',this.value)"> 条</label>
       <label class="kv" style="margin:0">间隔 <input type="number" min="0.5" max="168" step="0.5" value="${c.min_gap_h}"
-        onchange="pvSave('${esc(id)}','min_gap_h',this.value)"> 小时</label>
+        onchange="pvSave(${jsq(id)},'min_gap_h',this.value)"> 小时</label>
       <label class="kv" style="margin:0">没聊 <input type="number" min="0.5" max="720" step="0.5" value="${c.idle_h}"
-        onchange="pvSave('${esc(id)}','idle_h',this.value)"> 小时才发</label>
+        onchange="pvSave(${jsq(id)},'idle_h',this.value)"> 小时才发</label>
       <label class="kv" style="margin:0">概率 <input type="number" min="0" max="1" step="0.05" value="${c.chance}"
-        onchange="pvSave('${esc(id)}','chance',this.value)"></label>
-      <button class="btn tiny" onclick="pvTest('${esc(id)}',this)">现在发一条</button>
-      <button class="btn tiny" onclick="pvRemove('${esc(id)}')">移除</button>
+        onchange="pvSave(${jsq(id)},'chance',this.value)"></label>
+      <button class="btn tiny" onclick="pvTest(${jsq(id)},this)">现在发一条</button>
+      <button class="btn tiny" onclick="pvRemove(${jsq(id)})">移除</button>
       <span class="kv" style="flex-basis:100%;margin:0;font-size:max(11px, calc(11px * var(--fx)))">
         今天 ${c.sent_today || 0}/${c.per_day} 条
         ${c.last_sent_ts ? " · 上一条 " + new Date(c.last_sent_ts * 1000).toLocaleString() : ""}

@@ -13,9 +13,13 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import threading
 import time
 from pathlib import Path
+
+_LOCK = threading.RLock()      # 巡检线程与 HTTP 线程都会读改写同一个文件
 
 MAX_CHATS = 50
 LOG_MAX_LINES = 5000
@@ -69,24 +73,35 @@ def _clamp(cfg: dict) -> dict:
 
 
 def load(state_dir: Path | str) -> dict:
-    try:
-        d = json.loads(_path(state_dir).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"chats": {}}
+    with _LOCK:
+        try:
+            d = json.loads(_path(state_dir).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"chats": {}}
     chats = d.get("chats") if isinstance(d, dict) else None
     return {"chats": chats if isinstance(chats, dict) else {}}
 
 
 def save(state_dir: Path | str, data: dict) -> None:
+    """整份写回。临时文件名带 pid+线程号：两个线程共用 `.json.tmp` 时，
+    一个可能把另一个还没写完的文件搬走（→ 半截 JSON → 读成空表 → 配置全没）。"""
     p = _path(state_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(p)
+    with _LOCK:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(p)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def get_chat(state_dir: Path | str, chat_id: str) -> dict:
-    return load(state_dir)["chats"].get(str(chat_id)) or {}
+    with _LOCK:
+        return load(state_dir)["chats"].get(str(chat_id)) or {}
 
 
 def set_chat(state_dir: Path | str, chat_id: str, *, on=None, per_day=None,
@@ -95,6 +110,14 @@ def set_chat(state_dir: Path | str, chat_id: str, *, on=None, per_day=None,
     chat_id = str(chat_id or "").strip()
     if not chat_id:
         raise ValueError("缺少会话 id")
+    with _LOCK:                       # 整段读-改-写：否则并发保存会互相覆盖
+        return _set_chat_locked(state_dir, chat_id, on=on, per_day=per_day,
+                               min_gap_h=min_gap_h, idle_h=idle_h, chance=chance,
+                               note=note)
+
+
+def _set_chat_locked(state_dir, chat_id, *, on=None, per_day=None, min_gap_h=None,
+                     idle_h=None, chance=None, note=None) -> dict:
     data = load(state_dir)
     chats = data["chats"]
     cur = _clamp(chats.get(chat_id) or {})
@@ -104,9 +127,13 @@ def set_chat(state_dir: Path | str, chat_id: str, *, on=None, per_day=None,
             continue
         cur[k] = v
     cur = _clamp(cur)
-    if not cur.get("on") and not any(cur.get(k) != DEFAULTS[k] for k in
-                                     ("per_day", "min_gap_h", "idle_h", "chance", "note")):
-        chats.pop(chat_id, None)          # 全是默认值 → 不占位
+    # 只有「调用方没显式提到 on，且各项都回到默认」才整条删掉（清理用）。
+    # 面板上的「○ 关」必须**保留这一行** —— 否则点一下开关就等于删配置，
+    # 想再打开得重新加会话。
+    if (on is None and not cur.get("on")
+            and not any(cur.get(k) != DEFAULTS[k] for k in
+                        ("per_day", "min_gap_h", "idle_h", "chance", "note"))):
+        chats.pop(chat_id, None)
     else:
         if len(chats) >= MAX_CHATS and chat_id not in chats:
             raise ValueError(f"最多 {MAX_CHATS} 个会话")
@@ -116,11 +143,12 @@ def set_chat(state_dir: Path | str, chat_id: str, *, on=None, per_day=None,
 
 
 def remove_chat(state_dir: Path | str, chat_id: str) -> bool:
-    data = load(state_dir)
-    hit = data["chats"].pop(str(chat_id), None) is not None
-    if hit:
-        save(state_dir, data)
-    return hit
+    with _LOCK:
+        data = load(state_dir)
+        hit = data["chats"].pop(str(chat_id), None) is not None
+        if hit:
+            save(state_dir, data)
+        return hit
 
 
 def _day(now: float) -> str:
@@ -157,9 +185,12 @@ def decide(cfg: dict, *, now: float, last_user_ts: float = 0.0,
     return {"send": True, "reason": "发", "sent_today": sent_today}
 
 
-def pick_intent(now: float, rng=None) -> dict:
-    """按小时挑一个「为什么找她」的角度（早上问候 / 晚上催睡…）。"""
-    rng = rng or random
+def pick_intent(now: float) -> dict:
+    """按小时挑一个「为什么找她」的角度（早上问候 / 晚上催睡…）。
+
+    **纯函数按小时决定**，没有随机：以前留了个 `rng` 参数但根本没用，
+    调用方以为有随机化。
+    """
     h = time.localtime(now).tm_hour
     if 5 <= h < 11:
         key = "morning"
@@ -198,6 +229,11 @@ def build_messages(persona: str, *, intent: dict, name: str = "", recent: str = 
 def mark_sent(state_dir: Path | str, chat_id: str, text: str, *, now: float | None = None,
               intent: str = "") -> dict:
     now = time.time() if now is None else now
+    with _LOCK:
+        return _mark_sent_locked(state_dir, chat_id, text, now=now, intent=intent)
+
+
+def _mark_sent_locked(state_dir, chat_id, text, *, now: float, intent: str) -> dict:
     data = load(state_dir)
     cur = _clamp(data["chats"].get(str(chat_id)) or {})
     today = _day(now)
@@ -214,31 +250,46 @@ def mark_sent(state_dir: Path | str, chat_id: str, text: str, *, now: float | No
 
 def mark_fail(state_dir: Path | str, chat_id: str, error: str, *, now: float | None = None) -> dict:
     now = time.time() if now is None else now
-    data = load(state_dir)
-    cur = _clamp(data["chats"].get(str(chat_id)) or {})
-    cur.update({"fails": int(cur.get("fails") or 0) + 1,
-                "last_error": str(error or "")[:200], "last_ts": now})
-    data["chats"][str(chat_id)] = cur
-    save(state_dir, data)
-    _log(state_dir, {"ts": now, "chat_id": str(chat_id), "event": "fail",
-                     "error": str(error or "")[:200]})
-    return cur
+    with _LOCK:                      # 整段读-改-写（只锁 load 等于没锁）
+        data = load(state_dir)
+        cur = _clamp(data["chats"].get(str(chat_id)) or {})
+        cur.update({"fails": int(cur.get("fails") or 0) + 1,
+                    "last_error": str(error or "")[:200], "last_ts": now})
+        data["chats"][str(chat_id)] = cur
+        save(state_dir, data)
+        _log(state_dir, {"ts": now, "chat_id": str(chat_id), "event": "fail",
+                         "error": str(error or "")[:200]})
+        return cur
 
 
 def _log(state_dir: Path | str, row: dict) -> None:
-    """追加日志并封顶（直接读全文再截断：文件到 5000 行也就 1MB 级）。"""
+    """追加日志并封顶。
+
+    读写都在 `_LOCK` 里：巡检线程和 HTTP 线程都会写，各写各的会互相覆盖。
+    每次发送都重写整个文件（5000 行 ≈ 1MB 级，一天也就几次），
+    换来的是一条都不会丢。
+    """
     p = Path(state_dir) / "proactive_log.jsonl"
-    try:
-        lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
-    except OSError:
-        lines = []
-    lines.append(json.dumps(row, ensure_ascii=False))
-    if len(lines) > LOG_MAX_LINES:
-        lines = lines[-LOG_MAX_LINES:]
-    try:
-        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    with _LOCK:
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+        except OSError:
+            lines = []
+        lines.append(json.dumps(row, ensure_ascii=False))
+        if len(lines) > LOG_MAX_LINES:
+            lines = lines[-LOG_MAX_LINES:]
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            tmp.replace(p)
+        except OSError:
+            pass
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def read_log(state_dir: Path | str, limit: int = 20) -> list:
@@ -258,25 +309,47 @@ def read_log(state_dir: Path | str, limit: int = 20) -> list:
     return list(reversed(out))
 
 
-def last_user_ts(path: Path | str, chat_id: str, *, limit: int = 4000) -> float:
-    """从消息流尾部找这个会话最后一次「用户说话」的时间（找不到返回 0）。"""
-    from collections import deque
+def last_user_map(path: Path | str, *, tail_bytes: int = 262_144) -> dict:
+    """一次扫完文件尾部，返回 `{chat_id: 最后一次用户发言的 ts}`。
 
+    巡检要问 50 个会话，逐个 `last_user_ts()` 等于把同一个文件读 50 遍；
+    而且 `deque(f, maxlen=n)` 并不会少读 —— 它照样从头读到尾。
+    """
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            tail = deque(f, maxlen=max(1, int(limit or 4000)))
+        size = os.path.getsize(path)
     except OSError:
-        return 0.0
-    chat_id = str(chat_id or "")
-    for line in reversed(tail):
+        return {}
+    out: dict = {}
+    try:
+        with open(path, "rb") as f:
+            start = max(0, size - max(4096, int(tail_bytes or 0)))
+            f.seek(start)
+            blob = f.read()
+    except OSError:
+        return {}
+    text = blob.decode("utf-8", "replace")
+    if start > 0:                       # 第一行可能被切掉一半
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl >= 0 else ""
+    for line in text.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
             continue
-        if (isinstance(row, dict) and row.get("role") == "user"
-                and str(row.get("chat_id") or "") == chat_id):
-            try:
-                return float(row.get("ts") or 0)
-            except (TypeError, ValueError):
-                return 0.0
-    return 0.0
+        if not isinstance(row, dict) or row.get("role") != "user":
+            continue
+        cid = str(row.get("chat_id") or "")
+        if not cid:
+            continue
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts > float(out.get(cid) or 0):
+            out[cid] = ts
+    return out
+
+
+def last_user_ts(path: Path | str, chat_id: str, *, tail_bytes: int = 262_144) -> float:
+    """这个会话最后一次「用户说话」的时间（找不到返回 0）。"""
+    return float(last_user_map(path, tail_bytes=tail_bytes).get(str(chat_id or "")) or 0)
