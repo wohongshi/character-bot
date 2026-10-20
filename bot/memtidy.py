@@ -264,6 +264,9 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         # 而且这段全程持 memory._LOCK，聊天那边会被一起挡住）
         pairs = [(_key(r), r) for r in rows]
         present = {k for k, _ in pairs}
+        first_row: dict = {}
+        for k, r in pairs:
+            first_row.setdefault(k, r)      # 文件里第一次出现的那条（和输出循环的基准一致）
         stale_ts = {_key(r) for r in (p or {}).get("stale") or []}
 
         # 逐组核账：keep 还在（且不是「要被归档」）且组里至少还有一条别的行才生效
@@ -279,7 +282,7 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             if len(alive) <= 1:
                 continue
             gi = len(groups)
-            keep_row = next(r for k, r in pairs if k == kk)
+            keep_row = first_row[kk]
             groups.append((kk, keep_row, alive))
             for r in alive:
                 group_of.setdefault(_key(r), gi)
