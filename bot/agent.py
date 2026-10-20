@@ -756,10 +756,13 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             # 流式只是「让人早点看到字」：回调坏了不能影响取到完整结果，
             # 所以模型层保证 on_delta 异常不向上抛（见 llm._read_sse）。
             extra = {"stream": True, "on_delta": on_delta}
+        # character / chat 一路传给用量记账：工具循环是最贵的一段，
+        # 不传的话「哪个角色花的钱」在面板上会漏掉它（以前就是这样）。
         return caller(msgs, provider=provider or None, model=model or None,
                       tools=specs(allowed) if tool_choice != "none" else None,
                       tool_choice=tool_choice, temperature=temperature,
-                      max_tokens=max_tokens, timeout=min(90.0, left), **extra)
+                      max_tokens=max_tokens, timeout=min(90.0, left),
+                      character=character, chat=str(scope or ""), **extra)
 
     def final_answer() -> str:
         """兜底收尾：**不带工具**再问一次，只要一句人话。
@@ -778,6 +781,7 @@ def run(models, messages: list, *, provider: str = "", model: str = "",
             r = caller(msgs + [nudge], provider=provider or None, model=model or None,
                        tools=None, tool_choice="none", temperature=temperature,
                        max_tokens=max_tokens,
+                       character=character, chat=str(scope or ""),
                        timeout=min(60.0, max(2.0, left)))
         except Exception as e:                                   # noqa: BLE001
             from .llm import BudgetExceeded

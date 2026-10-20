@@ -32,8 +32,12 @@ def section(t):
     print(f"\n== {t}")
 
 
-def build(tmp: Path) -> Path:
-    """造一份 chat.jsonl：三个角色、跨两天、含重复短句。"""
+def build(tmp: Path) -> tuple[Path, float]:
+    """造一份 chat.jsonl：三个角色、跨两天、含重复短句。
+
+    返回 (文件, base)：期望值必须用**同一份 base** 算 —— 用 `time.time()` 重新算
+    会在跨零点时差一天（整点跑测试时真的翻过车：造数据在周二、断言在周三）。
+    """
     rows = []
     base = time.time() - 3600
     def row(ts, cid, role, text):
@@ -51,14 +55,14 @@ def build(tmp: Path) -> Path:
     row(base - 80, "klee", "user", "重复短句")
     p = tmp / "chat.jsonl"
     p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-    return p
+    return p, base
 
 
 def main():
     from bot.store import MessageIndex
 
     tmp = Path(tempfile.mkdtemp(prefix="klee-ins-"))
-    chat = build(tmp)
+    chat, base = build(tmp)
     idx = MessageIndex(tmp / "t.db", {"chat": chat}, tmp / "off.json")
     idx.sync(force=True)
     d = idx.insights(days=7, src="chat")
@@ -73,7 +77,7 @@ def main():
     section("2. 星期换算（SQL 的 0=周日 → 展示 0=周一）")
     # 造数据用的是「今天-2天 / 今天-1天」，直接用本地时间算期望值
     # 三段时间都要算：-2 天、-1 天、现在（补充那几条）
-    want_w = {int(time.strftime("%w", time.localtime(time.time() - k * 86400)))
+    want_w = {int(time.strftime("%w", time.localtime(base - k * 86400)))
               for k in (0, 1, 2)}
     got_w = {h["w"] for h in d["heat"]}
     mapped = {(w + 6) % 7 for w in want_w}

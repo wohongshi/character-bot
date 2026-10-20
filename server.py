@@ -2056,6 +2056,7 @@ def _usage_summary(days: int = 7) -> dict:
     by_model: dict[str, dict] = {}
     by_day: dict[str, dict] = {}
     by_char: dict[str, dict] = {}
+    by_chat: dict[str, dict] = {}
     for r in rows:
         p_tok = int(r.get("prompt_tokens") or 0)
         c_tok = int(r.get("completion_tokens") or 0)
@@ -2090,12 +2091,22 @@ def _usage_summary(days: int = 7) -> dict:
         c["requests"] += 1
         c["total"] += t_tok
         c["ms"] += ms
+        # 按会话归账：和「会话绑定」合起来才看得出「这个群烧了多少」。
+        # 老记录没这个字段 → 归到 ""，面板单列成「未记录」，不硬塞给任何会话。
+        chat_key = str(r.get("chat") or "")
+        cc = by_chat.setdefault(chat_key, {"chat": chat_key, "requests": 0, "total": 0,
+                                           "prompt": 0, "ms": 0.0})
+        cc["requests"] += 1
+        cc["total"] += t_tok
+        cc["prompt"] += p_tok
+        cc["ms"] += ms
     models = sorted(by_model.values(), key=lambda x: -x["total"])[:8]
     chars = sorted(by_char.values(), key=lambda x: -x["total"])[:8]
+    chats = sorted(by_chat.values(), key=lambda x: -x["total"])[:8]
     series = sorted(by_day.values(), key=lambda x: x["date"])
     return {"ok": True, "days": days, "rows": len(rows),
             "totals": {**tot, "avg_ms": round(tot["ms"] / tot["requests"], 1) if tot["requests"] else 0},
-            "models": models, "characters": chars, "daily": series,
+            "models": models, "characters": chars, "chats": chats, "daily": series,
             "hint": "数字来自模型返回的 usage；网关不返回时按字符估算（标 est）"}
 
 
@@ -2720,7 +2731,7 @@ def _proactive_send_inner(chat_id: str, *, now=None) -> dict:
     if not kw["model"]:
         kw = {}
     text = _clean_proactive(BOT.models.chat(
-        msgs, max_tokens=120, character=rt.active_character, **kw))
+        msgs, max_tokens=120, character=rt.active_character, chat=chat_id, **kw))
     if not text:
         raise RuntimeError("模型没有给出内容")
     async def _do():
@@ -3210,14 +3221,17 @@ def _run_job_body(job: dict, cid: str) -> None:
             mkw = {}
         try:
             text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid,
+                                   chat="web:" + str(job.get("session") or ""),
                                    stream=True, on_delta=on_delta, **mkw, **kw)
         except TypeError:
             # 模型层不认 reasoning_effort（或者不认 stream）就别带它们
             try:
                 text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid,
+                                       chat="web:" + str(job.get("session") or ""),
                                        stream=True, on_delta=on_delta, **mkw)
             except TypeError:
-                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid, **mkw)
+                text = BOT.models.chat(msgs, timeout=CHAT_TIMEOUT, character=cid,
+                                       chat="web:" + str(job.get("session") or ""), **mkw)
         # 表情标记在这里洗：正文写进历史的是「洗干净的那句」，
         # 图上单独一条气泡 —— 否则搜索/复制里会带上 [表情:开心] 这种标记。
         text = _apply_stickers(text, job, cid)
@@ -5286,7 +5300,8 @@ _SENSITIVE_GET = frozenset({
     "/api/memories", "/api/scheduled", "/api/usage", "/api/rules", "/api/stickers",
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
     "/api/control", "/api/prompt", "/api/proactive", "/api/budget", "/api/people",
-    "/api/memories/tidy", "/api/characters/bindings",
+    "/api/memories/tidy", "/api/characters/bindings", "/api/characters/export",
+    "/api/characters/examples",
 })
 
 
@@ -5677,6 +5692,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/characters/bindings":
             self._json(_char_bind_view())
+            return
+        if u.path == "/api/characters/examples":
+            from bot import examples as ex_mod
+            cid = str((q.get("character") or [""])[0] or "").strip().lower() or _active_cid()
+            if _char_store().get(cid) is None:
+                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                return
+            self._json(ex_mod.summary(STATE_DIR, cid))
+            return
+        if u.path == "/api/characters/export":
+            from bot import charpack
+            cid = str((q.get("id") or [""])[0]).strip().lower()
+            dry = str((q.get("dry") or [""])[0]).strip() in ("1", "true", "yes")
+            try:
+                blob, fname, man = charpack.build_pack(
+                    STUDIO_HOME, _char_store(), cid, plugins_dir=FEATURES_DIR,
+                    kb_dir=charpack.resolve_db_dir(BOT.config if BOT else {}, STUDIO_HOME),
+                    include_kb=str((q.get("kb") or ["1"])[0]).strip() != "0",
+                    include_plugins=str((q.get("plugins") or ["1"])[0]).strip() != "0")
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            except Exception as e:                                 # noqa: BLE001
+                logger.exception("角色包导出失败")
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if dry:
+                self._json({"ok": True, **man, "bytes": len(blob), "filename": fname})
+                return
+            self._send_bytes(blob, "application/zip", cache="no-store",
+                             extra=[("Content-Disposition",
+                                     f'attachment; filename="{fname}"')])
             return
         if u.path == "/api/ui":
             cid = (q.get("character") or [""])[0].strip().lower() or _char_store().active_id()
@@ -7162,6 +7209,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 400)
                 return
             self._json({"ok": True, "character": info, "note": "角色已保存（state/characters.d/）"})
+            return
+
+        if u.path == "/api/characters/examples":
+            from bot import examples as ex_mod
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            if _char_store().get(cid) is None:
+                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                return
+            items = body.get("items")
+            if items is None:
+                self._json({"ok": False, "error": "缺少 items"}, 400)
+                return
+            if not isinstance(items, list):
+                self._json({"ok": False, "error": "items 必须是数组"}, 400)
+                return
+            try:
+                ex_mod.save(STATE_DIR, cid, items)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            except OSError as e:
+                self._json({"ok": False, "error": f"写不进去：{e}"}, 500)
+                return
+            self._json({**ex_mod.summary(STATE_DIR, cid),
+                        "note": "已保存（下一条消息就带着这些样例）"})
             return
 
         if u.path == "/api/characters/theme":

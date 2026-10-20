@@ -922,6 +922,15 @@ body[data-density="wide"] .card{padding:20px 24px}
 }
 .btn.tabon{background:var(--ui-accent);color:#fff;border-color:transparent}
 .tag{border-radius:999px;border:1px solid color-mix(in srgb,var(--ink) 10%,transparent);background:color-mix(in srgb,var(--surface-2) 70%, transparent)}
+/* 花费行：一条会话一行（名字 + 数字 + 进度条） */
+.urow{padding:7px 0;border-bottom:1px solid var(--line)}
+.ucbtn{min-width:64px;justify-content:center}
+/* 会话名太长时省略，别把右边的数字挤到下一行 */
+.ulb{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usub{text-align:right;margin:2px 0 0}
+.urow:last-child{border-bottom:0}
+.utop{display:flex;gap:8px;align-items:baseline;justify-content:space-between;margin-bottom:3px}
+.utop b{font-weight:600;font-size:max(12px, calc(12.5px * var(--fx)))}
 /* 会话绑定里「这个角色已经删了」的标签：红边框、不填色，别抢视觉 */
 .tag.ccbad{border-color:var(--red);color:var(--red);background:transparent}
 
@@ -3962,6 +3971,7 @@ async function viewPersona(){
     <button id="ptKb" onclick="ptab('kb')">📚 知识库</button>
     <button id="ptMem" onclick="ptab('mem')">🧠 记忆</button>
     <button id="ptStk" onclick="ptab('stk')">😀 表情包</button>
+    <button id="ptEx" onclick="ptab('ex')">🗣 样例</button>
   </div>
   <div id="paneSoul">
   <div class="card">
@@ -4047,6 +4057,23 @@ async function viewPersona(){
     <div id="kbRecent" style="margin-top:6px"></div>
   </div>
   </div>
+  <div id="paneEx" style="display:none">
+  <div class="card">
+    <h3>🗣 说话样例 <span class="kv" style="font-family:var(--font-body)">照这个语气回你 · <span id="exCount">0/8</span></span>
+      <button class="btn tiny" style="margin-left:auto" onclick="loadExamples()">刷新</button></h3>
+    <div class="kv" style="margin:6px 0 10px;line-height:1.7">
+      写两三句「用户说 → 她怎么答」，语气和句长会明显跟着走（比在人格里加十条形容词管用）。
+      整块注入上限 1200 字；群里也能用 <code>.样例加 用户说 | 她答</code>，只有主人能用。
+    </div>
+    <div id="exList"><div class="kv">读取中…</div></div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      <input type="text" id="exUser" placeholder="用户说（比如「你好呀」）" style="flex:1;min-width:150px">
+      <input type="text" id="exBot" placeholder="她答（比如「哟，来啦～」）" style="flex:1;min-width:150px">
+      <button class="btn primary tiny" onclick="exAdd()">＋ 加这条</button>
+    </div>
+    <div class="kv" id="exMsg" style="margin-top:6px"></div>
+  </div>
+  </div>
   <div id="paneStk" style="display:none">
   <div class="card">
     <h3>😀 表情包 <span class="kv" style="font-family:var(--font-body)">文件名就是它的意思</span>
@@ -4102,12 +4129,61 @@ async function viewPersona(){
 let personaTab = "soul";
 function ptab(name){
   personaTab = name;
-  const panes = {soul: $("paneSoul"), kb: $("paneKb"), mem: $("paneMem"), stk: $("paneStk")};
-  const btns = {soul: $("ptSoul"), kb: $("ptKb"), mem: $("ptMem"), stk: $("ptStk")};
+  const panes = {soul: $("paneSoul"), kb: $("paneKb"), mem: $("paneMem"), stk: $("paneStk"),
+                 ex: $("paneEx")};
+  const btns = {soul: $("ptSoul"), kb: $("ptKb"), mem: $("ptMem"), stk: $("ptStk"), ex: $("ptEx")};
   for (const [k, el] of Object.entries(panes)) if (el) el.style.display = k === name ? "" : "none";
   for (const [k, el] of Object.entries(btns)) if (el) el.classList.toggle("on", k === name);
   if (name === "mem") loadMemories();
   if (name === "stk") loadStickers();
+  if (name === "ex") loadExamples();
+}
+
+/* ---------- 说话样例 ----------
+   每个角色一份（state/characters/<id>/examples.json），整份替换保存：
+   面板上就是编辑一个完整列表，逐条 PATCH 反而容易和群里 .样例 改的打架。 */
+let exItems = [], exMax = 8;
+async function loadExamples(){
+  const box = $("exList"); if (!box) return;
+  const d = await api("/api/characters/examples?character=" + encodeURIComponent(ACTIVE.id));
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  exItems = d.items || [];
+  const max = d.max || 8;
+  exMax = max;
+  const tag = $("exCount");
+  if (tag) tag.textContent = `${exItems.length}/${max}`;
+  box.innerHTML = exItems.length ? exItems.map((it, i) => `
+    <div class="kbhit" style="display:flex;gap:10px;align-items:flex-start">
+      <span class="tag" style="flex:none">${i + 1}</span>
+      <div style="flex:1;min-width:0">
+        <div class="kv" style="margin:0">用户：${esc(it.user)}</div>
+        <div style="margin-top:2px">她：${esc(it.bot)}</div>
+      </div>
+      <button class="btn tiny" style="flex:none" onclick="exDel(${i})">删</button>
+    </div>`).join("")
+    : `<div class="empty"><b>🗣</b><span>还没有说话样例</span><i>下面填一句「用户说 / 她答」加进来</i></div>`;
+}
+async function exSave(items, okMsg){
+  const d = await post("/api/characters/examples", {character: ACTIVE.id, items});
+  const m = $("exMsg");
+  if (!d || !d.ok){ if (m) m.textContent = "✗ " + ((d && d.error) || "保存失败"); return false; }
+  exItems = d.items || [];
+  await loadExamples();
+  if (m) m.textContent = okMsg || "✓ 已保存";
+  return true;
+}
+async function exAdd(){
+  const u = $("exUser"), b = $("exBot"), m = $("exMsg");
+  if (!u || !b) return;
+  const user = u.value.trim(), bot = b.value.trim();
+  if (!user || !bot){ if (m) m.textContent = "两边都要填"; return; }
+  if (exItems.length >= exMax) { if (m) m.textContent = `已经 ${exMax} 条了，先删一条`; return; }
+  if (await exSave(exItems.concat([{user, bot}]), "✓ 加好了（下一条消息就生效）")){ u.value = ""; b.value = ""; }
+}
+async function exDel(i){
+  const next = exItems.slice();
+  next.splice(i, 1);
+  await exSave(next, "✓ 删掉了");
 }
 
 /* ---------- 表情包 ----------
@@ -4716,6 +4792,17 @@ async function viewModels(target){
     <h3>💰 用量预算 <span class="kv" style="font-family:var(--font-body)">到上限就提醒 / 换便宜模型 / 直接停</span></h3>
     <div id="bgBox" class="kv">读取中…</div>
   </div>
+  <div class="card" id="ucCard">
+    <h3>💸 谁在花你的钱 <span class="kv" style="font-family:var(--font-body)">按会话算 token</span></h3>
+    <div class="row" style="gap:8px;align-items:center;margin-bottom:8px">
+      <button class="btn tiny ucbtn" id="uc7" onclick="ucSet(7)">7 天</button>
+      <button class="btn tiny ucbtn" id="uc1" onclick="ucSet(1)">今天</button>
+      <button class="btn tiny ucbtn" id="uc30" onclick="ucSet(30)">30 天</button>
+      <span class="kv" id="ucSum" style="margin-left:auto"></span>
+    </div>
+    <div id="ucBox"><div class="kv">读取中…</div></div>
+    <div class="kv" style="margin-top:8px">只记账到模型返回 usage 的调用；「换成便宜模型」的那几轮也记在实际用的模型上。</div>
+  </div>
   <div class="card">
     <h3>👀 看图模型 <span class="kv" style="font-family:var(--font-body)">留空 = 不看图</span></h3>
     <div class="row">
@@ -4755,6 +4842,7 @@ async function viewModels(target){
   fbRender((md && md.fallbacks) || []);
   cmRender((md && md.characters) || {});
   bgLoad();                       // 预算卡片挂在这张页里，渲染完才有 DOM
+  ucLoad();                        // 按会话的花费
 }
 
 /* ---- 备用模型 ---- */
@@ -4918,6 +5006,46 @@ async function bgSave(btn){
   btn.disabled = false;
   if (!d || !d.ok){ flash("保存失败：" + ((d && d.error) || "未知")); return; }
   bgLoad();
+}
+
+/* ---------- 谁在花你的钱：按会话归账 ----------
+   数据来自 /api/usage 的 chats（llm 每次调用记一条 usage 行，带 chat 字段）。
+   老记录没有 chat → 归到「未记录」，不硬塞给当前会话。 */
+let ucDays = 7;
+/* 7 位数的 token 连写根本读不出来，统一加千分位 */
+function tnum(n){
+  const v = Math.round(Number(n) || 0);
+  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+function ucSet(days){ ucDays = days; ucLoad(); }
+async function ucLoad(){
+  const box = $("ucBox"), sum = $("ucSum");
+  if (!box) return;
+  const days = ucDays;                     // 快照：连点几个按钮时，慢的那个不能盖掉新的
+  const d = await api("/api/usage?days=" + days);
+  if (days !== ucDays) return;
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  for (const k of [1, 7, 30]){
+    const b = $("uc" + k);
+    if (b) b.classList.toggle("primary", k === days);
+  }
+  const rows = d.chats || [];
+  const tot = (d.totals || {}).total || 0;
+  if (sum) sum.textContent = tot
+    ? `共 ${tnum(tot)} token · ${tnum((d.totals || {}).requests || 0)} 次调用` : "";
+  if (!rows.length){ box.innerHTML = `<div class="kv">还没有用量记录</div>`; return; }
+  const max = Math.max(...rows.map(r => r.total || 0), 1);
+  box.innerHTML = rows.map(r => {
+    const pct = Math.round(100 * (r.total || 0) / max);      // 条宽按最高那个会话算
+    const share = tot ? Math.round(100 * (r.total || 0) / tot) : 0;   // 占比按总量算
+    const label = r.chat ? prChatLabel(r.chat) : "未记录（老数据）";
+    return `<div class="urow">
+      <div class="utop"><b class="ulb">${esc(label)}</b>
+        <span class="kv" style="margin:0;flex:none">${tnum(r.total)} token · ${tnum(r.requests)} 次调用</span></div>
+      <div class="prbar"><i class="pb-c" style="width:${pct}%"></i></div>
+      <div class="kv usub">占 ${share}%</div>
+    </div>`;
+  }).join("");
 }
 
 async function botSaveModel(){
@@ -5352,7 +5480,10 @@ async function viewChars(){
       </div>`).join("")}
   </div>
   <div class="card" style="margin-top:14px">
-    <h3 id="charPlugName">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">不可关闭</span></h3>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <h3 id="charPlugName" style="flex:1;min-width:150px;margin:0">🧩 ${esc(cur.name)} 的专属插件 <span class="kv" style="font-family:var(--font-body)">不可关闭</span></h3>
+      <button class="btn tiny" style="flex:none" onclick="exportChar(${jsq(cur.id)})">📤 导出角色包</button>
+    </div>
     <div class="kv" id="charPlugBody" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
   </div>
   <div class="card" style="margin-top:14px" id="ccCard">
@@ -5369,6 +5500,20 @@ async function viewChars(){
     <div class="kv" id="ccMsg" style="margin-top:6px"></div>
   </div>`;
   ccLoad();
+}
+
+/* ---- 导出角色包：人格 + 主题 + 专属插件 + 语料，能原样装回去 ---- */
+async function exportChar(cid){
+  const q = "/api/characters/export?id=" + encodeURIComponent(cid);
+  let d = null;
+  try { d = await api(q + "&dry=1"); } catch (e) { d = null; }
+  if (!d || !d.ok){ flash("✗ " + ((d && d.error) || "导出失败")); return; }
+  const r = await _blobDownload(q, cid + "-pack.zip");
+  if (!r || !r.ok){ flash("✗ " + ((r && r.error) || "下载失败")); return; }
+  const size = r.bytes > 1048576 ? (r.bytes / 1048576).toFixed(1) + " MB"
+                                 : Math.max(1, Math.round(r.bytes / 1024)) + " KB";
+  const kb = d.kb_rows ? `${d.kb_rows} 块语料` : "没有语料";
+  flash(`✓ 已导出 ${d.name || cid}：人格 ${d.soul_chars} 字 · ${(d.plugins || []).length} 个插件 · ${kb} · ${size}`);
 }
 
 /* ---- 会话角色绑定：一个群一个角色（和 QQ 里的 .角色 命令同一个文件） ---- */

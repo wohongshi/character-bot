@@ -119,14 +119,17 @@ def save(state_dir: Path | str, data: dict) -> None:
                 pass
 
 
-def get_chat(state_dir: Path | str, chat_id: str) -> dict:
+def get_chat(state_dir: Path | str, chat_id: str, *, now: float | None = None) -> dict:
     """读一个会话的配置（**已经过 `_clamp`**：跨天计数归零、参数范围也夹过）。
 
     直接返回磁盘原文会让调用方看到「昨天发了 2 条」而 decide() 看到 0。
+
+    `now` 可注入：按「某一天」读计数（面板回放、测试）时不能让真实时钟把
+    跨天判断带偏 —— 否则同一段数据今天读是 2、明天读是 0，测试会随日期翻车。
     """
     with _LOCK:
         raw = load(state_dir)["chats"].get(str(chat_id)) or {}
-    return _clamp(raw) if raw else {}
+    return _clamp(raw, **({"now": now} if now is not None else {})) if raw else {}
 
 
 def set_chat(state_dir: Path | str, chat_id: str, *, on=None, per_day=None,

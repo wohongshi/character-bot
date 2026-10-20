@@ -192,8 +192,11 @@ def main():
     PV.set_chat(st0, "group:y", on=True, per_day=5)
     PV.mark_sent(st0, "group:y", "第一条", now=noon, intent="noon")
     PV.mark_sent(st0, "group:y", "第二条", now=noon + 60, intent="noon")
-    check("7a.2 同一天连续发是累加", PV.get_chat(st0, "group:y")["sent_today"] == 2,
-          str(PV.get_chat(st0, "group:y")["sent_today"]))
+    # 读的时候也要把 now 传进去：不传就等于用真实时钟判「跨天」，
+    # 这段数据写的是「某一天」，过了零点就会被归零（测试随日期翻车）
+    check("7a.2 同一天连续发是累加",
+          PV.get_chat(st0, "group:y", now=noon)["sent_today"] == 2,
+          str(PV.get_chat(st0, "group:y", now=noon)["sent_today"]))
 
     section("7b. 跨天显示 / 结果未知")
     st2 = Path(tempfile.mkdtemp(prefix="klee-proact-day-"))

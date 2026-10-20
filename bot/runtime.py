@@ -1171,7 +1171,7 @@ class BotRuntime(RuntimeFeatures):
         def _summarize(m, **kw):
             return self.models.chat(m, provider=str(mm.get("provider") or ""),
                                     model=str(mm.get("model") or ""),
-                                    character=self.active_character, **kw)
+                                    character=self.active_character, chat=chat_id, **kw)
 
         try:
             pl = ctx_mod.build(
@@ -1242,6 +1242,14 @@ class BotRuntime(RuntimeFeatures):
                 parts.append(promptdbg.block("stickers", "system", "\n" + pack, group="sys"))
         except Exception as e:                                     # noqa: BLE001
             logger.info("读表情包失败：%s", e)
+        # 说话样例：挨着人格放（语气的东西和人格一起读，比塞在最后更容易被"照着说"）
+        try:
+            from . import examples as ex_mod
+            ex = ex_mod.render(self.state_dir, self.active_character)
+            if ex:
+                parts.append(promptdbg.block("examples", "system", "\n" + ex, group="sys"))
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("读说话样例失败：%s", e)
         if kb:
             parts.append(promptdbg.block(
                 "kb", "system", "【相关背景资料（可参考，不必照搬）】\n" + kb))
@@ -1393,7 +1401,7 @@ class BotRuntime(RuntimeFeatures):
                 reply = await asyncio.to_thread(
                     self.models.chat, msgs,
                     max_tokens=int(self.config.get("max_tokens") or 800),
-                    character=self.active_character, **mkw)
+                    character=self.active_character, chat=chat_id, **mkw)
             except Exception as e:                                 # noqa: BLE001
                 # 预算拦下是**策略**不是故障：不能算进 errors（面板的「错误 N」）
                 # 也不能刷 warning，否则正常的成本控制在读数上长得像故障

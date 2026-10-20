@@ -13,6 +13,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,7 +130,10 @@ def main():
     section("5. 静默时段")
     from bot import chatpolicy as CHP
     CHP.set_chat(st, "group:555", mode="open", quiet=["00:00", "23:59"])
-    d = sim("随便聊聊", is_group=True, chat_id="group:555")
+    # 注入固定的 now：静默判定是「a <= 现在 < b」，23:59 这一分钟本来就落在窗口外
+    # ——不注入的话，整点跑测试会随真实时间翻车（撞过一次 23:59）
+    noon = time.mktime((2026, 10, 20, 12, 0, 0, 0, 0, -1))
+    d = sim("随便聊聊", is_group=True, chat_id="group:555", now=noon)
     check("5.1 静默时不聊", d["action"] == "ignore" and "静默" in d["reason"], d["reason"])
     d = sim(".b64e x", is_group=True, chat_id="group:555")
     check("5.2 静默时命令照常", d["action"] == "command", d["action"])
@@ -143,7 +147,7 @@ def main():
     section("5b. 和 runtime 对齐的两个细节")
     # 静默 + 没被 @：runtime 一定不处理（quiet_mention 只影响「被 @ 的那条」）
     CHP.set_chat(st, "group:556", mode="open", quiet=["00:00", "23:59"], quiet_mention=True)
-    d = sim("随便聊聊", is_group=True, chat_id="group:556", mentioned=False)
+    d = sim("随便聊聊", is_group=True, chat_id="group:556", mentioned=False, now=noon)
     check("5b.1 静默+没@ 即使 quiet_mention 也不聊", d["action"] == "ignore", d["action"])
     # 规则转命令要过权限：仅主人的命令，群体触发应当被拦
     CP.set_override(cfg, command="b64e", permission="owner")
