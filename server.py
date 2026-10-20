@@ -2577,12 +2577,30 @@ def _messages_of(chat_id: str, n: int = 4, *, tail_bytes: int = 1_048_576) -> li
     return out[-max(1, int(n or 4)):]
 
 
+def _send_succeeded(res) -> bool:
+    """`rt.send` 的返回值算不算「真的发出去了」。
+
+    限流和适配器失败都是**正常返回 success=False**（不抛异常），
+    所以调用方必须先问这里再补记账。
+    """
+    return bool(getattr(res, "success", True))
+
+
 async def _note_proactive_sent(rt, chat_id: str, text: str) -> None:
-    """把「她自己说的这句」补进消息流和历史（面板能看见、下一轮也能接上）。"""
+    """把「她自己说的这句」补进消息流和历史（面板能看见、下一轮也能接上）。
+
+    两处都不能在事件循环里做同步 IO：
+    - `_append_jsonl` 要抢 `_lock`，而清理线程会整段持有它做全文件重写（几十 MB 时是秒级），
+      卡在这里等于把 QQ 的心跳/收发全排住；
+    - 历史落盘必须**和 `_chat` 一样在锁里**：否则先算好 blob、释放锁让出循环、
+      期间 `_chat` 追加两条并写盘，最后这里拿旧 blob 覆盖回去 —— 盘上比内存少一轮。
+    """
     ts = time.time()
     try:
-        _append_jsonl(MSG_JSONL, {"ts": ts, "chat_id": str(chat_id), "role": "assistant",
-                                  "text": str(text or "")[:800], "proactive": True})
+        await asyncio.to_thread(
+            _append_jsonl, MSG_JSONL,
+            {"ts": ts, "chat_id": str(chat_id), "role": "assistant",
+             "text": str(text or "")[:800], "proactive": True})
     except Exception as e:                                        # noqa: BLE001
         logger.info("写消息流失败：%s", e)
     key = rt._hist_key(str(chat_id))                              # noqa: SLF001（同包内部）
@@ -2591,7 +2609,7 @@ async def _note_proactive_sent(rt, chat_id: str, text: str) -> None:
         hist.append({"role": "assistant", "content": str(text or "")[:800], "ts": ts})
         del hist[:-max(2, rt.hist_limit * 2)]
         blob = json.dumps(rt.hist, ensure_ascii=False, indent=2) + "\n"
-    await asyncio.to_thread(rt._write_text_atomic, rt.hist_path, blob)   # noqa: SLF001
+        await asyncio.to_thread(rt._write_text_atomic, rt.hist_path, blob)   # noqa: SLF001
 
 
 def _classify_wait_timeout(task) -> BaseException:
@@ -2658,6 +2676,11 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
             res = await asyncio.wait_for(task, timeout=90)
         except asyncio.TimeoutError:
             raise _classify_wait_timeout(task) from None
+        # `rt.send` 在限流 / 适配器失败时**正常返回 success=False**（不抛异常），
+        # 所以补记账必须在这次判断之后：先记账会把一条用户根本没收到的消息写进
+        # 消息流和历史，下一轮模型还以为是它说的。
+        if not _send_succeeded(res):
+            return res
         # 发成功之后补记账：面板消息流要能看见这句，历史里也要有 ——
         # 否则用户回她的时候，模型不知道「自己说过什么」（容易重复或自相矛盾）。
         try:

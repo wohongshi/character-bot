@@ -345,6 +345,57 @@ def main():
         SV.BOT, SV.STATE_DIR, SV.MSG_JSONL = old_bot, old_state, old_msg
         SV._proactive_send = old_send
 
+    section("12. 发成功才补记账")
+    from types import SimpleNamespace as _NS
+    check("12.1 success=True 才算发出去", SV._send_succeeded(_NS(success=True)) is True)
+    check("12.2 success=False（限流/适配器失败）不算",
+          SV._send_succeeded(_NS(success=False)) is False)
+    check("12.3 没有 success 字段按成功算（老适配器）",
+          SV._send_succeeded(_NS()) is True)
+
+    st4 = Path(tempfile.mkdtemp(prefix="klee-proact-note-"))
+    mj = st4 / "messages.jsonl"
+    histp = st4 / "bot_history.json"
+
+    class _FakeRt:
+        hist_limit = 4
+
+        def __init__(self):
+            self.hist = {}
+            self._hist_lock = None
+            self.hist_path = st4 / "bot_history.json"
+
+        @staticmethod
+        def _hist_key(chat_id):
+            return "klee:" + chat_id
+
+        @staticmethod
+        def _write_text_atomic(path, blob):
+            Path(path).write_text(blob, encoding="utf-8")
+
+    async def _run_note():
+        rt2 = _FakeRt()
+        rt2._hist_lock = __import__("asyncio").Lock()
+        old_mj = SV.MSG_JSONL
+        try:
+            SV.MSG_JSONL = mj
+            await SV._note_proactive_sent(rt2, "group:5", "早呀")
+            await SV._note_proactive_sent(rt2, "group:5", "再一句")
+        finally:
+            SV.MSG_JSONL = old_mj
+        return rt2
+
+    rt2 = __import__("asyncio").run(_run_note())
+    rows = [json.loads(x) for x in mj.read_text(encoding="utf-8").splitlines() if x.strip()]
+    check("12.4 消息流里能看见（标 proactive）",
+          len(rows) == 2 and rows[0]["proactive"] is True and rows[0]["role"] == "assistant",
+          str(rows)[:200])
+    check("12.5 历史里也有这两句", len(rt2.hist.get("klee:group:5", [])) == 2,
+          str(rt2.hist)[:200])
+    check("12.6 历史落盘了（重启不丢）",
+          (st4 / "bot_history.json").exists()
+          and "早呀" in (st4 / "bot_history.json").read_text(encoding="utf-8"))
+
     print()
     if FAIL:
         print(f"FAIL {len(FAIL)} / {len(PASS) + len(FAIL)}")
