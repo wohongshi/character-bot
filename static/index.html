@@ -4059,7 +4059,7 @@ async function viewPersona(){
   </div>
   <div id="paneEx" style="display:none">
   <div class="card">
-    <h3>🗣 说话样例 <span class="kv" style="font-family:var(--font-body)">照这个语气回你 · <span id="exCount">0/8</span></span>
+    <h3>🗣 说话样例 <span class="kv" style="font-family:var(--font-body)">照这个语气 · <span id="exCount">0/8</span></span>
       <button class="btn tiny" style="margin-left:auto" onclick="loadExamples()">刷新</button></h3>
     <div class="kv" style="margin:6px 0 10px;line-height:1.7">
       写两三句「用户说 → 她怎么答」，语气和句长会明显跟着走（比在人格里加十条形容词管用）。
@@ -4067,9 +4067,9 @@ async function viewPersona(){
     </div>
     <div id="exList"><div class="kv">读取中…</div></div>
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
-      <input type="text" id="exUser" placeholder="用户说（比如「你好呀」）" style="flex:1;min-width:150px">
-      <input type="text" id="exBot" placeholder="她答（比如「哟，来啦～」）" style="flex:1;min-width:150px">
-      <button class="btn primary tiny" onclick="exAdd()">＋ 加这条</button>
+      <input type="text" id="exUser" placeholder="用户说（例：你好呀）" style="flex:1 1 110px;min-width:0">
+      <input type="text" id="exBot" placeholder="她答（例：哟，来啦～）" style="flex:1 1 110px;min-width:0">
+      <button class="btn primary tiny" style="flex:0 0 auto;min-width:88px" onclick="exAdd()">＋ 加这条</button>
     </div>
     <div class="kv" id="exMsg" style="margin-top:6px"></div>
   </div>
