@@ -257,6 +257,16 @@ def main():
                         allow_fallback=False)
         check("9.10 带图片的请求不降级",
               b'"model": "m1"' in (seen3[0] if seen3 else b""), str(seen3[:1])[:120])
+        seen4 = []
+        L._open_url = lambda req, timeout=0: (seen4.append(req.data) or fake_open(req))
+        st.complete_raw([{"role": "user", "content": "查一下"},
+                         {"role": "assistant", "content": "",
+                          "tool_calls": [{"id": "c1", "type": "function",
+                                          "function": {"name": "now", "arguments": "{}"}}]},
+                         {"role": "tool", "tool_call_id": "c1", "content": "12:00"}],
+                        allow_fallback=False)
+        check("9.11 工具轮中途的请求也不降级",
+              b'"model": "m1"' in (seen4[0] if seen4 else b""), str(seen4[:1])[:120])
 
         def boom():
             raise RuntimeError("钩子坏了")

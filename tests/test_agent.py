@@ -110,6 +110,20 @@ def main():
         ok, err = True, str(e)
     check("3.5 模型异常 → AgentError（供 runtime 回退）", ok and "网络炸了" in err, err)
 
+    # 收尾那轮（final_answer）被预算拦下：必须原样冒出去。
+    # 吞掉的话上层会当成「agent 没给回复」→ 一次正常限流被记成故障
+    from bot.llm import BudgetExceeded as _BE
+    c = script({"text": "", "tool_calls": tc("now")}, _BE("今天到上限了"))
+    try:
+        A.run(None, [{"role": "user", "content": "查时间"}], max_steps=1, complete=c)
+        ok5, err5 = False, "没有抛出"
+    except Exception as e:                                        # noqa: BLE001
+        # run() 会把底层异常包成 AgentError，但必须保留 __cause__ ——
+        # runtime 就是靠它把「预算拦下」和真故障分开的
+        ok5 = isinstance(e.__cause__, _BE) and "上限" in str(e)
+        err5 = f"{type(e).__name__}: {e} | cause={type(e.__cause__).__name__}"
+    check("3.5b 收尾轮被预算拦下 → 异常带 __cause__（不被吞）", ok5, err5)
+
     calls5 = [{"id": f"c{i}", "name": "now", "arguments": "{}"} for i in range(5)]
     c = script({"text": "", "tool_calls": calls5},
                {"text": "收尾", "tool_calls": []})

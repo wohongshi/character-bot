@@ -826,7 +826,7 @@ class ModelStore:
                 elif tools or _has_image_parts(messages) or _has_tool_turn(messages):
                     # 只在**纯文字对话**时降级：带图片内容段（看图）或带 tools（工具循环）
                     # 的请求交给便宜文本模型会直接 4xx，然后还会按全价重试一轮 —— 比不降级更亏
-                    log.info("用量已超：这次请求带工具/图片，跳过降级（按 %s/%s 继续）",
+                    log.info("用量已超：这次请求带工具/图片/工具轮，跳过降级（按 %s/%s 继续）",
                              provider or "主模型", model or "(active)")
                 else:
                     provider = cheap_pid or provider

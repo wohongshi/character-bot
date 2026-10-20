@@ -291,14 +291,18 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         if archived:                    # 先归档：失败就整体作废，别丢条目
             ap = path.with_name(f"{path.stem}.archive.jsonl")
             ap.parent.mkdir(parents=True, exist_ok=True)
-            # 幂等：主文件写失败后重跑会再算一遍同样的计划，直接 append 会堆重复
-            seen = {_key(r) for r in _read(ap)}
-            merged = list(_read(ap))
+            # 幂等：主文件写失败后重跑会再算一遍同样的计划，直接 append 会堆重复。
+            # 只读一次（两次读之间文件可能变），没有新增就一个字节都不写。
+            merged = _read(ap)
+            seen = {_key(r) for r in merged}
+            added = 0
             for r in archived:
                 if _key(r) not in seen:
                     merged.append(r)
                     seen.add(_key(r))
-            _write(ap, merged)
+                    added += 1
+            if added:
+                _write(ap, merged)
         _write(path, out)
     return {"before": len(rows), "after": len(out), "merged": len(drop_ts),
             "archived": len(archived), "dropped": len(drop_ts)}
