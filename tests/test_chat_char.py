@@ -322,7 +322,11 @@ def register(api):
         return "通用版"
     async def alias(ctx):
         return "抱抱别名"
+    async def who(ctx):
+        # 通用插件问「我是谁」= manager 此刻的角色（走 ContextVar）
+        return "who:" + api.character_id
     api.on_command("通用命令", h, help=".通用命令 —— 谁都能用")
+    api.on_command("谁的", who, help=".谁的 —— 看此刻是哪个角色")
     api.on_command("摸摸头", alias, aliases=("抱抱",), help=".摸摸头 —— 通用")
 '''
 (FEAT / "k.py").write_text(KLEE_PLUGIN, encoding="utf-8")
@@ -437,6 +441,35 @@ check("可莉的会话跑到可莉那条", r1.get("ok") and "klee" in str(r1.get
 check("胡桃的会话跑到胡桃那条", r2.get("ok") and "hutao" in str(r2.get("text") or ""), str(r2)[:120])
 check("技能上下文的 ctx.character 就是本会话的角色",
       "|hutao" in str(r2.get("text") or ""), str(r2.get("text"))[:80])
+
+# 技能是在**新线程**里跑的：插件侧读「我是谁」也必须还是这个会话的角色
+w1 = run_skill("hutao", "谁的", "谁的")
+w2 = run_skill("klee", "谁的", "谁的")
+check("技能线程里 api.character_id 跟着会话走（胡桃）",
+      "who:hutao" in str(w1.get("text") or ""), str(w1.get("text"))[:80])
+check("技能线程里 api.character_id 跟着会话走（可莉）",
+      "who:klee" in str(w2.get("text") or ""), str(w2.get("text"))[:80])
+
+# 面板试跑：HTTP 线程里没有 ContextVar，靠 run(character=…) 显式传
+noctx = hub.run("谁的", "谁的", adapter=FakeAdapter("klee"), is_group=False, group_id="",
+                user_id="panel", user_name="主人", role="owner", character="hutao")
+check("显式 character 覆盖空上下文（面板试跑）",
+      "who:hutao" in str(noctx.get("text") or ""), str(noctx.get("text"))[:80])
+noctx2 = hub.run("同名", "同名", adapter=FakeAdapter("klee"), is_group=False, group_id="",
+                 user_id="panel", user_name="主人", role="owner", character="klee")
+check("显式 character 也决定同名命令挑哪条",
+      "klee" in str(noctx2.get("text") or ""), str(noctx2.get("text"))[:80])
+
+# 索引缓存必须按角色分开：先问一个角色，再问另一个，不能拿到上一个的表
+sr1 = hub.search("同名")
+sr2_tok = chat_char.push("hutao")
+try:
+    sr2 = hub.search("同名")
+finally:
+    chat_char.pop(sr2_tok)
+check("技能检索不串角色",
+      any(x[1]["name"] == "k" for x in sr1) and any(x[1]["name"] == "h" for x in sr2),
+      str([(round(x[0], 2), x[1]["name"]) for x in sr1])[:100])
 r4 = run_skill("atri", "hutao_only_nonexistent", "x")
 check("不存在的技能仍是普通错误", r4.get("ok") is False and "没有技能" in str(r4.get("error")), str(r4)[:100])
 

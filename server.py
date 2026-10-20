@@ -6368,6 +6368,9 @@ class Handler(BaseHTTPRequestHandler):
                 res = hub.run(cmd, f"{cmd} {args}".strip(), adapter=adapter,
                               is_group=False, group_id="", user_id="panel",
                               user_name="主人", role="owner", timeout=90,
+                              # 面板是 HTTP 线程，ContextVar 是空的：不显式传角色，
+                              # 试跑会按**全局**角色解析命令（选中别的角色时会报「没有技能」）
+                              character=cid,
                               chat={"adapter": adapter, "is_owner": True, "is_group": False,
                                     "user_id": "panel", "user_name": "主人", "role": "owner",
                                     # 等异步插件把活干完：`.画画` 是 create_task 之后

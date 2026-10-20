@@ -201,15 +201,19 @@ class SkillHub:
         2-gram 集合是空的，只能靠子串判，光有 gram 集合会一个都匹配不上。
         """
         stamp = float(getattr(self.mgr, "last_reload_ts", 0.0) or 0.0)
+        # 键必须带角色：`skills()` 现在按会话角色过滤，只按 reload 时间做键的话，
+        # 进程里**第一条消息的角色**会把整份索引占住，别的角色要么查到别人的技能、
+        # 要么自己的技能查不到（hint 的相关性挑选直接失效）。
+        key = (stamp, self.mgr._char_now())
         hit = self._gram_cache.get("all")
-        if hit and hit[0] == stamp:
+        if hit and hit[0] == key:
             return hit[1]
         out = []
         for s in self.skills():
             blob = " ".join([s["name"], s["title"], s["description"]]
                             + [c["name"] + " " + str(c["help"] or "") for c in s["commands"]])
             out.append((s, blob.lower(), self._grams(blob)))
-        self._gram_cache["all"] = (stamp, out)
+        self._gram_cache["all"] = (key, out)
         return out
 
     # ---------- 检索 ----------
@@ -348,15 +352,35 @@ class SkillHub:
         return text if len(text) <= MAX_DETAIL_CHARS else text[:MAX_DETAIL_CHARS] + "\n…"
 
     # ---------- 调用 ----------
-    def run(self, name: str, text: str, *, adapter, is_group: bool, group_id: str,
-            user_id: str, user_name: str, role: str = "", timeout: float = 25.0,
-            chat: dict | None = None) -> dict:
+    def run(self, name: str, text: str, **kw) -> dict:
+        """跑一个技能。
+
+        `character` 显式传入优先（面板试跑跑在 HTTP 线程里，ContextVar 是空的）；
+        没传就用当前会话的角色。整个调用期间把角色压进 ContextVar ——
+        `skills()` / `get()` / `suggest()` 这些「查表」入口都读它，只给 `cmd_for`
+        传参是不够的（试跑时胡桃的插件根本不在表里，会报「没有技能」）。
+        """
+        from . import chat_char as _cc
+        char = str(kw.get("character") or "").strip().lower() or self.mgr._char_now()
+        kw["character"] = char
+        tok = _cc.push(char)
+        try:
+            return self._run(name, text, **kw)
+        finally:
+            _cc.pop(tok)
+
+    def _run(self, name: str, text: str, *, adapter, is_group: bool, group_id: str,
+             user_id: str, user_name: str, role: str = "", timeout: float = 25.0,
+             chat: dict | None = None, character: str = "") -> dict:
         # 先按**命令名**精确找（`.r` 这种单字母命令很常见）：
         # get("r") 走模糊匹配会匹到 "anniversary" 这种名字里带 r 的插件 ——
         # 于是「试跑 .r」报「.r 属于技能 dice，不是 anniversary」，纯属自己绕自己。
+        # 角色：显式传入优先（面板试跑在 HTTP 线程里跑，ContextVar 是空的），
+        # 否则用当前会话的角色（QQ 消息路径由 handle_event 设好了）。
+        char = str(character or "").strip().lower() or self.mgr._char_now()
         s = None
         key = re.sub(r"^[.。．/／]+", "", str(name or "").strip()).split(" ")[0].lower()
-        cmd0 = self.mgr.cmd_for(key) if key else None
+        cmd0 = self.mgr.cmd_for(key, char) if key else None
         if cmd0 is not None:
             cand = self.get(cmd0.plugin)
             if cand:
@@ -374,11 +398,11 @@ class SkillHub:
         if token:
             # 用 `cmd_for`（带角色门控）：直接查 commands 会拿到「首选」那条，
             # 可能是别的角色的同名命令，等于绕过了按会话角色分发
-            cmd = self.mgr.cmd_for(token.lower())
+            cmd = self.mgr.cmd_for(token.lower(), char)
             if cmd is not None and cmd.plugin != s["name"]:
                 return {"ok": False, "error": f".{cmd.name} 属于技能 {cmd.plugin}，不是 {s['name']}"}
         if cmd is None:
-            cmd = self.mgr.cmd_for(s["commands"][0]["name"].lower())
+            cmd = self.mgr.cmd_for(s["commands"][0]["name"].lower(), char)
             # 模型常写 "北京" 而不是 "weather 北京"：整段当参数，别把输入吞掉
             rest = raw if rest.strip() else token
         if cmd is None:
@@ -386,7 +410,7 @@ class SkillHub:
             # 别让调用方拿到 AttributeError（cmd.cooldown → None）
             return {"ok": False,
                     "error": f"「{s['name']}」是别的角色的技能，"
-                             f"本会话的角色（{self.mgr._char_now()}）用不了"}
+                             f"本会话的角色（{char or '未指定'}）用不了"}
         is_owner = bool(getattr(adapter, "owner_id", "")) and str(user_id) == str(
             getattr(adapter, "owner_id", ""))
         is_admin = is_owner or (is_group and role in ("owner", "admin"))
@@ -411,7 +435,7 @@ class SkillHub:
             is_group=is_group, group_id=str(group_id or ""), user_id=str(user_id),
             user_name=str(user_name or user_id), message_id="", mentioned=True, role=role,
             # 带上「此刻的角色」：插件里判角色（以及 cmd.characters 的二次校验）都看它
-            character=self.mgr._char_now(),
+            character=char,
         )
         ctx.command, ctx.args = cmd.name, rest.split() if rest else []
         box: dict = {}
@@ -429,6 +453,16 @@ class SkillHub:
         state: dict = {"main_done": False}
 
         def _invoke_thread():
+            # 新线程不继承 contextvars：不 push 的话插件里 `api.character_id` /
+            # `_char_now()` 会退回全局角色（和直接在群里敲的结果不一致）。
+            from . import chat_char as _cc
+            tok = _cc.push(char)
+            try:
+                _invoke_thread_inner()
+            finally:
+                _cc.pop(tok)
+
+        def _invoke_thread_inner():
             # 不用 asyncio.run()：它在退出时会**取消**所有没跑完的任务，
             # 而插件常见写法是 `create_task(worker())` 然后立刻返回（draw.py 就是）。
             # 需要等后台任务时（面板「试跑」）自己建 loop，跑完再 drain 一下。
