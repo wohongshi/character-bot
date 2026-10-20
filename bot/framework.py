@@ -1142,11 +1142,15 @@ class FeatureManager:
     def release_character(self, cid: str) -> list[str]:
         """卸掉这个角色的插件（只卸「没有别的已加载角色在用」的那些）。"""
         cid = str(cid or "").strip().lower()
-        if not self.lazy_characters or cid not in self._loaded_chars:
+        if not self.lazy_characters:
             return []
         with self._lock:
+            # 清退避要在早退**之前**：装失败的角色根本不在 `_loaded_chars` 里，
+            # 放在早退后面就等于「手动卸载也解不了退避」，还得等满 5 分钟。
+            self._retry_at.pop(cid, None)
+            if cid not in self._loaded_chars:
+                return []
             self._loaded_chars.discard(cid)
-            self._retry_at.pop(cid, None)      # 手动卸载后再装要立刻能装上
             freed = []
             for name, info in list(self.plugins.items()):
                 chars = {str(x).strip().lower() for x in (info.get("characters") or ())}
@@ -1314,6 +1318,9 @@ class FeatureManager:
                 info["dormant"] = True
                 self.plugins[name] = info
                 self._dormant[name] = path
+                # 为了读 CHARACTERS 已经 exec 过一遍了：不留模块（否则每轮重试
+                # 都留一份，模块被 sys.modules 强引用，GC 收不走）
+                self._drop_modules(name)
                 return
             info["registered"] = True
         else:
