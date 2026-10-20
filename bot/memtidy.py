@@ -242,6 +242,9 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
 
     整个过程持 `memory._LOCK`：聊天那侧 `memory.add()` 也拿这把锁，
     不互斥的话「整理期间的读 → 聊天写入 → 整理回写旧快照」会丢新记忆。
+
+    合并的计数**按行**算（不是按 key）：文件里可能有完全重复的行，
+    按 key 算会少报、还会把 hits 记两遍。
     """
     from . import memory as mem_mod
     path = _path(state_dir, character)
@@ -250,106 +253,78 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
         # 只用 ts 当身份会把「没有 ts 的老行」全折成 0.0 —— 删一条就删一片
         return (_num(r.get("ts")), str(r.get("text") or ""))
 
-    drop_ts = set()
-    for g in (p or {}).get("groups") or []:
-        keep_key = _key(g.get("keep") or {})
-        for d in g.get("drop") or []:
-            # 文件里存在完全重复的行时（老导入、都没有 ts）drop 会和 keep 同键，
-            # 那样会把 keep 自己也删掉 → 整组凭空消失
-            if _key(d) != keep_key:
-                drop_ts.add(_key(d))
-    stale_ts = {_key(r) for r in (p or {}).get("stale") or []}
-    total = int(((p or {}).get("counts") or {}).get("total") or 0)
-    if not drop_ts and not stale_ts:
-        # before/after 报真实条数：报 0→0 会被面板读成「记忆被清空了」
-        return {"before": total, "after": total, "merged": 0, "archived": 0,
-                "dropped": 0, "noop": True}
-
-    merged_by_keep = {}
-    keep_drops: dict = {}
-    for g in (p or {}).get("groups") or []:
-        kk = _key(g.get("keep") or {})
-        # 同键的 drop（文件里完全重复的行）连 keep 自己都算进去了：留着会让
-        # hits 翻倍、还写不出两份 —— 这里也过滤掉
-        keep_drops[kk] = [_key(d) for d in (g.get("drop") or []) if _key(d) != kk]
-
     lock = getattr(mem_mod, "_LOCK", None)
     ctx = lock if lock is not None else _NullLock()
     with ctx:
         rows = _read(path)
         if not rows:
-            return {"before": 0, "after": 0, "merged": 0, "archived": 0, "dropped": 0,
-                    "noop": True}
-        # 计划是锁外算的：drop 那几条可能已经被别处删掉。一条都不在的话
-        # 就别把这个 keep 换成「合并后的记录」（hits/scope 会凭空变大）
+            return {"before": 0, "after": 0, "merged": 0, "archived": 0,
+                    "dropped": 0, "noop": True}
         present = {_key(r) for r in rows}
-        by_key = {_key(r): r for r in rows}
-        for kk, drops in list(keep_drops.items()):
+        stale_ts = {_key(r) for r in (p or {}).get("stale") or []}
+
+        # 逐组核账：keep 还在、且组里至少还有一条别的行，这一组才生效
+        groups = []          # [(keep, [本组现存的所有行])]
+        group_of = {}        # 行 key → 组下标
+        for g in (p or {}).get("groups") or []:
+            keep = g.get("keep") or {}
+            kk = _key(keep)
             if kk not in present or kk in stale_ts:
-                # keep 那条被别处删了、或者它自己被判成「陈旧要归档」：
-                # 两种情况都不能再删 drops（否则这组内容只剩 .bak）、
-                # 也不能用计划里那份（它已经把 drops 的 hits/scope 加进去了）
-                merged_by_keep.pop(kk, None)
-                for d in drops:
-                    drop_ts.discard(d)
+                # keep 被删 / 它自己要被归档：这一组不动（否则 drops 只剩 .bak）
                 continue
-            alive = [by_key[d] for d in drops if d in present]
-            if not alive:
-                merged_by_keep.pop(kk, None)
+            keys = {kk} | {_key(d) for d in (g.get("drop") or [])}
+            alive = [r for r in rows if _key(r) in keys]
+            if len(alive) <= 1:
                 continue
-            # 计划可能部分过期（别的进程删了其中一条）：按**实际还在的** drop
-            # 重算，别直接抄计划里那份（它已经把那几条的 hits/scope 加进去了）
-            base = by_key[kk]
-            rec = {**base}
-            rec["hits"] = int(base.get("hits") or 0)
-            scope = str(base.get("scope") or "")
-            for d in alive:
-                scope = _merge_scope(str(d.get("scope") or ""), scope)
-                rec["hits"] += int(d.get("hits") or 0)
-            rec["scope"] = scope
-            rec.pop("merged", None)
-            merged_by_keep[kk] = rec
+            gi = len(groups)
+            groups.append((keep, alive))
+            for r in alive:
+                group_of[_key(r)] = gi
+
+        if not groups and not stale_ts:
+            return {"before": len(rows), "after": len(rows), "merged": 0,
+                    "archived": 0, "dropped": 0, "noop": True}
+
         out, archived = [], []
-        written: dict = {}          # key → out 里那条（重复行把 hits/scope 并到这里）
-        deduped = 0
+        written: set = set()
+        merged_rows = 0
         for r in rows:
             k = _key(r)
-            if k in drop_ts:
+            gi = group_of.get(k)
+            if gi is not None:
+                if gi in written:
+                    continue                    # 同组其余行（含重复行）都并进第一条
+                written.add(gi)
+                keep, alive = groups[gi]
+                rec = dict(keep)
+                merged_rows += len(alive) - 1
+                rec["hits"] = sum(int(x.get("hits") or 0) for x in alive)
+                # `_merge_scope(old, new)` 让第二个参数优先（截断从尾部保）：
+                # 先把 keep 自己放进去，再一条条并 drop —— keep 的会话最不容易被截掉
+                kk = _key(keep)
+                scope = str(keep.get("scope") or "")
+                for x in alive:
+                    if _key(x) == kk:
+                        continue
+                    scope = _merge_scope(str(x.get("scope") or ""), scope)
+                rec["scope"] = scope
+                rec.pop("merged", None)         # 预演用的计数，不落盘
+                out.append(rec)
                 continue
             if k in stale_ts:
                 archived.append(r)
                 continue
-            if k in merged_by_keep:
-                if k in written:
-                    # 文件里完全重复的行：只写一份，但 hits/scope 要并进来 ——
-                    # 否则计数凭空消失，面板的「before → after（合并 N）」也对不上
-                    prev = written[k]
-                    prev["hits"] = int(prev.get("hits") or 0) + int(r.get("hits") or 0)
-                    prev["scope"] = _merge_scope(str(r.get("scope") or ""),
-                                                 str(prev.get("scope") or ""))
-                    deduped += 1
-                    continue
-                rec = dict(merged_by_keep[k])
-                rec.pop("merged", None)      # 预演用的计数，不该落进记忆文件
-                written[k] = rec
-                out.append(rec)
-            else:
-                out.append(r)
+            out.append(r)
 
-        # 计划是锁外算的：并发的第二次 apply、或者计划已过期时，这里可能根本没变化。
-        # 那种情况下**一个字节都不写**（否则会拿已经整理过的内容覆盖掉第一轮留的 .bak）
-        if out == rows:        # 比内容，不比条数：合并只改内容时长度不变
+        if len(out) == len(rows) and not archived:
             return {"before": len(rows), "after": len(rows), "merged": 0,
                     "archived": 0, "dropped": 0, "noop": True}
         if path.exists():
             # 备份写不进去就整体作废：没有 .bak 的破坏性整理不能做
-            # （整理会让文件变小，磁盘满时「拷贝成 .bak」会 ENOSPC 而重写却能成功）
             path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
         if archived:                    # 先归档：失败就整体作废，别丢条目
             ap = path.with_name(f"{path.stem}.archive.jsonl")
             ap.parent.mkdir(parents=True, exist_ok=True)
-            # 幂等：主文件写失败后重跑会再算一遍同样的计划，直接 append 会堆重复。
-            # 只读一次（两次读之间文件可能变），没有新增就一个字节都不写。
             merged = _read(ap)
             seen = {_key(r) for r in merged}
             added = 0
@@ -361,9 +336,8 @@ def apply(state_dir: Path | str, character: str, p: dict) -> dict:
             if added:
                 _write(ap, merged)
         _write(path, out)
-    return {"before": len(rows), "after": len(out),
-            "merged": len(drop_ts) + deduped,
-            "archived": len(archived), "dropped": len(drop_ts), "deduped": deduped}
+    return {"before": len(rows), "after": len(out), "merged": merged_rows,
+            "archived": len(archived), "dropped": merged_rows}
 
 
 class _NullLock:
