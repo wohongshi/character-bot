@@ -115,24 +115,28 @@ def save(state_dir: Path | str, cid: str, items) -> list[dict]:
 
 def add(state_dir: Path | str, cid: str, user: str, bot: str) -> list[dict]:
     """追加一条（满 8 条时抛 ValueError —— 悄悄丢掉一条更让人困惑）。"""
-    cur = load(state_dir, cid)
-    if len(cur) >= MAX_ITEMS:
-        raise ValueError(f"已经有 {MAX_ITEMS} 条了，先删一条")
     u = str(user or "").strip()
     b = str(bot or "").strip()
     if not u or not b:
         raise ValueError("「用户说」和「她答」都要有内容")
-    return save(state_dir, cid, cur + [{"user": u[:MAX_USER], "bot": b[:MAX_BOT]}])
+    # 读-改-写整段持锁（RLock，嵌套调用 save 不会自锁）：只锁写入的话，
+    # 面板整份替换恰好插在 load 和 save 之间，刚加的那条会被静默覆盖。
+    with _LOCK:
+        cur = load(state_dir, cid)
+        if len(cur) >= MAX_ITEMS:
+            raise ValueError(f"已经有 {MAX_ITEMS} 条了，先删一条")
+        return save(state_dir, cid, cur + [{"user": u[:MAX_USER], "bot": b[:MAX_BOT]}])
 
 
 def remove(state_dir: Path | str, cid: str, index: int) -> list[dict]:
     """按 1 起的位置删一条。"""
-    cur = load(state_dir, cid)
-    i = int(index) - 1
-    if i < 0 or i >= len(cur):
-        raise ValueError(f"没有第 {index} 条（一共 {len(cur)} 条）")
-    cur.pop(i)
-    return save(state_dir, cid, cur)
+    with _LOCK:                       # 同 add()：读-改-写整段持锁
+        cur = load(state_dir, cid)
+        i = int(index) - 1
+        if i < 0 or i >= len(cur):
+            raise ValueError(f"没有第 {index} 条（一共 {len(cur)} 条）")
+        cur.pop(i)
+        return save(state_dir, cid, cur)
 
 
 def render(state_dir: Path | str, cid: str) -> str:

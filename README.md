@@ -971,7 +971,7 @@ character-bot/
 ## 测试
 
 ```bash
-bash tests/run.sh          # 75 套 / 3294 项断言，rc=0 才算过
+bash tests/run.sh          # 75 套 / 3296 项断言，rc=0 才算过
 ```
 
 覆盖：插件装载与命令冲突、角色隔离、适配器契约（含 async 实现）、HTTP 鉴权、

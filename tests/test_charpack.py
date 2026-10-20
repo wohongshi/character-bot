@@ -160,11 +160,29 @@ try:
 except ValueError as e:
     check("人格超 60000 字拒绝导出", "60000" in str(e), str(e))
 
+# 插件数超导入上限：要报错，不能悄悄截断
+many = CharacterStore(TMP / "state_many", seeds_dir=ROOT / "bot" / "character_seeds")
+many.add({"id": "manyplug", "name": "插件多", "theme": "hutao"},
+         soul="# 多\n\n" + "测试人格够长。" * 20)
+FEAT_MANY = TMP / "feat_many"
+FEAT_MANY.mkdir()
+for i in range(charpack.MAX_PLUGINS + 2):
+    (FEAT_MANY / f"p{i}.py").write_text(
+        f'CHARACTERS = ("manyplug",)\nNAME = "p{i}"\n\ndef register(api):\n    pass\n',
+        encoding="utf-8")
+try:
+    charpack.build_pack(ROOT, many, "manyplug", plugins_dir=FEAT_MANY, kb_dir=KBD)
+    check("插件超 60 个 → 拒绝导出（不静默截断）", False)
+except ValueError as e:
+    check("插件超 60 个 → 拒绝导出（不静默截断）", "超过导入上限" in str(e), str(e))
+
 print("[5c] dry 预览不打包")
 blob_d, name_d, man_d = charpack.build_pack(ROOT, STORE, "hutao", kb_dir=KBD, zip_too=False)
 check("dry 不返回字节", blob_d == b"")
 check("dry 仍然给清单", man_d["kb_rows"] == 5 and name_d == "hutao-pack.zip", str(man_d["kb_rows"]))
 check("dry 的插件清单一样", man_d["plugins"] == man["plugins"])
+check("dry 的语料条数与真导出一致（同一个 LIMIT 口径）", man_d["kb_rows"] == man["kb_rows"],
+      f"{man_d['kb_rows']} vs {man['kb_rows']}")
 
 print("[6] 导出 → 导入 全链路")
 # 内置角色在任何新 store 里都「已存在」（导入拒绝覆盖），所以这一节用一个

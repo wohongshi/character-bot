@@ -5731,7 +5731,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
                 return
             if dry:
-                self._json({"ok": True, **man, "bytes": len(blob), "filename": fname})
+                # dry 不打包，所以不给 `bytes`（恒为 0 的字段比没有更误导）
+                self._json({"ok": True, **man, "counted_only": True, "filename": fname})
                 return
             self._send_bytes(blob, "application/zip", cache="no-store",
                              extra=[("Content-Disposition",

@@ -5521,6 +5521,10 @@ async function exportChar(cid, btn){
     const kb = d.kb_rows ? `${d.kb_rows} 块语料`
                          : (d.kb_note ? `语料没导出（${d.kb_note}）` : "没有语料");
     flash(`✓ 已导出 ${d.name || cid}：人格 ${d.soul_chars} 字 · ${(d.plugins || []).length} 个插件 · ${kb} · ${size}`);
+  } catch (e) {
+    // fetch 被中断（服务重启 / 断网）时是 reject，不是返回 {ok:false} ——
+    // 不接住就成未处理的 rejection：按钮恢复了，但用户什么都没看到
+    flash("✗ 导出失败：" + String((e && e.message) || e));
   } finally {
     if (btn){ btn.disabled = false; btn.textContent = old || "📤 导出角色包"; }
   }

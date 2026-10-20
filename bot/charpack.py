@@ -47,6 +47,8 @@ MAX_KB_ROWS = 20000          # 单角色语料上限（再多也不是「角色�
 MAX_PLUGINS = 60             # 导入端：>60 直接拒
 MAX_SOUL = 60000             # 导入端：>60000 字拒
 MIN_SOUL = 80                # 导入端：<80 字拒
+MAX_PACK_BYTES = 64 * 1024 * 1024    # 导入端：压缩后/解压后总量 >64MB 都拒
+MAX_PACK_FILES = 240                 # 导入端：>240 个文件拒
 IMPORT_ID = re.compile(r"^[a-z][a-z0-9_-]{1,29}$")
 
 # 不写进 character.json 的字段：运行时/统计出来的东西，导出去只会误导导入端
@@ -88,14 +90,17 @@ def read_kb(db_dir: Path | str, cid: str, *, count_only: bool = False
         if "text" not in cols:
             return [], "语料库里没有 chunks.text（版本不匹配）"
         if count_only:
-            # 只数条数：面板的 dry 预览要显示「多少块语料」，没必要把正文全读出来
+            # 只数条数：面板的 dry 预览要显示「多少块语料」，没必要把正文全读出来。
+            # 计数口径必须和真导出**完全一致**（先 LIMIT 再丢空行），否则预览说 210、
+            # 实际文件里 200 —— 这种数字对不上比不显示更糟。
             try:
                 n = int(con.execute(
-                    "SELECT COUNT(*) FROM chunks WHERE trim(COALESCE(text,'')) <> ''"
+                    f"SELECT COUNT(*) FROM (SELECT text FROM chunks LIMIT {int(MAX_KB_ROWS)})"
+                    " WHERE trim(COALESCE(text,'')) <> ''"
                 ).fetchone()[0])
             except sqlite3.Error as e:
                 return [], f"读语料库失败：{e}"
-            return [{}] * min(n, MAX_KB_ROWS), ""
+            return [{"text": ""} for _ in range(n)], ""
         pick = [c for c in ("text", "title", "source", "type") if c in cols]
         sql = f"SELECT {', '.join(pick)} FROM chunks LIMIT {int(MAX_KB_ROWS)}"
         rows = []
@@ -134,8 +139,10 @@ def _plugin_files(plugins_dir: Path, cid: str) -> list[tuple[str, bytes]]:
         names = re.findall(r"""["']([\w-]+)["']""", (m.group(1) or m.group(2) or ""))
         if cid in [n.lower() for n in names]:
             out.append((p.name, src.encode("utf-8")))
-            if len(out) >= MAX_PLUGINS:
-                break
+    # 超上限要**报错**，不能悄悄截断：截断出来的包能装回去，但少了几个插件，
+    # 谁也不知道（manifest 里也只列了被截断的那份）。导入端 >60 直接拒。
+    if len(out) > MAX_PLUGINS:
+        raise ValueError(f"这个角色有 {len(out)} 个专属插件，超过导入上限 {MAX_PLUGINS} 个")
     return out
 
 
@@ -221,6 +228,15 @@ def build_pack(root: Path, store, cid: str, *, plugins_dir: Path | None = None,
             # 一行一块：导入端按行解析，混进换行会把它拆碎
             body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kb_rows)
             files.append((f"kb/{cid}.jsonl", body.encode("utf-8")))
+
+    # 导入端还有总量/文件数上限（64MB、240 个文件）：超了同样装不回去，
+    # 在这里一次算清楚（语料是最大头，2 万条中文 chunk 完全可能超）。
+    total_bytes = sum(len(b) for _, b in files)
+    if len(files) > MAX_PACK_FILES:
+        raise ValueError(f"包里有 {len(files)} 个文件，超过导入上限 {MAX_PACK_FILES} 个")
+    if total_bytes > MAX_PACK_BYTES:
+        raise ValueError(f"解压后 {total_bytes // 1048576} MB，超过导入上限 "
+                         f"{MAX_PACK_BYTES // 1048576} MB（先把语料导小一点）")
 
     if include_plugins and not plugs:
         # 导入端硬性要求至少一个插件；导出一个必然被拒的包只会让人白折腾
