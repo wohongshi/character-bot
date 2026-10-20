@@ -5081,7 +5081,9 @@ async function nwLoad(){
   const days = nwDays, chat = nwChatSel || (sel ? sel.value : "");
   const hide = !!nwHideKnown;
   const d = await api("/api/newwords?days=" + days + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
-  if (days !== nwDays || chat !== (nwChatSel || (sel ? sel.value : ""))) return;   // 过期响应
+  // 过期响应：天数、会话、还有「隐藏已知」都要比对（少一样就会用旧开关渲染）
+  if (days !== nwDays || hide !== !!nwHideKnown
+      || chat !== (nwChatSel || (sel ? sel.value : ""))) return;
   if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
   for (const k of [7, 14, 30]){
     const b = $("nw" + k);
@@ -5089,11 +5091,14 @@ async function nwLoad(){
   }
   if (sel){
     // 每次都用服务端给的会话列表重建（以前读一个从没赋值的全局，下拉永远是空的）
-    const chats = d.chats || [];
+    const chats = (d.chats || []).slice();
     const keep = nwChatSel;
+    // 选中的群安静一阵就掉出「最近 40 个」：补一项保住选择，
+    // 否则下拉悄悄跳回「全部会话」，而屏幕上的候选还是按旧 chat 过滤的
+    if (keep && !chats.includes(keep)) chats.unshift(keep);
     sel.innerHTML = `<option value="">全部会话</option>` +
       chats.map(c => `<option value="${esc(c)}">${esc(prChatLabel(c))}</option>`).join("");
-    sel.value = chats.includes(keep) ? keep : "";
+    sel.value = keep;
     nwChatSel = sel.value;
   }
   const all = d.items || [];

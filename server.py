@@ -3848,6 +3848,10 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
     cid = str(payload.get("id") or "").strip().lower()
     if not IMPORT_ID.match(cid):
         raise ImportError_("id 只能是小写字母开头、2-30 位的字母/数字/-/_")
+    # name 也要先校验：store.add() 里的 _clean_def() 会因为空 name 抛 CharacterError，
+    # 而那时备份 / 删旧插件 / 换主题都已经做过了 —— 一条坏包能把旧角色弄成半个新的
+    if not str(payload.get("name") or "").strip():
+        raise ImportError_("character.json 缺少 name")
     backup = None
     if _char_store().get(cid) and not replace:
         raise ImportError_(f"角色 {cid} 已存在（不能覆盖；要覆盖请勾上「覆盖同名角色」）")
@@ -3896,6 +3900,22 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
     if not kb_lines:
         raise ImportError_("knowledge/ 里没有可用语料（kb/*.jsonl，每行要有 text）")
 
+    # 插件文件先「只校验不落盘」过一遍：文件名规则、语法、CHARACTERS 含 cid。
+    # 等真的写盘时才发现语法错，等于旧插件已经删掉了。
+    for rel, text in plugin_files.items():
+        fname0 = Path(rel).name
+        if not fname0.endswith(".py") or fname0.startswith("_"):
+            raise ImportError_(f"插件文件名不合法：{rel}（不能以下划线开头）")
+        m0 = IMPORT_CHARS.search(text)
+        if m0:
+            ids0 = {x.strip().strip("\"'") for x in m0.group(1).split(",") if x.strip()}
+            if cid not in ids0:
+                raise ImportError_(f"{fname0} 的 CHARACTERS 没包含 {cid}")
+        try:
+            compile(text, fname0, "exec")
+        except SyntaxError as e:
+            raise ImportError_(f"{fname0} 有语法错误：第 {e.lineno} 行 {e.msg}") from None
+
     # —— 到这里所有输入都校验过了，才开始动旧数据 ——
     # 覆盖安装：先备份，再删「**只属于这个角色**」的旧插件。
     # 共享插件（CHARACTERS 里还有别的角色）绝不能碰：删掉就是把别人也弄坏。
@@ -3914,6 +3934,8 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
             m = IMPORT_CHARS.search(src)
             if not m:
                 continue
+            if fp.name.startswith("_"):
+                continue                    # 备份也不收 _ 开头的：删了就没法恢复
             ids = {x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()}
             if ids == {cid} and fp.name not in new_names:
                 # 这个角色独占、而新包里没有：属于「被下线的旧插件」，删掉
@@ -3936,6 +3958,16 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
                if m else set())
         if cid not in ids:
             raise ImportError_(f"插件 {fname} 已存在且不属于 {cid}（换个文件名再试）")
+        if len(ids) > 1:
+            # 共享插件：新包里的同名文件必须仍然覆盖**原来那几个角色**，
+            # 否则换上去等于把别人的插件弄没了（备份在 trash 里，但运行时已经坏）
+            m_new = IMPORT_CHARS.search(str(plugin_files[rel]))
+            new_ids = ({x.strip().strip("\"'") for x in (m_new.group(1) or "").split(",")
+                        if x.strip()} if m_new else {cid})
+            missing = ids - new_ids
+            if missing:
+                raise ImportError_(f"插件 {fname} 是和 {'/'.join(sorted(ids))} 共用的，"
+                                   f"新包里它不包含 {'/'.join(sorted(missing))} —— 换个文件名再试")
         if backup:
             # 是同名、且属于这个角色：覆盖安装允许换掉（已备份），先删再装
             try:
@@ -4056,7 +4088,8 @@ def _char_overview(days: int = 7) -> dict:
             per = dict(info.get("per") or {})
         except Exception as e:                                      # noqa: BLE001
             logger.info("角色总览：读已加载状态失败：%s", e)
-    kb = _kb_health().get("characters") or {}
+    health = _kb_health()          # 只调一次：知识库挂掉时每次要等整轮超时
+    kb = health.get("characters") or {}
     bound: dict[str, int] = {}
     try:
         for rec in _cc.load(STATE_DIR).values():
@@ -4152,7 +4185,7 @@ def _char_overview(days: int = 7) -> dict:
         })
     rows.sort(key=lambda r: (-int(r["active"]), -int(r["bound"]), -int(r["tokens"]), r["id"]))
     # 知识库连不上时所有角色都是 0 块：那时候告警全是假警报
-    kb_ok = bool(_kb_health().get("ok"))
+    kb_ok = bool(health.get("ok"))
     return {"ok": True, "days": days, "kb_online": kb_ok, "items": rows,
             "totals": {"chars": len(rows), "bound": sum(r["bound"] for r in rows),
                        "tokens": sum(r["tokens"] for r in rows),
@@ -4179,7 +4212,7 @@ def _chat_labels(limit: int = 40) -> list:
         d["n"] += 1
         try:
             ts = float(r.get("ts") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             ts = 0.0
         if ts >= d["last"]:
             d["last"] = ts
@@ -6019,7 +6052,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 try:
                     ts = float(r.get("ts") or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if ts < floor:
                     continue

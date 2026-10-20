@@ -185,7 +185,11 @@ def load_ignored(state_dir: Path | str) -> list:
         log.info("忽略名单读取失败（按空处理）：%s", e)
         return []
     got = d.get("ignored") if isinstance(d, dict) else None
-    return sorted({str(x) for x in got}) if isinstance(got, list) else []
+    if not isinstance(got, list):
+        return []
+    # **保序**去重（不能 sorted）：写入端按插入顺序丢「最早」的，
+    # 这里排一次字母序，那个语义就变成「按拼音丢」了。
+    return list(dict.fromkeys(str(x) for x in got if str(x)))
 
 
 MAX_IGNORED = 2000
