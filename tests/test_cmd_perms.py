@@ -114,6 +114,11 @@ def main():
     _eff = CP.effective(_Cmd(), CP.load(tmp))
     check("1.6c 新键只覆盖改过的字段（旧权限还在）",
           _eff["permission"] == "owner" and _eff["scope"] == "dm", str(_eff))
+    # 只清一项时老键里没提到的那一项要留着（整条复位才连老键一起清）
+    CP.set_override(tmp, command="legacy", plugin="pl", scope="")
+    check("1.6e 只清作用域不动旧权限",
+          (CP.load(tmp)["commands"].get("legacy") or {}).get("permission") == "owner",
+          str(CP.load(tmp)["commands"]))
     # 复位要连老键一起清，否则「默认」点了不生效
     CP.set_override(tmp, command="legacy", plugin="pl", scope="", permission="")
     check("1.6d 复位把老键也清掉",

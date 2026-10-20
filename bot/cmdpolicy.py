@@ -130,9 +130,9 @@ def set_override(features_dir: Path | str, *, command: str = "", plugin: str = "
             data.setdefault(kind, {})[key] = clean
         else:
             (data.get(kind) or {}).pop(key, None)
-            if command:
-                # 兼容老数据：升级前写的是纯命令名，只清新键的话旧键继续生效，
-                # 面板会显示「已回到插件默认」但其实没回
+            # 只有**两项都显式清空**（= 整条复位）才连带清老键。
+            # 只清一项时老键里没被提到的那一项要保持「不动」，否则会静默放宽权限。
+            if command and scope == "" and permission == "":
                 (data.get(kind) or {}).pop(command, None)
         return save(features_dir, data)
 

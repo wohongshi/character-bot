@@ -2131,12 +2131,21 @@ def _control_snapshot() -> dict:
     # 按 (名字, 插件) 建索引：同名命令共存之后，只按名字取会拿到「首选」那条，
     # 面板上另一行的 eff 就是别人的（写了 plugin:name 覆盖也看不出来）
     by_key = {}
-    try:
-        for cc in (mgr.all_commands() if mgr is not None and hasattr(mgr, "all_commands") else []):
-            by_key[(str(getattr(cc, "name", "")).lower(),
-                    str(getattr(cc, "plugin", "")))] = cc
-    except Exception:                                             # noqa: BLE001
-        by_key = {}
+    every_cmd = []
+    if mgr is not None:
+        fn = getattr(mgr, "all_commands", None)
+        if callable(fn):
+            try:
+                every_cmd = list(fn())
+            except Exception as e:                                # noqa: BLE001
+                logger.info("管控快照：all_commands() 失败，退回 commands 表：%s", e)
+        if not every_cmd:
+            # 和 `_commands_list()` 一样的兜底：没有 all_commands 的替身也能出面板
+            every_cmd = list({id(c): c for c in
+                              (getattr(mgr, "commands", {}) or {}).values()}.values())
+    for cc in every_cmd:
+        by_key[(str(getattr(cc, "name", "")).lower(),
+                str(getattr(cc, "plugin", "")))] = cc
     for c in (_commands_list().get("commands") or []):
         cmd = by_key.get((str(c["name"]).lower(), str(c.get("plugin") or "")))
         eff = cmdpolicy.effective(cmd, overrides) if cmd is not None else {
@@ -3997,9 +4006,13 @@ def _char_bind_view() -> dict:
     bound = set(binds)
     free = [c for c in chats if c["chat"] not in bound
             and chat_char.is_bindable(c["chat"])]
-    # 说过的排前面，但「有索引记录、只是最近没说话」的会话不能被 40 条截掉：
-    # 截掉的恰好是「刚建好、还没聊过」的群 —— 正是这段代码要补的场景
-    free.sort(key=lambda c: (-float(c.get("last") or 0), -int(c.get("n") or 0)))
+    # 「有索引记录、只是最近没说话」的会话要**优先占位**：它们的 last 一定比
+    # messages.jsonl 尾部窗口里的会话旧，只按 last 排会再一次被 40 条切掉
+    # （而被切掉的恰好是「刚建好、还没聊过」的群）。
+    known_ids = {str(r.get("id") or "") if isinstance(r, dict) else str(r)
+                 for r in known}
+    free.sort(key=lambda c: (0 if c["chat"] in known_ids else 1,
+                             -float(c.get("last") or 0), -int(c.get("n") or 0)))
     return {"ok": True, "global": store.active_id(), "characters": chars,
             "bindings": rows,
             "chats": free[:40],

@@ -462,8 +462,8 @@ class BotRuntime(RuntimeFeatures):
                 got = str(fn(bool(gid), gid, uid) or "")
                 if got:
                     return got
-            except Exception:                                      # noqa: BLE001
-                pass
+            except Exception as e:                                 # noqa: BLE001
+                logger.debug("适配器 %s 的 chat_id_of 失败（按默认格式）：%s", src, e)
         return f"group:{gid}" if gid else f"private:{uid}"
 
     def _persona(self) -> str:
