@@ -922,6 +922,14 @@ body[data-density="wide"] .card{padding:20px 24px}
 }
 .btn.tabon{background:var(--ui-accent);color:#fff;border-color:transparent}
 .tag{border-radius:999px;border:1px solid color-mix(in srgb,var(--ink) 10%,transparent);background:color-mix(in srgb,var(--surface-2) 70%, transparent)}
+/* 角色总览一行：手机上自动折行 */
+.ovrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;
+  border-bottom:1px solid var(--line)}
+.ovrow:last-child{border-bottom:0}
+.ovrow .kv{margin:0}
+.tag.cold{opacity:.6}
+/* 二次确认的删除按钮：红字红边，和普通 tiny 区分开 */
+.btn.danger{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,var(--line))}
 /* 按需装载的角色小牌：已加载的描边点亮，未加载的淡一点 */
 .lptag{opacity:.55}
 .lptag.on{opacity:1;border-color:color-mix(in srgb,var(--green) 45%,var(--line));
@@ -4056,6 +4064,12 @@ async function viewPersona(){
     <div id="kbIngOut" style="margin-top:8px"></div>
   </div>
   <div class="card">
+    <h3>🗂 语料来源 <span class="kv" style="font-family:var(--font-body)">按来源看 / 整组删</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="loadKbSources()">刷新</button></h3>
+    <div id="kbSrc" style="margin-top:6px"><div class="kv">读取中…</div></div>
+    <div class="kv" style="margin-top:6px">删来源会把它下面所有块一起删掉，不可恢复；想留一份就先在运维页下载备份。</div>
+  </div>
+  <div class="card">
     <h3>🕒 最近命中 <span class="kv" style="font-family:var(--font-body)">谁问的、命中了哪几段</span>
       <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
     <div id="kbRecent" style="margin-top:6px"></div>
@@ -4139,6 +4153,7 @@ function ptab(name){
   for (const [k, el] of Object.entries(panes)) if (el) el.style.display = k === name ? "" : "none";
   for (const [k, el] of Object.entries(btns)) if (el) el.classList.toggle("on", k === name);
   if (name === "mem") loadMemories();
+  if (name === "kb") loadKbSources();
   if (name === "stk") loadStickers();
   if (name === "ex") loadExamples();
 }
@@ -4796,6 +4811,10 @@ async function viewModels(target){
     <h3>💰 用量预算 <span class="kv" style="font-family:var(--font-body)">到上限就提醒 / 换便宜模型 / 直接停</span></h3>
     <div id="bgBox" class="kv">读取中…</div>
   </div>
+  <div class="card" id="thCard">
+    <h3>🚦 回复节流 <span class="kv" style="font-family:var(--font-body)">防刷屏，只拦聊天不拦命令</span></h3>
+    <div id="thBox" class="kv">读取中…</div>
+  </div>
   <div class="card" id="ucCard">
     <h3>💸 谁在花你的钱 <span class="kv" style="font-family:var(--font-body)">按会话算 token</span></h3>
     <div class="row" style="gap:8px;align-items:center;margin-bottom:8px">
@@ -4847,6 +4866,7 @@ async function viewModels(target){
   cmRender((md && md.characters) || {});
   bgLoad();                       // 预算卡片挂在这张页里，渲染完才有 DOM
   ucLoad();                        // 按会话的花费
+  thLoad();                        // 回复节流
 }
 
 /* ---- 备用模型 ---- */
@@ -5010,6 +5030,139 @@ async function bgSave(btn){
   btn.disabled = false;
   if (!d || !d.ok){ flash("保存失败：" + ((d && d.error) || "未知")); return; }
   bgLoad();
+}
+
+/* ---------- 语料来源：按 source 统计 / 整组删除 ---------- */
+let kbPurgeArm = "";             // 两次点击确认：第一次只是「待确认」
+async function loadKbSources(){
+  const box = $("kbSrc");
+  if (!box) return;
+  const d = await api("/api/kb/sources?character=" + encodeURIComponent(ACTIVE.id));
+  if (!d || !d.ok){
+    box.innerHTML = `<div class="kv">读不到来源：${esc((d && d.error) || "未知")}</div>`;
+    return;
+  }
+  const items = d.items || [];
+  if (!items.length){ box.innerHTML = `<div class="kv">这个角色的语料库是空的</div>`; return; }
+  box.innerHTML = items.map(x => {
+    const armed = kbPurgeArm === x.source;
+    return `<div class="kbhit" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <b style="flex:1;min-width:110px">${esc(x.source)}</b>
+      <span class="kv" style="flex:none;margin:0">${x.chunks} 块</span>
+      <button class="btn tiny ${armed ? "danger" : ""}" style="flex:none"
+        onclick="kbPurge(${jsq(x.source)}, ${armed ? "true" : "false"})">
+        ${armed ? "确定删除？" : "删除这个来源"}</button>
+    </div>`;
+  }).join("") + `<div class="kv" style="margin-top:6px">共 ${d.total} 块</div>`;
+}
+async function kbPurge(source, confirmed){
+  if (!confirmed){
+    kbPurgeArm = source;
+    await loadKbSources();
+    flash(`再点一次删除「${source}」`);
+    return;
+  }
+  kbPurgeArm = "";
+  const d = await post("/api/kb/purge", {character: ACTIVE.id, source, confirm: true});
+  if (!d || !d.ok){ flash("✗ " + ((d && d.error) || "删除失败")); await loadKbSources(); return; }
+  flash(`已删除「${source}」的 ${d.deleted} 块`);
+  await loadKbSources();
+}
+
+/* ---------- 新词候选：从群聊里学梗 ----------
+   判定是「频次 + 内部凝聚度 + 左右自由度」，纯规则；面板上人点一下才入库。 */
+let nwDays = 14, nwChatSel = "";
+function nwSet(d){ nwDays = d; nwLoad(); }
+async function nwLoad(){
+  const box = $("nwBox"), sel = $("nwChat");
+  if (!box) return;
+  const days = nwDays, chat = nwChatSel || (sel ? sel.value : "");
+  const hide = !!(($("nwHideKnown") || {}).checked);
+  const d = await api("/api/newwords?days=" + days + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
+  if (days !== nwDays || chat !== (nwChatSel || (sel ? sel.value : ""))) return;   // 过期响应
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  for (const k of [7, 14, 30]){
+    const b = $("nw" + k);
+    if (b) b.classList.toggle("primary", k === days);
+  }
+  if (sel && !sel.options.length){
+    sel.innerHTML = `<option value="">全部会话</option>` +
+      ((window.__nwChats || []).map(c => `<option value="${esc(c)}">${esc(prChatLabel(c))}</option>`).join(""));
+  }
+  const all = d.items || [];
+  const rows = hide ? all.filter(x => !x.known) : all;
+  const msg = $("nwMsg");
+  if (msg) msg.textContent = `${d.counts.scanned} 条消息里挑出 ${all.length} 个候选`
+    + (hide ? `，隐藏了 ${all.length - rows.length} 个已知词` : "")
+    + (d.counts.ignored ? `，忽略名单 ${d.counts.ignored} 个` : "");
+  if (!rows.length){
+    box.innerHTML = `<div class="kv">${all.length ? "候选都被标成已知了" : "还没有够格的新词（至少 3 次、2 个人说过）"}</div>`;
+    return;
+  }
+  box.innerHTML = rows.map(x => `
+    <div class="kbhit" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <b style="flex:none;min-width:74px">${esc(x.word)}</b>
+      <span class="kv" style="flex:1;margin:0;min-width:120px">${x.count} 次 · ${x.users} 人
+        · 凝聚 ${x.pmi}</span>
+      ${x.known ? `<span class="tag">已在知识库</span>` : ""}
+      <button class="btn tiny" style="flex:none" onclick="nwAdd(${jsq(x.word)})">加进知识库</button>
+      <button class="btn tiny" style="flex:none" onclick="nwIgnore(${jsq(x.word)})">忽略</button>
+    </div>`).join("");
+}
+async function nwAdd(word){
+  const d = await post("/api/newwords", {action: "kb", word, character: ACTIVE.id});
+  const m = $("nwMsg");
+  if (!d || !d.ok){ if (m) m.textContent = "✗ " + ((d && d.error) || "没加进去"); return; }
+  if (m) m.textContent = `✓ 「${word}」已收进知识库（下一条消息就可能命中）`;
+  nwLoad();
+}
+async function nwIgnore(word){
+  const d = await post("/api/newwords", {action: "ignore", word});
+  if (!d || !d.ok){ flash("✗ " + ((d && d.error) || "没保存")); return; }
+  flash(`已忽略「${word}」`);
+  nwLoad();
+}
+
+/* ---------- 回复节流：每个会话的滑动窗口 ----------
+   和预算卡是两道闸：预算管 token（钱），这里管条数（像不像人）。 */
+async function thLoad(){
+  const box = $("thBox");
+  if (!box) return;
+  const d = await api("/api/throttle");
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  const c = d.config || {};
+  const rows = (d.chats || []).slice(0, 6);
+  box.innerHTML = `
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <label class="check"><input type="checkbox" id="thOn" ${c.on ? "checked" : ""}> 启用</label>
+      <label class="kv" style="margin:0">每分钟最多 <input type="number" id="thMin" value="${c.per_min || 0}"
+        min="0" max="120" style="width:74px"> 条</label>
+      <label class="kv" style="margin:0">每小时最多 <input type="number" id="thHour" value="${c.per_hour || 0}"
+        min="0" max="5000" style="width:84px"> 条</label>
+      <label class="kv" style="margin:0">超了
+        <select id="thAct" style="min-width:120px">
+          ${Object.entries(d.actions || {}).map(([k, v]) =>
+            `<option value="${k}" ${k === c.action ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select></label>
+      <button class="btn primary tiny" onclick="thSave(this)">保存</button>
+    </div>
+    ${rows.length ? rows.map(r => `<div class="urow">
+      <div class="utop"><b class="ulb">${esc(prChatLabel(r.chat))}</b>
+        <span class="kv" style="margin:0;flex:none">这分钟 ${r.min} · 这小时 ${r.hour}</span></div>
+    </div>`).join("") : `<div class="kv">最近没有会话在聊</div>`}
+    <div class="kv" style="margin-top:6px">${esc(d.hint || "")}${d.throttled ? ` · 累计拦下 ${d.throttled} 条` : ""}</div>`;
+}
+async function thSave(btn){
+  btn.disabled = true;
+  const d = await post("/api/config", {updates: {
+    throttle_on: !!($("thOn") || {}).checked,
+    throttle_per_min: Number(($("thMin") || {}).value || 0),
+    throttle_per_hour: Number(($("thHour") || {}).value || 0),
+    throttle_action: ($("thAct") || {}).value || "drop"}});
+  btn.disabled = false;
+  if (!d || !d.ok){ flash("保存失败：" + ((d && d.error) || "未知")); return; }
+  flash("✓ 节流设置已保存");
+  thLoad();
 }
 
 /* ---------- 谁在花你的钱：按会话归账 ----------
@@ -5367,14 +5520,20 @@ async function importZip(){
   if (!inp || !inp.files || !inp.files[0]){ msg.textContent = "先选一个 .zip 文件"; return; }
   const file = inp.files[0];
   if (file.size > 64 * 1024 * 1024){ msg.textContent = "✗ 超过 64MB"; return; }
-  msg.textContent = "上传并安装中…（主题 / 插件 / 语料）";
+  const replace = !!(($("zipReplace") || {}).checked);
+  if (replace && !confirm("覆盖同名角色？旧的人格 / 主题 / 专属插件会先备份到 state/trash/（可手动找回），继续吗？")){
+    msg.textContent = "已取消";
+    return;
+  }
+  msg.textContent = replace ? "上传并覆盖中…（先备份，再换掉主题 / 插件 / 语料）"
+                            : "上传并安装中…（主题 / 插件 / 语料）";
   try{
-    const r = await fetch("/api/characters/import", {
+    const r = await fetch("/api/characters/import" + (replace ? "?replace=1" : ""), {
       method:"POST", headers:{"X-Klee-Studio":"1", "Content-Type":"application/zip"}, body:file});
     const d = await r.json();
     if (!d.ok){ msg.innerHTML = `✗ ${esc(d.error || "导入失败")}`; return; }
-    msg.innerHTML = `✓ 已导入 <b>${esc(d.character.name)}</b>（${d.plugins.length} 个插件 / ${d.kb_entries} 条语料）<br>
-      <span class="kv">建索引中，约 1-3 分钟</span>`;
+    msg.innerHTML = `✓ 已${d.replaced ? "覆盖" : "导入"} <b>${esc(d.character.name)}</b>（${d.plugins.length} 个插件 / ${d.kb_entries} 条语料）<br>
+      <span class="kv">${d.replaced ? "旧版本备份在 " + esc(d.backup || "state/trash/") + "；" : ""}建索引中，约 1-3 分钟</span>`;
     const cid = d.character.id;
     for (let i = 0; i < 60; i++){
       await new Promise(res => setTimeout(res, 3000));
@@ -5463,6 +5622,9 @@ async function viewChars(){
       <button class="btn primary" onclick="importZip()">上传并安装</button>
       <button class="btn tiny" onclick="toggleImport()">取消</button>
     </div>
+    <label class="check" style="margin-top:10px">
+      <input type="checkbox" id="zipReplace"> 覆盖同名角色（先把旧的整套备份到 state/trash/）
+    </label>
     <div class="kv" id="zipMsg" style="margin-top:8px"></div>
   </div>
   <div class="chargrid">
@@ -5497,6 +5659,11 @@ async function viewChars(){
     </div>
     <div class="kv" id="charPlugBody" style="margin-top:8px">${cur.plugins.length ? cur.plugins.map(p=>`<span class="tag">${esc(p.title || p.name)}</span>`).join(" ") : "这个角色暂时没有专属插件（通用插件照常可用）"}</div>
   </div>
+  <div class="card" style="margin-top:14px" id="ovCard">
+    <h3>📊 角色总览 <span class="kv" style="font-family:var(--font-body)">谁装了、谁有知识、谁在花钱</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="ovLoad()">刷新</button></h3>
+    <div id="ovBox" style="margin-top:6px"><div class="kv">读取中…</div></div>
+  </div>
   <div class="card" style="margin-top:14px" id="ccCard">
     <h3>🔒 每个会话跟着谁</h3>
     <div class="kv" id="ccMeta" style="margin-top:6px"></div>
@@ -5518,6 +5685,36 @@ async function viewChars(){
   </div>`;
   ccLoad();
   lpLoad();
+  ovLoad();
+}
+
+/* ---- 角色总览：一张表看全部角色 ---- */
+async function ovLoad(){
+  const box = $("ovBox");
+  if (!box) return;
+  const d = await api("/api/characters/overview?days=7");
+  if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
+  const items = d.items || [];
+  const warn = new Set(d.warn || []);
+  box.innerHTML = `
+    <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="kv" style="margin:0">${d.totals.chars} 个角色</span>
+      <span class="kv" style="margin:0">${d.totals.bound} 个会话绑定</span>
+      <span class="kv" style="margin:0">知识 ${d.totals.kb_chunks} 块</span>
+      <span class="kv" style="margin:0">7 天 ${tnum(d.totals.tokens)} token</span>
+    </div>
+    ${items.map(r => `<div class="ovrow">
+      <b class="ulb">${esc((r.emoji || "") + " " + r.name)}${r.active ? " · 当前" : ""}</b>
+      <span class="tag ${r.loaded ? "" : "cold"}">${r.loaded ? "已装" : "待命"}</span>
+      <span class="kv">插件 ${r.plugins}/${r.plugins_total}</span>
+      <span class="kv ${warn.has(r.id) ? "bad" : ""}">知识 ${r.kb_chunks}</span>
+      <span class="kv">命中 ${r.kb_hits}</span>
+      <span class="kv">${tnum(r.tokens)} token</span>
+      <span class="kv">${r.avg_ms ? r.avg_ms + " ms" : "—"}</span>
+      ${r.bound ? `<span class="tag">绑定 ${r.bound}</span>` : ""}
+      ${r.errors ? `<span class="tag ccbad">报错 ${r.errors}</span>` : ""}
+    </div>`).join("")}
+    ${warn.size ? `<div class="kv" style="margin-top:6px">⚠ 绑了会话但没有知识库：${(d.warn || []).map(esc).join("、")}</div>` : ""}`;
 }
 
 /* ---- 插件按需装载：哪些角色真的装了、哪些在待命 ---- */
@@ -6231,6 +6428,19 @@ async function viewBoard(target){
     <div class="kv" style="margin:0 0 6px">💛 好感度 Top5</div>
     ${affs || '<div class="kv">还没有人说过话</div>'}
   </div>
+  <div class="card" style="margin-top:14px" id="nwCard">
+    <h3>🆕 新词候选 <span class="kv" style="font-family:var(--font-body)">群里最近爱说的词</span>
+      <button class="btn tiny" style="margin-left:auto" onclick="nwLoad()">刷新</button></h3>
+    <div class="row" style="gap:8px;align-items:center;margin:6px 0 8px">
+      <select id="nwChat" style="flex:1;min-width:130px" onchange="nwLoad()"></select>
+      <button class="btn tiny" id="nw7" onclick="nwSet(7)">7 天</button>
+      <button class="btn tiny" id="nw14" onclick="nwSet(14)">14 天</button>
+      <button class="btn tiny" id="nw30" onclick="nwSet(30)">30 天</button>
+      <label class="check"><input type="checkbox" id="nwHideKnown" checked onchange="nwLoad()"> 隐藏已知</label>
+    </div>
+    <div id="nwBox"><div class="kv">读取中…</div></div>
+    <div class="kv" id="nwMsg" style="margin-top:6px"></div>
+  </div>
   <div class="card" style="margin-top:14px" id="ppCard">
     <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
       <span class="kv" style="margin:0">👥 群友画像 <span id="ppMeta" class="kv" style="margin:0"></span></span>
@@ -6281,6 +6491,7 @@ async function viewBoard(target){
   loadIndexInfo();                        // 索引规模（顺手验证 /api/search/stats 可用）
   renderInsights();                       // 洞察卡片（热力图/角色/常用字）
   ppLoad();                               // 群友画像（选中项在 ppChatSel 里保着）
+  nwLoad();                                // 新词候选
   await viewFeed("feedSlot");
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
   boardTimer = setInterval(() => {

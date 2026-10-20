@@ -2045,15 +2045,22 @@ def _usage_rows(days: int = 7, *, today: bool = False) -> list[dict]:
                     rows.append(r)
     except OSError:
         return []
+
+    def _ts_of(r: dict) -> float:
+        try:
+            return float(r.get("ts") or 0)
+        except (TypeError, ValueError):
+            return 0.0        # 坏时间戳的行当「很久以前」，别让整份统计炸掉
+
     if today:
         # 「今天」= 本地零点起。用 now-86400 的滚动窗口会把昨天下午的花费算进
         # 今天（和上面预算卡的「今天」口径不一致，凌晨看尤其离谱）。
         lt = time.localtime()
         floor = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-        rows = [r for r in rows if float(r.get("ts") or 0) >= floor]
+        rows = [r for r in rows if _ts_of(r) >= floor]
     elif days > 0:
         floor = time.time() - days * 86400
-        rows = [r for r in rows if float(r.get("ts") or 0) >= floor]
+        rows = [r for r in rows if _ts_of(r) >= floor]
     return rows
 
 
@@ -2089,7 +2096,10 @@ def _usage_summary(days: int = 7, *, today: bool = False) -> dict:
         m["completion"] += c_tok
         m["total"] += t_tok
         m["ms"] += ms
-        day = time.strftime("%m-%d", time.localtime(float(r.get("ts") or 0)))
+        try:
+            day = time.strftime("%m-%d", time.localtime(float(r.get("ts") or 0)))
+        except (TypeError, ValueError, OSError):
+            continue          # 坏时间戳的行不进逐日图（别让整份统计炸掉）
         d = by_day.setdefault(day, {"date": day, "requests": 0, "total": 0})
         d["requests"] += 1
         d["total"] += t_tok
@@ -3750,7 +3760,53 @@ def _import_plugin_zip(raw: bytes, overwrite: bool = False) -> dict:
     return out
 
 
-def _import_character_zip(raw: bytes) -> dict:
+def _char_pack_backup(cid: str) -> Path:
+    """把一个角色的现有产物（定义 / 人格 / 主题 / 专属插件）复制到 state/trash/。
+
+    覆盖安装前必须留一份：用户的 SOUL 和插件多半是自己写的，误点一次不该消失。
+    语料库不动（那是 klee-kb 的库，覆盖安装不应该顺手清掉）。
+    """
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    dest = STATE_DIR / "trash" / f"charc-{cid}-{ts}"
+    # 同一秒里连按两次（或者脚本重试）会撞同一个目录，第二次就把第一份备份覆盖了 ——
+    # 备份的意义就在于「每一次都留一份」，所以撞了就加序号。
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = STATE_DIR / "trash" / f"charc-{cid}-{ts}-{n}"
+    dest.mkdir(parents=True)
+    # 角色定义
+    src_def = STATE_DIR / "characters.d" / f"{cid}.json"
+    if src_def.is_file():
+        shutil.copy2(src_def, dest / f"{cid}.json")
+    # 人格
+    soul_dir = STATE_DIR / "characters" / cid
+    if soul_dir.is_dir():
+        shutil.copytree(soul_dir, dest / "character", dirs_exist_ok=True)
+    # 主题
+    theme_dir = STUDIO_HOME / "bot" / "ui_themes" / cid
+    if theme_dir.is_dir():
+        shutil.copytree(theme_dir, dest / "theme", dirs_exist_ok=True)
+    # 这个角色的专属插件（按 CHARACTERS 扫，不执行）
+    plugs = dest / "plugins"
+    for fp in sorted(FEATURES_DIR.glob("*.py")):
+        if fp.name.startswith("_"):
+            continue
+        try:
+            src = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = IMPORT_CHARS.search(src)
+        if not m:
+            continue
+        ids = {x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()}
+        if cid in ids:
+            plugs.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(fp, plugs / fp.name)
+    return dest
+
+
+def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
     if not raw:
         raise ImportError_("空文件")
     if len(raw) > IMPORT_MAX_BYTES:
@@ -3792,8 +3848,22 @@ def _import_character_zip(raw: bytes) -> dict:
     cid = str(payload.get("id") or "").strip().lower()
     if not IMPORT_ID.match(cid):
         raise ImportError_("id 只能是小写字母开头、2-30 位的字母/数字/-/_")
+    backup = None
     if _char_store().get(cid):
-        raise ImportError_(f"角色 {cid} 已存在（不能覆盖）")
+        if not replace:
+            raise ImportError_(f"角色 {cid} 已存在（不能覆盖；要覆盖请勾上「覆盖同名角色」）")
+        # 覆盖：先整份备份（定义/人格/主题/专属插件），再逐个替换
+        try:
+            backup = _char_pack_backup(cid)
+        except OSError as e:
+            raise ImportError_(f"备份旧角色失败（没有覆盖，什么都没动）：{e}") from None
+        if backup is not None:
+            # 旧插件先挪走：同名的会被新包覆盖，不挪的话导入端「文件已存在」会拒
+            for fp in sorted((backup / "plugins").glob("*.py")) if (backup / "plugins").is_dir() else []:
+                try:
+                    (FEATURES_DIR / fp.name).unlink()
+                except OSError:
+                    pass
     soul = text_of("SOUL.md")
     if len(soul.strip()) < 80:
         raise ImportError_("SOUL.md 太短（至少 80 字）")
@@ -3876,7 +3946,11 @@ def _import_character_zip(raw: bytes) -> dict:
     _build_kb_async(cid, str(info.get("name") or cid))
     return {"ok": True, "character": info, "theme": cid, "plugins": installed,
             "kb_entries": len(kb_lines), "building": True,
-            "note": "角色已创建；知识库索引在后台构建（约 1-3 分钟）"}
+            "replaced": bool(backup),
+            "backup": (str(backup.relative_to(STATE_DIR)) if backup else ""),
+            "note": ("角色已覆盖（旧的在 state/trash/ 里）；知识库索引在后台构建（约 1-3 分钟）"
+                     if backup else
+                     "角色已创建；知识库索引在后台构建（约 1-3 分钟）")}
 
 
 _CHAR_CACHE = {"ts": 0.0, "data": None}
@@ -3926,6 +4000,107 @@ def _characters_uncached() -> dict:
         })
     return {"ok": True, "active": active, "items": items,
             "kb_online": bool(health.get("ok")), "kb_default": health.get("default", "")}
+
+
+def _char_overview(days: int = 7) -> dict:
+    """每个角色一行：装没装、知识多少、花了多少、回复多快、有没有报错。
+
+    「角色被绑了但没知识库」这种问题以前只能一个个点进去看，这里一眼就能发现
+    （`kb_chunks == 0` 但 `bound > 0`）。
+    """
+    from bot import chat_char as _cc
+    store = _char_store()
+    chars = store.list()
+    mgr = getattr(getattr(BOT, "runtime", None), "mgr", None) if BOT is not None else None
+    loaded: set = set()
+    per: dict = {}
+    if mgr is not None and hasattr(mgr, "loaded_characters"):
+        try:
+            info = mgr.loaded_characters()
+            loaded = set(info.get("loaded") or [])
+            per = dict(info.get("per") or {})
+        except Exception as e:                                      # noqa: BLE001
+            logger.info("角色总览：读已加载状态失败：%s", e)
+    kb = _kb_health().get("characters") or {}
+    bound: dict[str, int] = {}
+    try:
+        for rec in _cc.load(STATE_DIR).values():
+            cid = str(rec.get("id") or "")
+            if cid:
+                bound[cid] = bound.get(cid, 0) + 1
+    except Exception as e:                                          # noqa: BLE001
+        logger.info("角色总览：读绑定失败：%s", e)
+    tok: dict[str, dict] = {}
+    for r in _usage_rows(days):
+        cid = str(r.get("character") or "")
+        if not cid:
+            continue
+        d = tok.setdefault(cid, {"requests": 0, "total": 0, "ms": 0.0})
+        d["requests"] += 1
+        d["total"] += int(r.get("total_tokens") or 0)
+        d["ms"] += float(r.get("ms") or 0)
+    floor = time.time() - days * 86400
+    hits: dict[str, int] = {}
+    try:
+        for line in _jsonl_lines(KB_HITS.read_text(encoding="utf-8", errors="replace")):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            try:
+                ts = float(row.get("ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts < floor:
+                continue
+            cid = str(row.get("character") or "")
+            if cid:
+                hits[cid] = hits.get(cid, 0) + 1
+    except OSError:
+        pass
+    active = str(store.active_id() or "")
+    errs_by_char: dict[str, int] = {}
+    if mgr is not None:
+        plugins = getattr(mgr, "plugins", {}) or {}
+        for name, count in (getattr(mgr, "errors", {}) or {}).items():
+            info = plugins.get(name) or {}
+            for cid in (info.get("characters") or ()):
+                errs_by_char[str(cid)] = errs_by_char.get(str(cid), 0) + int(count or 0)
+    # 每个角色一共有多少个专属插件（含待命的）：面板上「20（装上 1）」才不误导
+    total_plugins: dict[str, int] = {}
+    if mgr is not None:
+        for info in (getattr(mgr, "plugins", {}) or {}).values():
+            for cid in (info.get("characters") or ()):
+                total_plugins[str(cid)] = total_plugins.get(str(cid), 0) + 1
+    rows = []
+    for c in chars:
+        cid = c["id"]
+        u = tok.get(cid) or {}
+        req = int(u.get("requests") or 0)
+        kbinfo = kb.get(c.get("kb") or cid) or kb.get(cid) or {}
+        rows.append({
+            "id": cid, "name": c.get("name") or cid, "emoji": c.get("emoji") or "",
+            "active": cid == active,
+            "loaded": (cid in loaded) if loaded else True,
+            "plugins": int(per.get(cid) or 0),
+            "plugins_total": int(total_plugins.get(cid) or 0),
+            "bound": int(bound.get(cid) or 0),
+            "kb_chunks": int(kbinfo.get("chunks") or 0),
+            "kb_hits": int(hits.get(cid) or 0),
+            "tokens": int(u.get("total") or 0),
+            "requests": req,
+            "avg_ms": int(round(float(u.get("ms") or 0) / req)) if req else 0,
+            "errors": int(errs_by_char.get(cid) or 0),
+            "soul_chars": len(store.soul(cid)),
+        })
+    rows.sort(key=lambda r: (-int(r["active"]), -int(r["bound"]), -int(r["tokens"]), r["id"]))
+    return {"ok": True, "days": days, "items": rows,
+            "totals": {"chars": len(rows), "bound": sum(r["bound"] for r in rows),
+                       "tokens": sum(r["tokens"] for r in rows),
+                       "kb_chunks": sum(r["kb_chunks"] for r in rows)},
+            "warn": [r["id"] for r in rows if r["bound"] and not r["kb_chunks"]]}
 
 
 def _chat_labels(limit: int = 40) -> list:
@@ -5366,7 +5541,8 @@ _SENSITIVE_GET = frozenset({
     "/api/mood", "/api/selfcheck", "/api/insights", "/api/plugins/export",
     "/api/control", "/api/prompt", "/api/proactive", "/api/budget", "/api/people",
     "/api/memories/tidy", "/api/characters/bindings", "/api/characters/export",
-    "/api/characters/examples", "/api/characters/loaded",
+    "/api/throttle", "/api/newwords", "/api/characters/overview",
+    "/api/characters/examples", "/api/characters/loaded", "/api/kb/sources",
 })
 
 
@@ -5758,6 +5934,65 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/characters/bindings":
             self._json(_char_bind_view())
             return
+        if u.path == "/api/characters/overview":
+            try:
+                days = _int_param(q, "days", 7, lo=1, hi=365)
+            except ValueError:
+                self._json({"ok": False, "error": "参数不对"}, 400)
+                return
+            self._json(_char_overview(days))
+            return
+        if u.path == "/api/newwords":
+            from bot import newwords as NW
+            cid = str((q.get("character") or [""])[0]).strip().lower() or _active_cid()
+            try:
+                days = _int_param(q, "days", 14, lo=1, hi=365)
+                min_count = _int_param(q, "min_count", NW.MIN_COUNT, lo=1, hi=200)
+                top = _int_param(q, "top", NW.MAX_CANDIDATES, lo=1, hi=200)
+            except ValueError:
+                self._json({"ok": False, "error": "参数不对"}, 400)
+                return
+            chat = str((q.get("chat") or [""])[0]).strip()
+            rows = _messages_rows()
+            floor = time.time() - days * 86400
+            picked = []
+            for r in rows:
+                if not isinstance(r, dict) or r.get("role") != "user":
+                    continue
+                try:
+                    ts = float(r.get("ts") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if ts < floor:
+                    continue
+                if chat and str(r.get("chat_id") or "") != chat:
+                    continue
+                picked.append(r)
+            ignored = NW.load_ignored(STATE_DIR)
+            items = NW.scan(picked, ignore=ignored, min_count=min_count, top=top)
+            # 标「已知」：这些词已经在她知识库里（用一次批量接口问 klee-kb）
+            if items and _kb_health().get("ok"):
+                try:
+                    body = json.dumps({"character": cid,
+                                       "words": [x["word"] for x in items]}).encode("utf-8")
+                    req = urllib.request.Request(KB_URL + "/present", data=body,
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=8) as r:   # noqa: S310
+                        got = set((json.loads(r.read().decode("utf-8", "replace")) or {})
+                                  .get("present") or [])
+                except Exception as e:                              # noqa: BLE001
+                    logger.info("新词：查「已知」失败（按未知处理）：%s", e)
+                    got = set()
+                for it in items:
+                    it["known"] = it["word"] in got
+            self._json({"ok": True, "character": cid, "days": days, "chat": chat,
+                        "scanned": len(picked), "items": items,
+                        "ignored": ignored[-40:],
+                        "counts": {"scanned": len(picked), "items": len(items),
+                                   "known": sum(1 for x in items if x.get("known")),
+                                   "ignored": len(ignored)},
+                        "hint": "候选是「出现得多 + 像个词」的组合，点「加进知识库」才会真的写进去"})
+            return
         if u.path == "/api/characters/loaded":
             rt = getattr(BOT, "runtime", None) if BOT is not None else None
             mgr = getattr(rt, "mgr", None) if rt is not None else None
@@ -5918,6 +6153,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "character": cid,
                             "error": f"{type(e).__name__}: {e}"})
             return
+        if u.path == "/api/kb/sources":
+            cid = (q.get("character") or [""])[0].strip().lower() or _active_cid()
+            if _char_store().get(cid) is None:
+                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                return
+            try:
+                req = urllib.request.Request(
+                    KB_URL + "/sources",
+                    data=json.dumps({"character": cid, "limit": 60}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as r:      # noqa: S310
+                    self._json(json.load(r))
+            except urllib.error.HTTPError as e:
+                try:
+                    msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+                except (ValueError, OSError):
+                    msg = None
+                self._json({"ok": False, "character": cid,
+                            "error": msg or f"知识库返回 {e.code}"}, 400)
+            except Exception as e:                                      # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            return
         if u.path == "/api/kb/manual":
             cid = (q.get("character") or [""])[0].strip().lower() or _active_cid()
             try:
@@ -6005,6 +6262,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/budget":
             self._json(_budget_view())
+            return
+        if u.path == "/api/throttle":
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            if rt is None or not hasattr(rt, "throttle_view"):
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            self._json(rt.throttle_view())
             return
         if u.path == "/api/memories/tidy":
             from bot import memtidy as MT
@@ -6288,8 +6552,11 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 self._json({"ok": False, "error": f"读取失败：{e}"}, 400)
                 return
+            # 覆盖安装：`?replace=1`（路径里带 query，do_POST 里没有统一的 q）
+            replace = (parse_qs(u.query).get("replace") or [""])[0].strip() in (
+                "1", "true", "yes")
             try:
-                self._json(_import_character_zip(raw))
+                self._json(_import_character_zip(raw, replace=replace))
             except ImportError_ as e:
                 self._json({"ok": False, "error": str(e)}, 400)
             except Exception as e:                                 # noqa: BLE001
@@ -6934,6 +7201,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)}, 400)
             return
 
+        if u.path == "/api/kb/purge":
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            src = str(body.get("source") or "")
+            if _char_store().get(cid) is None:
+                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                return
+            if not src:
+                self._json({"ok": False, "error": "缺少 source"}, 400)
+                return
+            # 删语料不可恢复：必须显式带 confirm，避免误点/预取触发
+            if body.get("confirm") is not True:
+                self._json({"ok": False, "error": "要删来源得带 confirm=true"}, 400)
+                return
+            try:
+                req = urllib.request.Request(
+                    KB_URL + "/purge",
+                    data=json.dumps({"character": cid, "source": src}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=60) as r:      # noqa: S310
+                    self._json(json.load(r))
+            except urllib.error.HTTPError as e:
+                try:
+                    msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+                except (ValueError, OSError):
+                    msg = None
+                self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
+            except Exception as e:                                      # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            return
+
         if u.path in ("/api/kb/add", "/api/kb/delete"):
             cid = re.sub(r"[^a-z0-9_\-]", "",
                          str(body.get("character") or "").strip().lower())[:32] or _active_cid()
@@ -7382,6 +7679,50 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"ok": True, "character": info, "theme": theme_id,
                         "note": "已绑定（面板刷新后生效）"})
+            return
+
+        if u.path == "/api/newwords":
+            from bot import newwords as NW
+            act = str(body.get("action") or "").strip().lower()
+            word = str(body.get("word") or "").strip()
+            cid = str(body.get("character") or "").strip().lower() or _active_cid()
+            if not word:
+                self._json({"ok": False, "error": "缺少 word"}, 400)
+                return
+            if act == "ignore":
+                self._json({"ok": True, "ignored": NW.ignore_word(STATE_DIR, word)})
+                return
+            if act == "unignore":
+                self._json({"ok": True, "ignored": NW.unignore_word(STATE_DIR, word)})
+                return
+            if act == "kb":
+                if _char_store().get(cid) is None:
+                    self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                    return
+                text = str(body.get("text") or "").strip() or \
+                    f"群里的常用说法：{word}（${time.strftime('%Y-%m-%d')} 从聊天里收录）"
+                try:
+                    req = urllib.request.Request(
+                        KB_URL + "/add",
+                        data=json.dumps({"text": text, "title": f"群聊新词：{word}",
+                                         "source": "群聊新词", "character": cid,
+                                         "strict": True}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=20) as r:   # noqa: S310
+                        out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+                except urllib.error.HTTPError as e:
+                    try:
+                        msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+                    except (ValueError, OSError):
+                        msg = None
+                    self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
+                    return
+                except Exception as e:                              # noqa: BLE001
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                    return
+                self._json({"ok": True, "added": out, "character": cid, "word": word})
+                return
+            self._json({"ok": False, "error": f"不认识的 action：{act}"}, 400)
             return
 
         if u.path == "/api/characters/unload":

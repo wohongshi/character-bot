@@ -83,6 +83,11 @@ DEFAULT_CONFIG = {
     # 等于「谁写错一个插件都影响所有人」。开着就只装在用的角色，其余等用到再装。
     "lazy_plugins": True,
     "max_loaded_characters": 4,
+    # 每会话回复节流（频率闸；和用量预算是两道闸）
+    "throttle_on": False,
+    "throttle_per_min": 6,
+    "throttle_per_hour": 60,
+    "throttle_action": "drop",
     # 图片理解（vision 模型在 models.json 的 vision 段选；空 = 走友好降级）
     "vision_enabled": True,
     "vision_max_bytes": 8 * 1024 * 1024,

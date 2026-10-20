@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from . import adapters as adapters_mod
 from . import chat_char
 from . import promptdbg
+from . import throttle as throttle_mod
 from .adapters.base import AdapterError, BaseAdapter
 from .features_ext import RuntimeFeatures
 from .characters import CharacterStore
@@ -254,6 +255,9 @@ class BotRuntime(RuntimeFeatures):
         self._watch_interval = max(3.0, float(os.environ.get("KLEE_RELOAD_INTERVAL", "8")))
         self.setup_extras(self.config)          # chat_id → asyncio.Lock（会话间不互相等）
 
+        # 每会话回复节流（和用量预算是两道闸：一个管频率，一个管钱）
+        self.throttle = throttle_mod.Window()
+        self._throttle_notice_at: dict = {}
         self.mgr = FeatureManager(self)
         self.mgr.load()
         self.skills = SkillHub(self.mgr)
@@ -1461,6 +1465,54 @@ class BotRuntime(RuntimeFeatures):
         snap["kb_error"] = kb_err
         return snap
 
+    def throttle_cfg(self) -> dict:
+        """节流配置（每会话）。面板保存后立刻生效：只读配置，不缓存。"""
+        return throttle_mod.clamp_cfg({
+            "on": self.config.get("throttle_on", False),
+            "per_min": self.config.get("throttle_per_min"),
+            "per_hour": self.config.get("throttle_per_hour"),
+            "action": self.config.get("throttle_action"),
+        })
+
+    async def _throttle_check(self, chat_id: str, ctx: FeatureContext | None = None) -> bool:
+        """超频就拦下并返回 True（已经说过「慢点」或静默）。
+
+        放行**之后**才记账：先记再判的话，被拦的那条也算进去了，
+        一小时的余额会被刷屏的人白吃掉。
+        """
+        cfg = self.throttle_cfg()
+        if not cfg["on"]:
+            return False
+        used_min, used_hour = self.throttle.counts(chat_id)
+        verdict = throttle_mod.decide(cfg, used_min=used_min, used_hour=used_hour)
+        if verdict["allow"]:
+            self.throttle.hit(chat_id)
+            return False
+        self.stats["throttled"] = int(self.stats.get("throttled") or 0) + 1
+        logger.info("节流（%s）%s：%s", chat_id, verdict["level"], verdict["reason"])
+        if cfg["action"] == "notice":
+            # 每人每 10 分钟最多说一次「慢点」：刷屏的时候每次都回，等于没节流
+            now = time.time()
+            last = float(self._throttle_notice_at.get(chat_id) or 0)
+            if now - last >= 600:
+                self._throttle_notice_at[chat_id] = now
+                me = (self.active_character_info or {}).get("name") or "我"
+                try:
+                    await self.send(chat_id, f"{me}这边有点跟不上了，慢一点点好不好～",
+                                    reply_to=getattr(ctx, "message_id", None),
+                                    sentence_split=False)
+                except Exception as e:                             # noqa: BLE001
+                    logger.info("节流提示发送失败：%s", e)
+        return True
+
+    def throttle_view(self) -> dict:
+        cfg = self.throttle_cfg()
+        return {"ok": True, "config": cfg, "defaults": throttle_mod.DEFAULTS,
+                "actions": throttle_mod.ACTIONS_CN, "limits": throttle_mod.LIMITS,
+                "chats": self.throttle.snapshot(20),
+                "throttled": int(self.stats.get("throttled") or 0),
+                "hint": "只管聊天，命令不受影响；计数在内存里（重启归零）"}
+
     async def _chat(self, ctx: FeatureContext) -> None:
         if not self.config.get("chat_enabled", True):
             return
@@ -1468,6 +1520,10 @@ class BotRuntime(RuntimeFeatures):
         if not text:
             return
         chat_id = ctx.chat_id
+        # 频率闸：放在**调模型之前**（放后面等于钱已经花了）
+        blocked = await self._throttle_check(chat_id, ctx)
+        if blocked:
+            return
         async with self._hist_lock:
             hist_key = self._hist_key(chat_id)
             hist = self.hist.setdefault(hist_key, [])
