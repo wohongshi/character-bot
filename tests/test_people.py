@@ -120,6 +120,14 @@ def main():
     r = P.summarize(rows, now=NOW)
     check("8.1 不会无限膨胀", r["total"] <= P.MAX_PEOPLE + 1, str(r["total"]))
     check("8.2 top 生效", len(r["people"]) == 20, str(len(r["people"])))
+    # 溢出桶也要能算「回了谁」（别人被溢出时，回复不能凭空消失）
+    rows = []
+    for i in range(P.MAX_PEOPLE + 5):
+        rows.append(u(100000 - i * 10, uid=f"u{i}", name=f"人{i}"))
+        rows.append(a(100000 - i * 10 - 1))
+    r = P.summarize(rows, now=NOW)
+    ov = [p for p in r["people"] if p["name"].startswith("……")] or []
+    check("8.3 溢出桶的回复也计上了", bool(ov) and ov[0]["replied"] > 0, str(ov)[:120])
 
     section("9. chats()")
     rows = [u(300, cid="group:1"), u(200, cid="group:2"), u(100, cid="group:1")]

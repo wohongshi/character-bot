@@ -20,6 +20,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -95,8 +96,8 @@ def _clusters(items: list, threshold: float) -> list:
     norms = [_norm(t) for t in texts]
     grs = [grams(t) for t in texts]
     for i in range(n):
-        if len(norms[i]) < _HEAD_KEEP:
-            continue
+        # 短句也要参与比较：`_sim_pre` 里对短句用的是更严的 SHORT_SIM，
+        # 整条跳过会让「谢谢你陪我」这种短句永远并不到一起
         for j in range(i + 1, n):
             li, lj = len(norms[i]), len(norms[j])
             if li and lj and max(li, lj) > min(li, lj) * 2.2:
@@ -110,22 +111,10 @@ def _clusters(items: list, threshold: float) -> list:
 
 
 def _merge_scope(a: str, b: str) -> str:
-    """作用域取并集；空串（全局）吞掉一切 —— 和 memory._merge_scope 同语义。"""
-    a, b = str(a or "").strip(), str(b or "").strip()
-    if not a:
-        return ""
-    if not b:
-        return ""
-    if a == b:
-        return a
-    parts = []
-    for x in a.split(","):
-        if x and x not in parts:
-            parts.append(x)
-    for x in b.split(","):
-        if x and x not in parts:
-            parts.append(x)
-    return ",".join(parts)[:64]
+    """作用域取并集。直接复用 `memory._merge_scope`：它按**整条**作用域丢，
+    绝不按字符截断（截出 `web:studio-ma` 这种半截 id 永远匹配不上任何会话）。"""
+    from .memory import _merge_scope as _mem_merge
+    return _mem_merge(a, b)
 
 
 def plan(items: list, *, threshold: float = DEFAULT_THRESHOLD,
@@ -202,13 +191,15 @@ def _read(path: Path) -> list:
                     continue
                 if isinstance(r, dict):
                     out.append(r)
-    except OSError:
+    except FileNotFoundError:
         return []
+    # 其它 OSError（权限 / 瞬时 I/O）**不能**当成空文件：apply() 拿到空列表
+    # 就会把真实文件覆盖成空的
     return out
 
 
 def _write(path: Path, rows: list) -> None:
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
@@ -222,56 +213,74 @@ def _write(path: Path, rows: list) -> None:
             pass
 
 
-def apply(state_dir: Path | str, character: str, p: dict, *,
-          archive: bool = True, now: float | None = None) -> dict:
+def apply(state_dir: Path | str, character: str, p: dict) -> dict:
     """把计划落到磁盘：合并的被丢掉、陈旧的进归档、其余原样写回。
 
-    写之前先留一份 `.bak`（这次整理是**破坏性**的：合并不可能完美）。
+    三件事按顺序做，任何一步失败都不该让记忆「凭空少一截」：
+
+    1. 先留 `.bak`（这次整理是**破坏性**的：合并不可能完美）；
+    2. **先写归档再重写主线** —— 反过来的话，归档那步一失败，陈旧的条目
+       既不在主线也不在归档，只剩一个下次就会被覆盖的 `.bak`；
+    3. 状态目录里没有变化就一个字节都不写。
+
+    整个过程持 `memory._LOCK`：聊天那侧 `memory.add()` 也拿这把锁，
+    不互斥的话「整理期间的读 → 聊天写入 → 整理回写旧快照」会丢新记忆。
     """
-    now = time.time() if now is None else now
+    from . import memory as mem_mod
     path = _path(state_dir, character)
-    rows = _read(path)
-    by_ts = {}
-    for r in rows:
-        by_ts.setdefault(float(r.get("ts") or 0), r)
 
     drop_ts = set()
     for g in (p or {}).get("groups") or []:
         for d in g.get("drop") or []:
             drop_ts.add(float(d.get("ts") or 0))
     stale_ts = {float(r.get("ts") or 0) for r in (p or {}).get("stale") or []}
+    if not drop_ts and not stale_ts:
+        return {"before": 0, "after": 0, "merged": 0, "archived": 0, "dropped": 0,
+                "noop": True}
 
     merged_by_keep = {}
     for g in (p or {}).get("groups") or []:
         k = g.get("keep") or {}
         merged_by_keep[float(k.get("ts") or 0)] = k
 
-    out, archived = [], []
-    for r in rows:
-        ts = float(r.get("ts") or 0)
-        if ts in drop_ts:
-            continue
-        if ts in stale_ts:
-            archived.append(r)
-            continue
-        if ts in merged_by_keep:
-            out.append({**merged_by_keep[ts]})
-        else:
-            out.append(r)
+    lock = getattr(mem_mod, "_LOCK", None)
+    ctx = lock if lock is not None else _NullLock()
+    with ctx:
+        rows = _read(path)
+        if not rows:
+            return {"before": 0, "after": 0, "merged": 0, "archived": 0, "dropped": 0,
+                    "noop": True}
+        out, archived = [], []
+        for r in rows:
+            ts = float(r.get("ts") or 0)
+            if ts in drop_ts:
+                continue
+            if ts in stale_ts:
+                archived.append(r)
+                continue
+            out.append({**merged_by_keep[ts]} if ts in merged_by_keep else r)
 
-    if path.exists():
-        try:
-            path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
-        except OSError:
-            pass
-    _write(path, out)
-    if archived:
-        ap = path.with_name(f"{character}.archive.jsonl")
-        if archive:
+        if path.exists():
+            try:
+                path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
+            except OSError:
+                pass
+        if archived:                    # 先归档：失败就整体作废，别丢条目
+            ap = path.with_name(f"{character}.archive.jsonl")
+            ap.parent.mkdir(parents=True, exist_ok=True)
             with open(ap, "a", encoding="utf-8") as f:
                 for r in archived:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        else:
-            _write(ap, archived)
+        _write(path, out)
     return {"before": len(rows), "after": len(out), "merged": len(drop_ts),
             "archived": len(archived), "dropped": len(drop_ts)}
+
+
+class _NullLock:
+    """拿不到 memory._LOCK 时的兜底（不该发生，但别让整理直接崩）。"""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False

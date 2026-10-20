@@ -67,42 +67,42 @@ def main():
 
     section("2. decide：没超就放行")
     cfg = {"on": True, "daily_tokens": 1000, "hourly_tokens": 400, "action": "stop"}
-    r = B.decide(cfg, now=now, used_day=10, used_hour=10)
+    r = B.decide(cfg, used_day=10, used_hour=10)
     check("2.1 正常放行", r["allow"] and r["action"] == "ok", str(r))
     check("2.2 带上百分比", r["pct_day"] == 0.01 and r["pct_hour"] == 0.025, str(r))
-    r = B.decide({**cfg, "on": False}, now=now, used_day=99999, used_hour=99999)
+    r = B.decide({**cfg, "on": False}, used_day=99999, used_hour=99999)
     check("2.3 没启用就不管", r["allow"] and r["action"] == "ok")
-    r = B.decide({"on": True, "daily_tokens": 0, "hourly_tokens": 0}, now=now,
+    r = B.decide({"on": True, "daily_tokens": 0, "hourly_tokens": 0},
                  used_day=9_999_999, used_hour=9_999_999)
     check("2.4 上限 0 = 不限", r["allow"] and r["action"] == "ok")
 
     section("3. 到 80% 先提醒")
-    r = B.decide(cfg, now=now, used_day=800, used_hour=100)
+    r = B.decide(cfg, used_day=800, used_hour=100)
     check("3.1 到 80% 标 near", r["action"] == "near" and r["allow"], str(r["action"]))
     check("3.2 说明里有数字", "800" in r["reason"], r["reason"])
-    r = B.decide(cfg, now=now, used_day=100, used_hour=330)
+    r = B.decide(cfg, used_day=100, used_hour=330)
     check("3.3 小时线到 80% 也提醒", r["action"] == "near" and "这一小时" in r["reason"],
           r["reason"])
 
     section("4. 超限的三种动作")
-    r = B.decide({**cfg, "action": "warn"}, now=now, used_day=1000, used_hour=0)
+    r = B.decide({**cfg, "action": "warn"}, used_day=1000, used_hour=0)
     check("4.1 warn 仍然放行", r["allow"] and r["action"] == "warn", str(r))
-    r = B.decide({**cfg, "action": "stop"}, now=now, used_day=1000, used_hour=0)
+    r = B.decide({**cfg, "action": "stop"}, used_day=1000, used_hour=0)
     check("4.2 stop 拦下", r["allow"] is False and r["action"] == "stop")
     check("4.3 stop 的原因是中文人话", "上限" in r["reason"] and "token" in r["reason"],
           r["reason"])
-    r = B.decide({**cfg, "action": "cheap", "cheap_model": "flash"}, now=now,
+    r = B.decide({**cfg, "action": "cheap", "cheap_model": "flash"},
                  used_day=1000, used_hour=0)
     check("4.4 cheap 放行且标 cheap", r["allow"] and r["action"] == "cheap")
-    r = B.decide({**cfg, "action": "cheap", "cheap_model": ""}, now=now,
+    r = B.decide({**cfg, "action": "cheap", "cheap_model": ""},
                  used_day=1000, used_hour=0)
     check("4.5 cheap 但没配模型 → 退化成 warn", r["action"] == "warn", r["action"])
 
     section("5. 小时线优先")
-    r = B.decide(cfg, now=now, used_day=100, used_hour=400)
+    r = B.decide(cfg, used_day=100, used_hour=400)
     check("5.1 小时超了按小时算", r["limit_hit"] == "hour", str(r.get("limit_hit")))
     check("5.2 原因说的是这一小时", "这一小时" in r["reason"], r["reason"])
-    r = B.decide(cfg, now=now, used_day=1000, used_hour=400)
+    r = B.decide(cfg, used_day=1000, used_hour=400)
     check("5.3 两条都超也按小时", r["limit_hit"] == "hour")
 
     section("6. 配置读写")
@@ -202,6 +202,47 @@ def main():
         check("9.5 cheap 换掉了这次请求的模型",
               b'"model": "cheap"' in (seen[0] if seen else b""), str(seen[:1])[:120])
         check("9.6 只改这一次，不改配置", st.active()["model"] == "m1", str(st.active()))
+
+        # 便宜模型挂了：不能退回去用全价模型重试
+        st.set_agent("", "")
+        L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
+                                   "provider": "p1", "model": "nope"})
+
+        def picky(req, timeout=0):
+            calls.append(req.full_url)
+            if b'"model": "nope"' in (req.data or b""):
+                raise L.urllib.error.HTTPError(req.full_url, 400, "bad model", {}, None)
+            return FakeResp('{"choices":[{"message":{"content":"ok"}}],'
+                            '"usage":{"prompt_tokens":1,"completion_tokens":1,'
+                            '"total_tokens":2}}')
+
+        L._open_url = picky
+        n1 = len(calls)
+        try:
+            st.chat([{"role": "user", "content": "hi"}])
+        except Exception:                                         # noqa: BLE001
+            pass
+        check("9.8 便宜模型失败也不退回降级链（全价模型不会被偷偷用上）",
+              len(calls) - n1 == 1, str(len(calls) - n1))
+        L._open_url = fake_open
+
+        # 带 tools / 图片的请求不降级（便宜文本模型会 4xx，再按全价重试更亏）
+        L.set_budget_hook(lambda: {"allow": True, "action": "cheap",
+                                   "provider": "p1", "model": "cheap"})
+        seen2 = []
+        L._open_url = lambda req, timeout=0: (seen2.append(req.data) or fake_open(req))
+        st.complete_raw([{"role": "user", "content": "hi"}], tools=[{"type": "function"}],
+                        allow_fallback=False)
+        check("9.9 带工具的请求不降级",
+              b'"model": "m1"' in (seen2[0] if seen2 else b""), str(seen2[:1])[:120])
+        seen3 = []
+        L._open_url = lambda req, timeout=0: (seen3.append(req.data) or fake_open(req))
+        st.complete_raw([{"role": "user", "content": [
+            {"type": "text", "text": "看图"}, {"type": "image_url",
+                                               "image_url": {"url": "data:x"}}]}],
+                        allow_fallback=False)
+        check("9.10 带图片的请求不降级",
+              b'"model": "m1"' in (seen3[0] if seen3 else b""), str(seen3[:1])[:120])
 
         def boom():
             raise RuntimeError("钩子坏了")

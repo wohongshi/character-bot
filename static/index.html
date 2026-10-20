@@ -4836,9 +4836,6 @@ async function bgLoad(){
   const c = d.config || {};
   const pct = Math.max(d.pct_day || 0, d.pct_hour || 0);
   const cls = d.action === "stop" ? "bad" : (pct >= 0.8 ? "warn" : "ok");
-  const pctText = c.daily_tokens || c.hourly_tokens
-    ? `${Math.round((d.pct_day || 0) * 100)}%`
-    : "不限";
   box.innerHTML = `
     <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:6px">
       <label class="check"><input type="checkbox" id="bgOn" ${c.on ? "checked" : ""}> 启用</label>
@@ -5893,7 +5890,7 @@ async function viewBoard(target){
     <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
       <span class="kv" style="margin:0">👥 群友画像 <span id="ppMeta" class="kv" style="margin:0"></span></span>
       <span class="row" style="gap:6px">
-        <select id="ppChat" style="max-width:220px" onchange="ppLoad()"></select>
+        <select id="ppChat" style="max-width:220px" onchange="ppChat(this.value)"></select>
         <span class="ins-seg" id="ppDays">
           <button data-d="7" onclick="ppSet(7)">7 天</button>
           <button data-d="30" class="on" onclick="ppSet(30)">30 天</button>
@@ -5938,7 +5935,7 @@ async function viewBoard(target){
   $(T).scrollTop = st;                    // 重绘也保住滚动位置
   loadIndexInfo();                        // 索引规模（顺手验证 /api/search/stats 可用）
   renderInsights();                       // 洞察卡片（热力图/角色/常用字）
-  ppCache = null; ppLoad();               // 群友画像
+  ppCache = null; ppLoad();               // 群友画像（选中项在 ppChatSel 里保着）
   await viewFeed("feedSlot");
   if (boardTimer){ clearInterval(boardTimer); boardTimer = null; }
   boardTimer = setInterval(() => {
@@ -5949,23 +5946,31 @@ async function viewBoard(target){
 
 let insDays = 30, insSrc = "messages";
 /* ================= 群友画像 ================= */
-let ppDays = 30, ppCache = null;
+let ppDays = 30, ppCache = null, ppChatSel = "";   // 选中项要跨重绘保留
+function ppChat(v){ ppChatSel = v || ""; ppCache = null; ppLoad(1); }
 function ppSet(d){ ppDays = d;
   document.querySelectorAll("#ppDays button").forEach(b => b.classList.toggle("on", +b.dataset.d === d));
   ppLoad(1); }
 async function ppLoad(force){
   const box = $("ppBox"), sel = $("ppChat");
   if (!box) return;
-  if (ppCache && !force && Date.now() - ppCache.t < 5000){ ppRender(ppCache.d); return; }
-  const chat = sel ? sel.value : "";
+  const chat = sel ? sel.value : ppChatSel;
+  // 缓存要带请求参数：否则切了群但 5 秒内会直接拿上一次的结果重画
+  if (ppCache && !force && Date.now() - ppCache.t < 5000
+      && ppCache.key === ppDays + "|" + chat){ ppRender(ppCache.d); return; }
   const d = await api("/api/people?days=" + ppDays + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
   if (!d || !d.ok){ box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`; return; }
   if (sel && !sel.options.length){
     sel.innerHTML = `<option value="">全部会话</option>` +
       (d.chats || []).map(c => `<option value="${esc(c.id)}">${esc(prChatLabel(c.id))}（${c.n}）</option>`).join("");
-    if (d.chat_id) sel.value = d.chat_id;
   }
-  ppCache = {t: Date.now(), d};
+  if (sel){
+    // 重绘之后按模块变量恢复选中项：viewBoard 每 60 秒重建整页，不恢复就回到「全部会话」
+    sel.value = ppChatSel;
+    if (sel.value !== ppChatSel) sel.value = "";      // 那个群已经不在列表里了
+    ppChatSel = sel.value;
+  }
+  ppCache = {t: Date.now(), key: ppDays + "|" + ppChatSel, d};
   ppRender(d);
 }
 function ppRender(d){

@@ -73,7 +73,10 @@ def summarize(rows: list, *, now: float | None = None, days: int = 0,
             p = people.get(key)
             if p is None:
                 if len(people) >= MAX_PEOPLE:
-                    p = people.setdefault("__overflow__", _blank("……（更多）", ""))
+                    # 溢出桶：这些人共用一条统计，但「回了谁」必须记得**桶的 key**，
+                    # 否则下面 people.get(ukey) 拿真实 key 找不到，桶的 replied 永远是 0
+                    key = "__overflow__"
+                    p = people.setdefault(key, _blank("……（更多）", ""))
                 else:
                     p = people[key] = _blank(name or uid or UNKNOWN, uid,
                                              cid if not (uid or name) else "")

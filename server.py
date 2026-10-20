@@ -1740,6 +1740,8 @@ def _scrub_secrets(obj):
 
 
 def _export_rows(session: str, cid: str) -> list:
+    # 失败那一轮**要**留在导出里（导出是给人看的记录，页面上会把它标成错误），
+    # 但索引/上下文里不算「她说过的话」—— 那两处各自过滤
     return [e for e in _read_jsonl_all(CHAT_JSONL)
             if e.get("session") == session
             and str(e.get("character") or "klee") == cid]
@@ -2803,7 +2805,6 @@ def _budget_init() -> None:
 
 
 def _budget_numbers() -> dict:
-    from bot import budget as B
     if _BUDGET_METER is None:
         return {"used_day": 0, "used_hour": 0}
     return _BUDGET_METER.snapshot()
@@ -2813,8 +2814,7 @@ def _budget_decision() -> dict:
     from bot import budget as B
     cfg = BUDGET if BUDGET is not None else B.load(STATE_DIR)
     used = _budget_numbers()
-    return B.decide(cfg, now=time.time(), used_day=used["used_day"],
-                    used_hour=used["used_hour"])
+    return B.decide(cfg, used_day=used["used_day"], used_hour=used["used_hour"])
 
 
 def _budget_hook() -> dict:
@@ -2829,7 +2829,9 @@ def _budget_hook() -> dict:
     return out
 
 
-_MSG_ROWS_CACHE = {"sig": None, "rows": []}
+_MSG_ROWS_CACHE = {"sig": None, "ts": 0.0, "rows": []}
+_MSG_ROWS_TTL = 20.0          # 秒：看板每分钟问一次，没必要每次重解析
+_MSG_ROWS_TAIL = 8 << 20      # 只读尾部 8MB：文件会一直长，画像不需要全部历史
 
 
 def _mem_cid(q) -> str:
@@ -2844,30 +2846,43 @@ def _mem_items(cid: str) -> list:
 
 
 def _messages_rows() -> list:
-    """读 messages.jsonl（按 mtime+size 缓存：画像会连着问好几次）。"""
+    """读 messages.jsonl 的**尾部窗口**（按 mtime+size 缓存 20 秒）。
+
+    以前整文件解析：文件每条消息都会变 → mtime 一变缓存就失效，看板每分钟
+    把越来越大的文件完整重解析一遍。改成读尾部 8MB（按字节 seek，第一行可能
+    被切半，丢掉），既挡住了「文件越长越慢」，也让缓存真的能命中。
+    """
     try:
         st = MSG_JSONL.stat()
     except OSError:
         return []
     sig = (st.st_mtime_ns, st.st_size)
-    if _MSG_ROWS_CACHE["sig"] == sig:
+    now = time.time()
+    if _MSG_ROWS_CACHE["sig"] == sig and now - _MSG_ROWS_CACHE["ts"] < _MSG_ROWS_TTL:
         return _MSG_ROWS_CACHE["rows"]
     rows = []
     try:
-        with open(MSG_JSONL, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(r, dict):
-                    rows.append(r)
+        start = max(0, st.st_size - _MSG_ROWS_TAIL)
+        with open(MSG_JSONL, "rb") as f:
+            f.seek(start)
+            blob = f.read()
     except OSError:
         return []
-    _MSG_ROWS_CACHE["sig"], _MSG_ROWS_CACHE["rows"] = sig, rows
+    text = blob.decode("utf-8", "replace")
+    if start > 0:                      # 起读位置 > 0 时第一行可能是半截
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl >= 0 else ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict):
+            rows.append(r)
+    _MSG_ROWS_CACHE.update(sig=sig, ts=now, rows=rows)
     return rows
 
 
@@ -6631,6 +6646,10 @@ class Handler(BaseHTTPRequestHandler):
                                               else float(body["warn_at"])))
             except (TypeError, ValueError) as e:
                 self._json({"ok": False, "error": f"参数不对：{e}"}, 400)
+                return
+            except OSError as e:        # 磁盘满 / 只读 / 权限：要让用户看见「没存上」
+                logger.warning("保存预算配置失败：%s", e)
+                self._json({"ok": False, "error": f"写盘失败：{e}"}, 500)
                 return
             self._json(_budget_view())
             return

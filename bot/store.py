@@ -203,6 +203,10 @@ class MessageIndex:
                         continue                            # 坏行跳过，下次也不会重来
                     if not isinstance(d, dict):
                         continue
+                    if d.get("error"):
+                        # 失败那一轮（预算拦下 / 模型报错）的 text 是「为什么没回」，
+                        # 不是她说过的话：进了索引就会出现在搜索、洞察和导出里
+                        continue
                     text = d.get("text")
                     if text is None:
                         text = d.get("content")

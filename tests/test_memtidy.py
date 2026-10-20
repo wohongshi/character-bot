@@ -82,6 +82,12 @@ def main():
     check("3.3 完全一样的两条并掉（add 挡不住的边界）", p["counts"]["merged"] == 1,
           str(p["counts"]))
 
+    section("3b. 短句之间也要比")
+    p = M.plan([{"ts": 1, "text": "谢谢你陪我"}, {"ts": 2, "text": "谢谢你陪我。"},
+                {"ts": 3, "text": "好了"}], threshold=0.45)
+    check("3b.1 短句近乎一样会合并", p["counts"]["merged"] == 1, str(p["counts"]))
+    check("3b.2 不相干的短句不并", len(p["groups"]) == 1 and p["counts"]["total"] == 3)
+
     section("4. 阈值生效")
     p_low = M.plan(REAL, threshold=0.3)
     p_high = M.plan(REAL, threshold=0.95)
@@ -134,6 +140,28 @@ def main():
     check("7.2 主线只剩最近的", len(left) == 1 and "最近" in left[0]["text"], str(left))
     arch = M._read(tmp2 / "memories" / "atri.archive.jsonl")
     check("7.3 归档文件里有那条老的", len(arch) == 1 and "很老" in arch[0]["text"], str(arch))
+
+    section("7b. 失败不留下「凭空少一截」")
+    tmp3 = Path(tempfile.mkdtemp(prefix="klee-memtidy4-"))
+    (tmp3 / "memories").mkdir()
+    f3 = tmp3 / "memories" / "atri.jsonl"
+    f3.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in
+                            [{"ts": now - 100 * 86400, "text": "很老的一条", "scope": ""},
+                             {"ts": now - 60, "text": "新的", "scope": ""}]) + "\n",
+                  encoding="utf-8")
+    p = M.plan(M._read(f3), stale_days=30, now=now)
+    before_mtime = f3.stat().st_mtime_ns
+    # 归档目录不可写 → apply 必须整体失败，主线一个字节都不能动
+    (tmp3 / "memories" / "atri.archive.jsonl").mkdir()
+    try:
+        M.apply(tmp3, "atri", p)
+        ok, err = False, "没报错"
+    except OSError as e:
+        ok, err = True, str(e)
+    check("7b.1 归档写不进去就整体失败", ok, err)
+    check("7b.2 主线没被改（时间戳不变）", f3.stat().st_mtime_ns == before_mtime,
+          f"{before_mtime} → {f3.stat().st_mtime_ns}")
+    check("7b.3 主线内容还在", len(M._read(f3)) == 2, str(len(M._read(f3))))
 
     section("8. 幂等 / 空数据")
     p0 = M.plan([], threshold=0.45)

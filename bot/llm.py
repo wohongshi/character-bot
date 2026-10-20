@@ -53,6 +53,18 @@ def set_budget_hook(fn) -> None:
     _BUDGET_HOOK = fn
 
 
+def _has_image_parts(messages: list) -> bool:
+    """这条请求里有没有图片（OpenAI 的 content 数组里带 image_url）。"""
+    for m in messages or []:
+        c = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(c, list):
+            continue
+        for part in c:
+            if isinstance(part, dict) and str(part.get("type") or "") == "image_url":
+                return True
+    return False
+
+
 def _budget_gate():
     """问一次预算。返回 None（没装/坏了）或决定。"""
     if _BUDGET_HOOK is None:
@@ -789,8 +801,16 @@ class ModelStore:
             if not dec.get("allow", True):
                 raise BudgetExceeded(str(dec.get("reason") or "用量到上限了"))
             if str(dec.get("action") or "") == "cheap" and dec.get("model"):
-                provider = str(dec.get("provider") or provider or "") or None
-                model = str(dec.get("model") or "") or model
+                # 只在**纯文字对话**时降级：带图片内容段（看图）或带 tools（工具循环）
+                # 的请求交给便宜文本模型会直接 4xx，然后还会按全价重试一轮 —— 比不降级更亏
+                if tools or _has_image_parts(messages):
+                    dec = {**dec, "action": "warn"}
+                else:
+                    provider = str(dec.get("provider") or provider or "") or None
+                    model = str(dec.get("model") or "") or model
+                    # 降级期间不走降级链：`fallbacks()` 只排除当前 active，
+                    # 便宜模型一失败就会用全价模型重试，等于预算没生效
+                    allow_fallback = False
         if not allow_fallback:
             return self._complete_once(
                 messages, model=model, provider=provider, timeout=timeout,

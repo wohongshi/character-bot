@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -38,6 +39,7 @@ LIMITS = {
     "warn_at": (0.1, 1.0),
 }
 
+log = logging.getLogger("klee.budget")
 _LOCK = threading.RLock()
 
 
@@ -75,11 +77,25 @@ def clamp(cfg: dict) -> dict:
 
 
 def load(state_dir: Path | str) -> dict:
+    """读配置。
+
+    「文件不存在」= 首次运行，用默认值（全关）。
+    「文件存在但读坏了」必须**喊一声**：预算是个成本闸，静默退回「全关」等于
+    在磁盘出问题时把闸悄悄拆掉，而这正是它存在的原因。
+    """
     with _LOCK:
         try:
-            d = json.loads(_path(state_dir).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            raw = _path(state_dir).read_text(encoding="utf-8")
+        except FileNotFoundError:
             return dict(DEFAULTS)
+        except OSError as e:
+            log.warning("用量预算配置读不出来（按默认值=关闭）：%s", e)
+            return dict(DEFAULTS)
+    try:
+        d = json.loads(raw)
+    except ValueError as e:
+        log.warning("用量预算配置解析失败（按默认值=关闭）：%s", e)
+        return dict(DEFAULTS)
     return clamp(d)
 
 
@@ -111,13 +127,15 @@ def set_field(state_dir: Path | str, **kw) -> dict:
         return save(state_dir, cur)
 
 
-def decide(cfg: dict, *, now: float, used_day: int, used_hour: int) -> dict:
+def decide(cfg: dict, *, used_day: int, used_hour: int) -> dict:
     """现在这一次调用允不允许、要不要换模型。
 
     返回 `{allow, action, reason, pct_day, pct_hour, limit_hit}`：
     `allow=False` 只会在 `action=stop` 且真的超限时出现。
     """
     c = clamp(cfg)
+    # 没有 now 参数：日/小时的滚动发生在 `Meter`/`rollup` 里，这里只按数字判定
+    # （签名里留一个不用的 now 会让调用方以为它是窗口边界）
     used_day, used_hour = max(0, int(used_day or 0)), max(0, int(used_hour or 0))
     day_lim, hour_lim = int(c["daily_tokens"]), int(c["hourly_tokens"])
     pct_day = (used_day / day_lim) if day_lim else 0.0
@@ -206,14 +224,6 @@ class Meter:
         self.hour = int(now // 3600)
         self.used_day = 0
         self.used_hour = 0
-
-    def reset(self, now: float | None = None) -> None:
-        now = time.time() if now is None else now
-        with self._lock:
-            self.day = time.strftime("%Y-%m-%d", time.localtime(now))
-            self.hour = int(now // 3600)
-            self.used_day = 0
-            self.used_hour = 0
 
     def seed(self, used_day: int, used_hour: int, now: float | None = None) -> None:
         now = time.time() if now is None else now
