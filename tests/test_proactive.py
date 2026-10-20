@@ -181,6 +181,20 @@ def main():
     check("7.9 日志有上限", len(lines) == PV.LOG_MAX_LINES, str(len(lines)))
     check("7.10 留的是最新的", json.loads(lines[-1])["text"] == str(PV.LOG_MAX_LINES + 29))
 
+    section("7a. 注入的 now 不能和真实时间打架")
+    noon = time.mktime((2026, 10, 20, 15, 0, 0, 0, 0, -1))
+    r = PV.decide({"on": True, "per_day": 2, "chance": 1.0,
+                   "sent_day": PV._day(noon), "sent_today": 2},
+                  now=noon, last_user_ts=noon - 99 * 3600, rng=Rng(0.0))
+    check("7a.1 当天已满时按传入的 now 判（不会被真实时间清零）",
+          r["send"] is False and "已经发了 2 条" in r["reason"], str(r))
+    st0 = Path(tempfile.mkdtemp(prefix="klee-proact-now-"))
+    PV.set_chat(st0, "group:y", on=True, per_day=5)
+    PV.mark_sent(st0, "group:y", "第一条", now=noon, intent="noon")
+    PV.mark_sent(st0, "group:y", "第二条", now=noon + 60, intent="noon")
+    check("7a.2 同一天连续发是累加", PV.get_chat(st0, "group:y")["sent_today"] == 2,
+          str(PV.get_chat(st0, "group:y")["sent_today"]))
+
     section("7b. 跨天显示 / 结果未知")
     st2 = Path(tempfile.mkdtemp(prefix="klee-proact-day-"))
     PV.set_chat(st2, "group:1", on=True, per_day=3)
@@ -251,6 +265,48 @@ def main():
     check("10.3 多行压成一行", SV._clean_proactive("早呀\n\n今天冷") == "早呀 今天冷")
     check("10.4 长度封顶", len(SV._clean_proactive("字" * 500)) == 200)
     check("10.5 空白返回空串", SV._clean_proactive("   ") == "")
+
+    section("11. 「结果未知」不能记成失败（server 巡检）")
+    st3 = Path(tempfile.mkdtemp(prefix="klee-proact-unk-"))
+    PV.set_chat(st3, "group:zz", on=True, per_day=3, idle_h=1)
+    (st3 / "messages.jsonl").write_text(json.dumps(
+        {"ts": now - 5 * 3600, "chat_id": "group:zz", "role": "user", "text": "在吗"}) + "\n",
+        encoding="utf-8")
+
+    class _Rt:
+        def policy_for(self, chat_id, *, is_group):
+            return {"blocks_all": False, "quiet": False}
+
+    class _Bot:
+        runtime = _Rt()
+        loop = object()
+
+    old_bot, old_state, old_msg = SV.BOT, SV.STATE_DIR, SV.MSG_JSONL
+    old_send = SV._proactive_send
+    try:
+        SV.BOT = _Bot()
+        SV.STATE_DIR = st3
+        SV.MSG_JSONL = st3 / "messages.jsonl"
+
+        def _boom(chat_id, **k):
+            # 照 _proactive_send 的真实顺序：先占名额（mark_unknown），再抛专用异常
+            PV.mark_unknown(st3, chat_id, "超时了", now=now)
+            raise PV.UnknownResult("超时了")
+        SV._proactive_send = _boom
+        acts = SV._proactive_tick(now=now, rng=Rng(0.0))
+        row = (acts or [{}])[0]
+        check("11.1 巡检把它标成 unknown 而不是失败",
+              row.get("unknown") is True and row.get("ok") is None, str(row))
+        check("11.2 不计失败次数（否则三次就自动暂停）",
+              int(PV.get_chat(st3, "group:zz").get("fails") or 0) == 0,
+              str(PV.get_chat(st3, "group:zz")))
+        check("11.3 已占住「刚发过」的名额",
+              float(PV.get_chat(st3, "group:zz").get("last_sent_ts") or 0) > 0)
+        check("11.4 UnknownResult 是 RuntimeError（兼容旧捕获）",
+              issubclass(PV.UnknownResult, RuntimeError))
+    finally:
+        SV.BOT, SV.STATE_DIR, SV.MSG_JSONL = old_bot, old_state, old_msg
+        SV._proactive_send = old_send
 
     print()
     if FAIL:

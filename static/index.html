@@ -6266,7 +6266,9 @@ function pvRenderLog(){
     ? `<div style="margin-bottom:4px">最近发出去的：</div>` + log.map(x =>
         `<div class="kv" style="margin:0 0 3px">${esc(prChatLabel(x.chat_id))} · `
         + `${new Date((x.ts || 0) * 1000).toLocaleString()} · `
-        + `${x.event === "sent" ? esc(x.text || "") : `<span class="bad">发送失败 ${esc(x.error || "")}</span>`}</div>`).join("")
+        + (x.event === "sent" ? esc(x.text || "")
+           : x.event === "unknown" ? `<span class="kv">结果未知：${esc(x.error || "")}</span>`
+           : `<span class="bad">发送失败 ${esc(x.error || "")}</span>`) + `</div>`).join("")
     : `<div class="kv">还没有发过。</div>`;
 }
 async function pvSave(chat, field, value){

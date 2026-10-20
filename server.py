@@ -31,6 +31,7 @@ import logging
 import mimetypes
 import os
 import collections
+import concurrent.futures
 import queue
 import re
 import shutil
@@ -2552,15 +2553,17 @@ def _messages_of(chat_id: str, n: int = 4, *, tail_bytes: int = 1_048_576) -> li
     `deque(f, maxlen=2000)` 只是限制留在内存里的行数，文件照样从头读到尾 ——
     messages.jsonl 能到几十 MB，而这里每次主动发送都会调一次。
     """
+    start = 0
     try:
         size = os.path.getsize(MSG_JSONL)
+        start = max(0, size - max(65536, int(tail_bytes)))
         with open(MSG_JSONL, "rb") as f:
-            f.seek(max(0, size - max(65536, int(tail_bytes))))
+            f.seek(start)
             blob = f.read()
     except OSError:
         return []
     text = blob.decode("utf-8", "replace")
-    if size > tail_bytes:
+    if start > 0:               # 起读位置 > 0 才有半截行，别拿 size 和 tail_bytes 比
         cut = text.find("\n")
         text = text[cut + 1:] if cut >= 0 else ""
     out = []
@@ -2613,10 +2616,12 @@ def _proactive_send(chat_id: str, *, now=None) -> dict:
     fut = asyncio.run_coroutine_threadsafe(_do(), BOT.loop)
     try:
         res = fut.result(timeout=95)
-    except (asyncio.TimeoutError, TimeoutError):
-        # 不知道发没发出去：按「已发」占住名额（宁可不重复，也不刷屏）
+    except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
+        # 不知道发没发出去：按「已发」占住名额（宁可不重复，也不刷屏）。
+        # 抛专用异常，让 _proactive_tick 不去 mark_fail —— 否则「未知」又被
+        # 记成失败，三次之后自动暂停。
         pv.mark_unknown(_state_dir(), chat_id, "发送超时，不确定是否已送达", now=now)
-        raise RuntimeError("发送超时（结果未知，已按已发记账）") from None
+        raise pv.UnknownResult("发送超时（结果未知，已按已发记账）") from None
     if not getattr(res, "success", True):
         raise RuntimeError("发送失败（限流，或适配器没连上）")
     pv.mark_sent(_state_dir(), chat_id, text, now=now, intent=intent["key"])
@@ -2651,6 +2656,10 @@ def _proactive_tick(now=None, rng=None) -> list:
                 try:
                     got = _proactive_send(chat_id, now=now)
                     row.update(ok=True, text=got["text"])
+                except pv.UnknownResult as e:
+                    # 结果未知：已经记过账，不能再记失败（否则三次超时就自动暂停）
+                    row.update(ok=None, unknown=True, error=str(e))
+                    logger.warning("主动消息结果未知（%s）：%s", chat_id, e)
                 except Exception as e:                            # noqa: BLE001
                     pv.mark_fail(_state_dir(), chat_id, f"{type(e).__name__}: {e}", now=now)
                     row.update(ok=False, error=f"{type(e).__name__}: {e}")

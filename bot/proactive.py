@@ -54,7 +54,11 @@ def _path(state_dir: Path | str) -> Path:
     return Path(state_dir) / "proactive.json"
 
 
-def _clamp(cfg: dict) -> dict:
+class UnknownResult(RuntimeError):
+    """结果未知（发送超时等）：已经按「已发」记过账，调用方**不要**再记失败。"""
+
+
+def _clamp(cfg: dict, *, now: float | None = None) -> dict:
     out = dict(DEFAULTS)
     for k, (lo, hi) in LIMITS.items():
         try:
@@ -72,7 +76,9 @@ def _clamp(cfg: dict) -> dict:
     # 跨天就把「今天发了多少」归零：面板读的是 _clamp() 的结果，
     # 不在这里归零的话，过了零点还会显示「今天 2/2 条」——正是那种
     # 「为什么她不说话」的误导信号。
-    if out.get("sent_day") != _day(time.time()):
+    # `now` 由调用方注入（decide / mark_* 都带着自己的 now）：
+    # 这里用真实时间的话，回放/测试里「昨天发的」会被先清零再 +1，计数就不对了
+    if out.get("sent_day") != _day(time.time() if now is None else now):
         out["sent_today"] = 0
     return out
 
@@ -170,7 +176,7 @@ def decide(cfg: dict, *, now: float, last_user_ts: float = 0.0,
            blocked: str = "", rng=None) -> dict:
     """该不该发。返回 `{send, reason, sent_today}`；`reason` 是给面板看的人话。"""
     rng = rng or random
-    c = _clamp(cfg or {})
+    c = _clamp(cfg or {}, now=now)
     if not c.get("on"):
         return {"send": False, "reason": "没开", "sent_today": 0}
     if blocked:
@@ -249,7 +255,7 @@ def mark_sent(state_dir: Path | str, chat_id: str, text: str, *, now: float | No
 
 def _mark_sent_locked(state_dir, chat_id, text, *, now: float, intent: str) -> dict:
     data = load(state_dir)
-    cur = _clamp(data["chats"].get(str(chat_id)) or {})
+    cur = _clamp(data["chats"].get(str(chat_id)) or {}, now=now)
     today = _day(now)
     if cur.get("sent_day") != today:
         cur["sent_today"] = 0
@@ -271,7 +277,7 @@ def mark_unknown(state_dir: Path | str, chat_id: str, note: str,
     now = time.time() if now is None else now
     with _LOCK:
         data = load(state_dir)
-        cur = _clamp(data["chats"].get(str(chat_id)) or {})
+        cur = _clamp(data["chats"].get(str(chat_id)) or {}, now=now)
         cur.update({"last_sent_ts": now, "last_error": str(note or "")[:200], "last_ts": now})
         data["chats"][str(chat_id)] = cur
         save(state_dir, data)
@@ -284,7 +290,7 @@ def mark_fail(state_dir: Path | str, chat_id: str, error: str, *, now: float | N
     now = time.time() if now is None else now
     with _LOCK:                      # 整段读-改-写（只锁 load 等于没锁）
         data = load(state_dir)
-        cur = _clamp(data["chats"].get(str(chat_id)) or {})
+        cur = _clamp(data["chats"].get(str(chat_id)) or {}, now=now)
         cur.update({"fails": int(cur.get("fails") or 0) + 1,
                     "last_error": str(error or "")[:200], "last_ts": now})
         data["chats"][str(chat_id)] = cur
