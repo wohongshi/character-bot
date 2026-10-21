@@ -923,11 +923,38 @@ body[data-density="wide"] .card{padding:20px 24px}
 .btn.tabon{background:var(--ui-accent);color:#fff;border-color:transparent}
 .tag{border-radius:999px;border:1px solid color-mix(in srgb,var(--ink) 10%,transparent);background:color-mix(in srgb,var(--surface-2) 70%, transparent)}
 /* 角色总览一行：手机上自动折行 */
-.ovrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;
-  border-bottom:1px solid var(--line)}
+.ovrow{display:grid;grid-template-columns:minmax(140px,1fr) 74px 72px 64px 100px 84px;
+  gap:6px 10px;align-items:center;padding:6px 10px 6px 2px;border-bottom:1px solid var(--line)}
+/* 表头：只给列名（单位在这里说一次，行里不再重复）*/
+.ovrow.ovhead{border-bottom:1px solid var(--line);padding:2px 0 4px}
+.ovrow.ovhead span{font-size:max(11px, calc(11px * var(--fx)));color:var(--dim);
+  text-align:right;font-family:var(--font-body)}
+.ovrow.ovhead span:first-child{text-align:left}
 .ovrow:last-child{border-bottom:0}
 .ovrow .kv{margin:0}
+/* 当前角色：左侧一道竖条，比在后面加两个字显眼 */
+.ovrow.cur{background:color-mix(in srgb,var(--ui-accent) 8%,transparent);
+  border-radius:8px;padding-left:6px;margin-left:-6px}
+.ovcur{color:var(--ui-accent);border-color:color-mix(in srgb,var(--ui-accent) 45%,var(--line))}
+/* 数字列：等宽 + 右对齐，纵向才比得出来 */
+.ovnum{text-align:right;font-variant-numeric:tabular-nums;
+  font-size:max(11px, calc(12px * var(--fx)));white-space:nowrap}
+.ovnum i{display:none}   /* 桌面给表头，行里不再重复单位 */
+.ulb .tag{font-weight:400;margin-left:4px}
+.ovnum.zero{color:var(--ink-soft)}
 .tag.cold{opacity:.6}
+/* 手机上一列放不下：退回自动折行，数字仍右对齐 */
+@media (max-width:640px){
+  /* 手机上放不下一行 6 列：名字一行，五个数字另起一行、各带小标签 */
+  .ovrow{grid-template-columns:repeat(5, 1fr);row-gap:4px;padding:6px 6px 6px 2px}
+  .ovrow.ovhead{display:none}
+  .ovrow .ulb{grid-column:1 / -1;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  /* 数值仍右对齐（居中会让个位数和七位数看起来乱跳），标签在数字上方 */
+  .ovrow .ovnum{grid-row:2;text-align:right;white-space:normal;
+    font-size:max(11px, calc(11.5px * var(--fx)));padding-right:2px}
+  .ovrow .ovnum i{display:block;font-style:normal;color:var(--dim);margin:0 0 1px;
+    font-size:max(10.5px, calc(11px * var(--fx)))}
+}
 /* 二次确认的删除按钮：红字红边，和普通 tiny 区分开 */
 .btn.danger{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,var(--line))}
 /* 按需装载的角色小牌：已加载的描边点亮，未加载的淡一点 */
@@ -5712,19 +5739,24 @@ async function ovLoad(){
     <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:6px">
       <span class="kv" style="margin:0">${d.totals.chars} 个角色</span>
       <span class="kv" style="margin:0">${d.totals.bound} 个会话绑定</span>
-      <span class="kv" style="margin:0">知识 ${d.totals.kb_chunks} 块</span>
-      <span class="kv" style="margin:0">7 天 ${tnum(d.totals.tokens)} token</span>
+      <span class="kv" style="margin:0">知识 ${tnum(d.totals.kb_chunks)} 块</span>
+      <span class="kv" style="margin:0">近 7 天 · ${tnum(d.totals.tokens)} token</span>
     </div>
-    ${items.map(r => `<div class="ovrow">
-      <b class="ulb">${esc((r.emoji || "") + " " + r.name)}${r.active ? " · 当前" : ""}</b>
-      <span class="tag ${r.loaded ? "" : "cold"}">${r.loaded ? "已装" : "待命"}</span>
-      <span class="kv">插件 ${r.plugins}/${r.plugins_total}</span>
-      <span class="kv ${warn.has(r.id) ? "bad" : ""}">知识 ${r.kb_chunks}</span>
-      <span class="kv">命中 ${r.kb_hits}</span>
-      <span class="kv">${tnum(r.tokens)} token</span>
-      <span class="kv">${r.avg_ms ? r.avg_ms + " ms" : "—"}</span>
-      ${r.bound ? `<span class="tag">绑定 ${r.bound}</span>` : ""}
-      ${r.errors ? `<span class="tag ccbad">报错 ${r.errors}</span>` : ""}
+    <div class="ovrow ovhead">
+      <span>角色</span><span>插件</span><span>知识块</span>
+      <span>命中</span><span>token（7 天）</span><span>耗时（ms）</span>
+    </div>
+    ${items.map(r => `<div class="ovrow ${r.active ? "cur" : ""}">
+      <b class="ulb">${esc((r.emoji || "") + " " + r.name)}
+        ${r.active ? `<span class="tag ovcur">当前</span>` : ""}
+        <span class="tag ${r.loaded ? "" : "cold"}">${r.loaded ? "已装" : "待命"}</span>
+        ${r.bound ? `<span class="tag">绑定 ${r.bound}</span>` : ""}
+        ${r.errors ? `<span class="tag ccbad">报错 ${r.errors}</span>` : ""}</b>
+      <span class="ovnum ${r.plugins ? "" : "zero"}"><i>插件</i>${r.plugins}/${r.plugins_total}</span>
+      <span class="ovnum ${r.kb_chunks ? "" : "zero"} ${warn.has(r.id) ? "bad" : ""}"><i>知识</i>${tnum(r.kb_chunks)}</span>
+      <span class="ovnum ${r.kb_hits ? "" : "zero"}"><i>命中</i>${tnum(r.kb_hits)}</span>
+      <span class="ovnum ${r.tokens ? "" : "zero"}"><i>token</i>${tnum(r.tokens)}</span>
+      <span class="ovnum ${r.avg_ms ? "" : "zero"}"><i>耗时ms</i>${r.avg_ms ? r.avg_ms : "—"}</span>
     </div>`).join("")}
     ${warn.size ? `<div class="kv" style="margin-top:6px">⚠ 绑了会话但没有知识库：${(d.warn || []).map(esc).join("、")}</div>` : ""}`;
 }

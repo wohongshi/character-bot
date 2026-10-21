@@ -3939,6 +3939,10 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
                if m else set())
         if cid not in ids:
             raise ImportError_(f"插件 {fname} 已存在且不属于 {cid}（换个文件名再试）")
+        if not backup:
+            # 非覆盖安装不会先删旧文件，`_install_plugins()` 稍后必然因「已存在」失败 ——
+            # 而那时主题已换、它前面的插件也已落盘，等于留下半个包。
+            raise ImportError_(f"插件 {fname} 已存在，换一个文件名再试")
         if len(ids) > 1:
             # 共享插件：新包里的同名文件必须仍然覆盖**原来那几个角色**，
             # 否则换上去等于把别人的插件弄没了（备份在 trash 里，但运行时已经坏）
