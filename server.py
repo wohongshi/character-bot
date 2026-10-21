@@ -5656,6 +5656,7 @@ _SENSITIVE_GET = frozenset({
     "/api/control", "/api/prompt", "/api/proactive", "/api/budget", "/api/people",
     "/api/memories/tidy", "/api/characters/bindings", "/api/characters/export",
     "/api/throttle", "/api/newwords", "/api/characters/overview",
+    "/api/drafts", "/api/trace", "/api/guard", "/api/kb/gaps",
     "/api/characters/examples", "/api/characters/loaded", "/api/kb/sources",
 })
 
@@ -6386,6 +6387,56 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "bot 未启动"}, 503)
                 return
             self._json(rt.throttle_view())
+            return
+        if u.path == "/api/drafts":
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            if rt is None or not hasattr(rt, "drafts_view"):
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            self._json(rt.drafts_view(chat=(q.get("chat") or [""])[0],
+                                      limit=_int_param(q, "limit", 50, lo=1, hi=100)))
+            return
+        if u.path == "/api/trace":
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            if rt is None or not hasattr(rt, "trace_view"):
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            self._json(rt.trace_view(chat=(q.get("chat") or [""])[0],
+                                     limit=_int_param(q, "limit", 60, lo=1, hi=200)))
+            return
+        if u.path == "/api/guard":
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            if rt is None or not hasattr(rt, "guard_view"):
+                self._json({"ok": False, "error": "bot 未启动"}, 503)
+                return
+            self._json(rt.guard_view(limit=_int_param(q, "limit", 20, lo=1, hi=50)))
+            return
+        if u.path == "/api/kb/gaps":
+            from bot import kbgaps as KG
+            cid = _mem_cid(q)
+            days = _int_param(q, "days", 30, lo=0, hi=365)
+            st = KG.load_state(STATE_DIR)
+            rows = KG.read_rows(KG.hits_path(STATE_DIR))
+            if cid:
+                # 空 character 的老行也算：那时候还没有多角色
+                rows = [r for r in rows
+                        if str(r.get("character") or "").strip().lower() in ("", cid)]
+            try:
+                base = float(((BOT.config if BOT is not None else {}) or {}).get("kb_threshold")
+                             or 0.4)
+            except (TypeError, ValueError):
+                base = 0.4
+            try:
+                weak = float((q.get("weak") or [""])[0] or (base + 0.02))
+            except (TypeError, ValueError, OverflowError):
+                weak = base + 0.02
+            weak = min(max(weak, 0.0), 1.0)
+            out = KG.scan(rows, days=days, limit=_int_param(q, "limit", 30, lo=1, hi=100),
+                          ignored=st["ignored"], added=st["added"], weak=weak)
+            self._json({"ok": True, "character": cid, "days": days, "weak": round(weak, 2),
+                        **out,
+                        "ignored": st["ignored"][-40:], "added": st["added"][-40:],
+                        "hint": "她检索知识库没命中、或只是勉强沾边的问题；补一句就进了她的库"})
             return
         if u.path == "/api/memories/tidy":
             from bot import memtidy as MT
@@ -7158,7 +7209,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 res = chatpolicy.set_chat(
                     STATE_DIR, str(body.get("chat_id") or ""),
-                    **{k: body[k] for k in ("mode", "quiet", "quiet_mention", "note")
+                    **{k: body[k] for k in ("mode", "quiet", "quiet_mention", "note", "review")
                        if k in body})
             except ValueError as e:
                 self._json({"ok": False, "error": str(e)}, 400)
@@ -7796,6 +7847,128 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"ok": True, "character": info, "theme": theme_id,
                         "note": "已绑定（面板刷新后生效）"})
+            return
+
+        if u.path == "/api/guard":
+            if not self._guard():
+                return
+            # 「试一下」：用**面板上正在生效的**配置跑一遍，不依赖前端复制规则
+            from bot import guard as GD
+            cfg = (BOT.config if BOT is not None else {}) or {}
+            self._json(GD.inspect(str(body.get("text") or "")[:4000],
+                                  words=str(cfg.get("guard_words") or ""),
+                                  patterns=str(cfg.get("guard_patterns") or ""),
+                                  builtin=bool(cfg.get("guard_builtin", True))))
+            return
+
+        if u.path == "/api/drafts":
+            if not self._guard():
+                return
+            from bot import drafts as DF
+            rt = getattr(BOT, "runtime", None) if BOT is not None else None
+            act = str(body.get("action") or "").strip().lower()
+            did = str(body.get("id") or "").strip()
+            if act in ("send", "edit", "drop") and not did:
+                self._json({"ok": False, "error": "缺少 id"}, 400)
+                return
+            if act == "edit":
+                item = DF.set_text(STATE_DIR, did, str(body.get("text") or ""))
+                if item is None:
+                    self._json({"ok": False, "error": "这条草稿不在了"}, 404)
+                    return
+                self._json({"ok": True, "item": item})
+                return
+            if act == "drop":
+                self._json({"ok": True, "dropped": DF.drop(STATE_DIR, did)})
+                return
+            if act in ("drop_all", "send_all"):
+                chat = str(body.get("chat") or "").strip()
+                if act == "drop_all":
+                    self._json({"ok": True, "removed": DF.drop_all(STATE_DIR, chat=chat)})
+                    return
+                if rt is None or BOT.loop is None:
+                    self._json({"ok": False, "error": "bot 没在跑"}, 503)
+                    return
+                sent, failed = 0, []
+                for it in DF.list_items(STATE_DIR, chat=chat, limit=20):
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            rt.send_draft(it["id"]), BOT.loop)
+                        fut.result(timeout=60)
+                        sent += 1
+                    except Exception as e:                         # noqa: BLE001
+                        failed.append(f"{it['id']}: {type(e).__name__}: {e}")
+                self._json({"ok": True, "sent": sent, "failed": failed,
+                            "left": DF.count(STATE_DIR, chat=chat)})
+                return
+            if act == "send":
+                if rt is None or BOT.loop is None:
+                    self._json({"ok": False, "error": "bot 没在跑"}, 503)
+                    return
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(rt.send_draft(did), BOT.loop)
+                    res = fut.result(timeout=60)
+                except ValueError as e:
+                    self._json({"ok": False, "error": str(e)}, 404)
+                    return
+                except Exception as e:                             # noqa: BLE001
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                    return
+                self._json({**res, "left": DF.count(STATE_DIR)})
+                return
+            self._json({"ok": False,
+                        "error": "action 只能是 send / edit / drop / send_all / drop_all"},
+                       400)
+            return
+
+        if u.path == "/api/kb/gaps":
+            if not self._guard():
+                return
+            from bot import kbgaps as KG
+            act = str(body.get("action") or "").strip().lower()
+            text = str(body.get("text") or "").strip()
+            key = KG.norm(text)
+            if not key:
+                self._json({"ok": False, "error": "缺少问题内容"}, 400)
+                return
+            if act in ("ignore", "unignore"):
+                st = KG.set_status(STATE_DIR, "ignored", key, on=(act == "ignore"))
+                self._json({"ok": True, "ignored": st["ignored"]})
+                return
+            if act != "add":
+                self._json({"ok": False, "error": "action 只能是 add / ignore / unignore"}, 400)
+                return
+            # do_POST 里没有统一的 `q`（见 /api/characters/import 那次的教训），
+            # 角色只从 body 取 —— 不能调 `_mem_cid(q)`，那会 NameError。
+            cid = re.sub(r"[^a-z0-9_\-]", "",
+                         str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+            if _char_store().get(cid) is None:
+                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+                return
+            answer = str(body.get("answer") or "").strip()
+            if not answer:
+                self._json({"ok": False, "error": "写一句她该怎么答"}, 400)
+                return
+            payload = {"text": f"问：{text[:300]}\n答：{answer[:1200]}",
+                       "title": text[:30], "source": "缺口补录", "character": cid}
+            try:
+                req = urllib.request.Request(
+                    KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as r:      # noqa: S310
+                    out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+            except urllib.error.HTTPError as e:
+                try:
+                    msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+                except ValueError:
+                    msg = None
+                self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
+                return
+            except Exception as e:                                 # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 502)
+                return
+            st = KG.set_status(STATE_DIR, "added", key, on=True)
+            self._json({"ok": True, "character": cid, **out, "added": st["added"]})
             return
 
         if u.path == "/api/newwords":

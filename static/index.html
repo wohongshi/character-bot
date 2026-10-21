@@ -4107,6 +4107,24 @@ async function viewPersona(){
       <button class="btn tiny" style="margin-left:auto" onclick="loadKbRecent()">刷新</button></h3>
     <div id="kbRecent" style="margin-top:6px"></div>
   </div>
+  <div class="card" id="kgCard">
+    <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <span class="kv" style="margin:0">🕳 她答不上来的 <span id="kgMeta"></span></span>
+      <span class="row" style="gap:6px">
+        <select id="kgDays" onchange="loadKbGaps()" style="min-width:96px">
+          <option value="7">近 7 天</option><option value="30" selected>近 30 天</option>
+          <option value="90">近 90 天</option><option value="0">全部</option>
+        </select>
+        <button class="btn tiny" onclick="loadKbGaps()">⟳ 刷新</button>
+      </span>
+    </div>
+    <div class="kv" style="margin:6px 0 8px;line-height:1.7">
+      她在对话里被问到、但知识库里没命中（或只是勉强沾边）的问题。出现次数越多，
+      越说明她缺这块 —— 补一句答案就进了她的库，下次就答得上了。
+      面板上的「试检索」不算，免得测试用的探针混进来。
+    </div>
+    <div id="kgBox" class="kv">读取中…</div>
+  </div>
   </div>
   <div id="paneEx" style="display:none">
   <div class="card">
@@ -4177,6 +4195,57 @@ async function viewPersona(){
   renderKbRecent((rec && rec.hits) || []);
   ptab(personaTab);
 }
+/* ---------- 知识库缺口 ----------
+   「她答不上来的」= 检索没命中的提问。补一句就进库（走 /api/kb/gaps 的 add），
+   忽略只影响这个清单，不动日志。 */
+let kgItems = [];
+async function loadKbGaps(){
+  const box = $("kgBox"); if (!box) return;
+  const days = Number((($("kgDays") || {}).value) || 30);
+  const d = await api(`/api/kb/gaps?character=${encodeURIComponent(ACTIVE.id)}&days=${days}&limit=40`);
+  if (!d || !d.ok){
+    box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  kgItems = d.items || [];
+  const meta = $("kgMeta");
+  if (meta) meta.textContent = `· ${d.counts.open} 个待补 · 扫了 ${d.counts.scanned} 次检索`
+    + `（没命中 ${d.counts.miss}，勉强沾边 ${d.counts.weak}）`;
+  if (!kgItems.length){
+    box.innerHTML = `<div class="empty"><b>🕳</b><span>没有缺口</span><i>最近的提问她都答得上</i></div>`;
+    return;
+  }
+  box.innerHTML = kgItems.map((it, i) => `
+    <div class="kbhit" data-kg="${i}" style="display:flex;gap:10px;align-items:flex-start">
+      <span class="tag" style="flex:none">×${it.count}</span>
+      <div style="flex:1;min-width:0">
+        <div>${esc(it.text)}<span class="kv" style="margin-left:6px">${it.best ? `最高相似度 ${it.best}` : "完全没命中"}</span></div>
+        <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+          <input placeholder="她该怎么答（一句话就够）" data-kg-ans style="flex:1;min-width:180px">
+          <button class="btn primary tiny" onclick="kgAdd(${i})">补进库</button>
+          <button class="btn tiny" onclick="kgIgnore(${i})">忽略</button>
+        </div>
+      </div>
+    </div>`).join("");
+}
+async function kgAdd(i){
+  const it = kgItems[i]; if (!it) return;
+  const row = document.querySelector(`[data-kg="${i}"]`);
+  const inp = row ? row.querySelector("[data-kg-ans]") : null;
+  const answer = inp ? inp.value : "";
+  if (!answer.trim()){ flash("写一句她该怎么答"); return; }
+  const d = await post("/api/kb/gaps", {action: "add", text: it.text,
+                                        answer, character: ACTIVE.id});
+  if (!d || !d.ok){ flash("没补上：" + ((d && d.error) || "未知")); return; }
+  flash("已写进她的知识库");
+  loadKbGaps(); loadKbSources();
+}
+async function kgIgnore(i){
+  const it = kgItems[i]; if (!it) return;
+  const d = await post("/api/kb/gaps", {action: "ignore", text: it.text, character: ACTIVE.id});
+  if (!d || !d.ok){ flash("没忽略：" + ((d && d.error) || "未知")); return; }
+  loadKbGaps();
+}
 let personaTab = "soul";
 function ptab(name){
   personaTab = name;
@@ -4186,7 +4255,7 @@ function ptab(name){
   for (const [k, el] of Object.entries(panes)) if (el) el.style.display = k === name ? "" : "none";
   for (const [k, el] of Object.entries(btns)) if (el) el.classList.toggle("on", k === name);
   if (name === "mem") loadMemories();
-  if (name === "kb") loadKbSources();
+  if (name === "kb"){ loadKbSources(); loadKbGaps(); }
   if (name === "stk") loadStickers();
   if (name === "ex") loadExamples();
 }
@@ -6302,6 +6371,27 @@ const CFG_GROUPS = [
      {k:"log_enabled", label:"记录运行日志", bool:true, hint:"关掉后日志区显示「已关闭」"},
      {k:"log_retention_days", label:"日志保留天数", hint:"0 = 永不清理；不影响聊天记录"},
    ]},
+  {id: "guard", emoji: "🚧", title: "审与闸", open: false,
+   note: "先审后发 / 连发合并 / 出站内容闸",
+   fields: [
+     {k:"review_on", label:"全局：回复先审后发", bool:true,
+      hint:"开了之后所有会话的回复都进「管控 → 待她发」；单个群可以在会话策略里单独设"},
+     {k:"coalesce_on", label:"连发消息合并", bool:true,
+      hint:"同一个人一秒内发好几条时合成一段再回（省调用，也答得更完整）"},
+     {k:"coalesce_window", label:"合并窗口（秒）", hint:"0.3~10；太大会显得反应慢"},
+     {k:"coalesce_max", label:"最多合并几条", hint:"1~10；超了立刻发"},
+     {k:"guard_on", label:"出站内容闸", bool:true,
+      hint:"所有出站文字都过一遍：绝对路径 / 密钥 / CQ 码 + 你写的词"},
+     {k:"guard_action", label:"命中后", opts:[
+       {v:"log", t:"只记录，照发"}, {v:"mask", t:"打码后发"}, {v:"replace", t:"整条换掉"}]},
+     {k:"guard_builtin", label:"检查内置规则", bool:true,
+      hint:"路径、sk- 密钥、Bearer 令牌、[CQ:…] 原始协议码"},
+     {k:"guard_replace", label:"整条换掉时发这句"},
+     {k:"guard_words", label:"敏感词", ph:"逗号分隔，比如：退群，骂人的词",
+      hint:"命中就按上面的动作处理；词按字面匹配，不分大小写"},
+     {k:"guard_patterns", label:"自定义正则", ph:"一行一条，比如：\\d{17}",
+      hint:"写错了面板会直接报错 —— 不会「以为拦住了其实没拦」"},
+   ]},
 ];
 // 保存/遍历用：拍平
 const CFG_FIELDS = CFG_GROUPS.flatMap(g => g.fields);
@@ -7314,6 +7404,50 @@ async function viewControl(){
         <span class="kv">留空的项就跟随全局（全局：<b id="ctlGlobal"></b>）</span>
       </div>
     </div>
+    <div class="card" id="drCard">
+      <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span class="kv" style="margin:0">📝 待她发 <span id="drMeta"></span></span>
+        <span class="row" style="gap:6px">
+          <button class="btn tiny" onclick="drLoad()">⟳ 刷新</button>
+          <button class="btn tiny" onclick="drAll('send')">全部发送</button>
+          <button class="btn tiny" onclick="drAll('drop')">全部丢弃</button>
+        </span>
+      </div>
+      <div class="kv" style="margin:6px 0 8px;line-height:1.7">
+        「先审后发」的会话里，她的回复会停在这里等你看一眼：可以直接改一句再发。
+        审核开关在下面的「会话策略」每一行（要审 / 不用审 / 跟全局）。
+      </div>
+      <div id="drBox" class="kv">读取中…</div>
+    </div>
+    <div class="card" id="gdCard">
+      <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span class="kv" style="margin:0">🚧 出站内容闸 <span id="gdMeta"></span></span>
+        <button class="btn tiny" onclick="gdLoad()">⟳ 刷新</button>
+      </div>
+      <div id="gdBox" class="kv" style="margin-top:6px">读取中…</div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <input id="gdTest" placeholder="打一句试试：看看 /root/.hermes/workspace/x.json" style="flex:1;min-width:220px"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();gdTry()}">
+        <button class="btn tiny" onclick="gdTry()">试一下</button>
+        <span class="kv" id="gdOut"></span>
+      </div>
+      <div class="kv" style="margin-top:6px">开关、动作、词表在「运维 → 常用配置 → 出站内容闸」。这里只看效果和最近命中。</div>
+      <div id="gdRecent" style="margin-top:8px"></div>
+    </div>
+    <div class="card" id="trCard">
+      <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span class="kv" style="margin:0">🧭 她怎么处理的 <span id="trMeta"></span></span>
+        <span class="row" style="gap:6px">
+          <select id="trChat" onchange="trLoad()" style="min-width:140px"></select>
+          <button class="btn tiny" onclick="trLoad()">⟳ 刷新</button>
+        </span>
+      </div>
+      <div class="kv" style="margin:6px 0 8px;line-height:1.7">
+        每一条进来的消息都是怎么被处理掉的：回了、没叫到、静默时段、被节流、预算拦下、
+        等确认……「她怎么不理我」先看这里。内存里最近 200 条，重启清空。
+      </div>
+      <div id="trBox" class="kv">读取中…</div>
+    </div>
     <div class="card" id="pvCard">
       <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
         <span class="kv" style="margin:0">💌 主动消息 <span id="pvMeta"></span></span>
@@ -7356,6 +7490,7 @@ async function viewControl(){
     </div>`;
   await ctlLoad();
   pvLoad();                 // 主动消息是独立接口：漏了这一句卡片就永远显示「读取中…」
+  drLoad(); trLoad(); gdLoad();
 }
 async function ctlLoad(){
   const d = await api("/api/control");
@@ -7475,6 +7610,11 @@ function ctlRenderChats(){
              onchange="ctlSaveChat(${jsq(id)})">
       <label class="check" style="font-size:12px"><input type="checkbox" data-k="qm"
         ${r.quiet_mention ? "checked" : ""} onchange="ctlSaveChat(${jsq(id)})"> 静默时 @ 也回</label>
+      <select data-k="rv" onchange="ctlSaveChat(${jsq(id)})" title="回复先审后发">
+        <option value=""${r.review === undefined ? " selected" : ""}>审核：跟全局</option>
+        <option value="1"${r.review === true ? " selected" : ""}>审核：要审</option>
+        <option value="0"${r.review === false ? " selected" : ""}>审核：不用审</option>
+      </select>
       <input data-k="note" value="${esc(r.note || "")}" placeholder="备注" style="width:90px"
              onchange="ctlSaveChat(${jsq(id)})">
       ${Object.keys(saved).includes(id)
@@ -7488,6 +7628,9 @@ async function ctlSaveChat(id){
   if (!row) return;
   const get = k => (row.querySelector(`[data-k="${k}"]`) || {}).value || "";
   const body = {chat_id: id, mode: get("mode"), note: get("note")};
+  // 三态要能表达："" = 跟全局，其余 "1"/"0"。只发 true/false 的话「跟全局」永远回不去
+  const rv = get("rv");
+  body.review = rv === "" ? "" : (rv === "1");
   const q1 = get("q1").trim(), q2 = get("q2").trim();
   body.quiet = (q1 && q2) ? [q1, q2] : [];
   const qm = row.querySelector('[data-k="qm"]');
@@ -7586,6 +7729,147 @@ async function ctlSim(){
       ${d.reply ? `<div class="kv" style="margin-top:4px">会回：${esc(d.reply)}</div>` : ""}
       <div class="kv" style="margin-top:4px">会话 ${esc(chatLabel(d.chat_id))}</div>
     </div>`;
+}
+
+/* ---------- 待她发（回复审核的草稿箱） ---------- */
+let drItems = [];
+function drTime(ts){
+  const d = new Date(Number(ts || 0) * 1000);
+  return d.toLocaleString("zh-CN", {hour12: false, month: "2-digit", day: "2-digit",
+                                    hour: "2-digit", minute: "2-digit"});
+}
+async function drLoad(){
+  const box = $("drBox"); if (!box) return;
+  const d = await api("/api/drafts?limit=60");
+  if (!d || !d.ok){
+    box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  drItems = d.items || [];
+  const meta = $("drMeta");
+  if (meta) meta.textContent = `· ${d.total} 条` + (d.review_on ? " · 全局默认要审" : "");
+  if (!drItems.length){
+    box.innerHTML = `<div class="empty"><b>📝</b><span>没有待发的</span><i>没开审核模式的会话，她是直接说的</i></div>`;
+    return;
+  }
+  box.innerHTML = drItems.map(it => `
+    <div class="ctl-cmd" data-draft="${esc(it.id)}" style="align-items:flex-start;flex-wrap:wrap;gap:8px">
+      <span class="tag" style="flex:none">${esc(drTime(it.ts))}</span>
+      <div style="flex:1;min-width:230px">
+        <div class="kv" style="margin:0">👤 ${esc(it.user || "（没记下原话）")}</div>
+        <textarea rows="2" style="width:100%;margin-top:5px;font-family:var(--font-body);font-size:13px">${esc(it.text || "")}</textarea>
+        <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+          <button class="btn primary tiny" onclick="drSend(${jsq(it.id)})">发送</button>
+          <button class="btn tiny" onclick="drDrop(${jsq(it.id)})">丢弃</button>
+          <span class="kv" style="margin:0">${esc(it.label || it.chat)}${(it.images || []).length ? ` · 带 ${it.images.length} 张图` : ""}</span>
+        </div>
+      </div>
+    </div>`).join("");
+}
+async function drSend(id){
+  const row = document.querySelector(`[data-draft="${CSS.escape(id)}"]`);
+  const ta = row ? row.querySelector("textarea") : null;
+  const item = drItems.find(x => x.id === id);
+  // 改了字就先存：不然你在框里调的那一句会被丢掉，发出去的是原稿
+  if (ta && item && ta.value.trim() && ta.value.trim() !== (item.text || "").trim()){
+    const e = await post("/api/drafts", {action: "edit", id, text: ta.value});
+    if (!e || !e.ok){ flash("没保存：" + ((e && e.error) || "未知")); return; }
+  }
+  const d = await post("/api/drafts", {action: "send", id});
+  if (!d || !d.ok){ flash("没发出去：" + ((d && d.error) || "未知")); return; }
+  flash("已发送");
+  drLoad();
+}
+async function drDrop(id){
+  const d = await post("/api/drafts", {action: "drop", id});
+  if (!d || !d.ok){ flash("没丢掉：" + ((d && d.error) || "未知")); return; }
+  drLoad();
+}
+async function drAll(act){
+  if (!drItems.length){ flash("没有待发的"); return; }
+  if (!confirm(act === "send" ? `真的把 ${drItems.length} 条全发出去？` : "全部丢弃？这个不能撤销")) return;
+  const d = await post("/api/drafts", {action: act === "send" ? "send_all" : "drop_all"});
+  if (!d || !d.ok){ flash("失败：" + ((d && d.error) || "未知")); return; }
+  flash(act === "send" ? `发了 ${d.sent} 条${(d.failed || []).length ? `，${d.failed.length} 条失败` : ""}`
+                       : `丢了 ${d.removed} 条`);
+  drLoad();
+}
+
+/* ---------- 她怎么处理的（决策追踪） ---------- */
+const TR_TONE = {ok: "var(--green)", held: "var(--ui-accent)", miss: "var(--dim)", err: "var(--red)"};
+async function trLoad(){
+  const box = $("trBox"); if (!box) return;
+  const sel = $("trChat");
+  if (sel && sel.options.length <= 1 && ctlData){
+    const known = (ctlData.known_chats || []).slice(0, 12);
+    sel.innerHTML = '<option value="">全部会话</option>' +
+      known.map(k => `<option value="${esc(k.id)}">${esc(chatLabel(k.id))}</option>`).join("");
+  }
+  const chat = (sel || {}).value || "";
+  const d = await api("/api/trace?limit=60" + (chat ? "&chat=" + encodeURIComponent(chat) : ""));
+  if (!d || !d.ok){
+    box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  const meta = $("trMeta");
+  const cs = d.counts || {};
+  const labels = d.labels || {};
+  const top = Object.entries(cs).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    .map(([k, v]) => `${esc(labels[k] || k)} ${v}`).join(" · ");
+  if (meta) meta.textContent = top ? `· ${top}` : "";
+  const items = d.items || [];
+  if (!items.length){
+    box.innerHTML = `<div class="empty"><b>🧭</b><span>还没有记录</span><i>等一条消息进来，这里会显示它走到哪一步</i></div>`;
+    return;
+  }
+  box.innerHTML = items.map(it => `<div class="bd-row">
+      <span class="bd-tag" style="flex:none;min-width:56px">${esc(drTime(it.ts).slice(-5))}</span>
+      <span class="tag" style="flex:none;color:${TR_TONE[it.tone] || "inherit"}">${esc(it.label || it.stage)}</span>
+      <span class="bd-nm" style="min-width:0">${esc(it.text || "（无正文）")}
+        ${it.detail ? `<span class="kv" style="margin:0"> · ${esc(it.detail)}</span>` : ""}</span>
+      <span class="bd-tag" style="flex:none">${esc(chatLabel(it.chat))}</span>
+    </div>`).join("");
+}
+
+/* ---------- 出站内容闸 ---------- */
+async function gdLoad(){
+  const box = $("gdBox"); if (!box) return;
+  const d = await api("/api/guard?limit=20");
+  if (!d || !d.ok){
+    box.innerHTML = `<span class="bad">读不到：${esc((d && d.error) || "未知")}</span>`;
+    return;
+  }
+  const c = d.config || {};
+  const meta = $("gdMeta");
+  if (meta) meta.textContent = c.on ? `· ${(d.actions || {})[c.action] || c.action} · 命中 ${d.hits} 次`
+                                    : "· 没开";
+  box.innerHTML = c.on
+    ? `<div class="kv" style="margin:0">内置规则：${esc((d.builtin_rules || []).join(" / "))}
+        ${c.builtin ? "" : "（已关）"}${c.words ? ` · 自定义词 ${esc(c.words.split(/[,，、\\n]/).filter(Boolean).length)} 个` : ""}</div>`
+    : `<div class="kv" style="margin:0">现在不检查。开了之后所有出站文字都过一遍（闲聊、命令回复、提醒、主动消息）。</div>`;
+  const rows = d.recent || [];
+  const rec = $("gdRecent");
+  if (!rec) return;
+  rec.innerHTML = rows.length
+    ? `<div class="kv" style="margin:0 0 4px">最近命中</div>` + rows.map(r => `<div class="bd-row">
+        <span class="bd-tag" style="flex:none;min-width:56px">${esc(drTime(r.ts).slice(-5))}</span>
+        <span class="tag" style="flex:none">${esc((r.labels || []).join(" / "))}</span>
+        <span class="bd-nm" style="min-width:0">${esc(r.before || "")}</span>
+        <span class="bd-tag" style="flex:none">${esc(chatLabel(r.chat))}</span>
+      </div>`).join("")
+    : `<div class="kv" style="margin:6px 0 0">还没有命中过</div>`;
+}
+async function gdTry(){
+  const inp = $("gdTest"), out = $("gdOut");
+  const text = (inp || {}).value || "";
+  if (!text.trim()){ flash("先打一句"); return; }
+  const d = await post("/api/guard", {text});
+  if (!d || !d.ok){ if (out) out.textContent = "试不了：" + ((d && d.error) || "未知"); return; }
+  if (out) out.innerHTML = d.hit
+    ? `<span class="bad">会命中：${esc((d.labels || []).join(" / "))}</span>`
+    : `<span style="color:var(--green)">不会命中</span>`;
+  if ((d.errors || []).length && out)
+    out.innerHTML += `<div class="bad">规则有问题：${esc(d.errors.join("；"))}</div>`;
 }
 
 async function viewOps(target){

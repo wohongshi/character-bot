@@ -83,6 +83,19 @@ DEFAULT_CONFIG = {
     # 等于「谁写错一个插件都影响所有人」。开着就只装在用的角色，其余等用到再装。
     "lazy_plugins": True,
     "max_loaded_characters": 4,
+    # 回复审核（先审后发）：全局默认关，具体群可以在「管控 → 会话策略」里单独设
+    "review_on": False,
+    # 连发合并：同一会话 window 秒内的几句话合成一段再回（省调用、也更连贯）
+    "coalesce_on": False,
+    "coalesce_window": 1.5,
+    "coalesce_max": 4,
+    # 出站内容闸：所有出站文字过一遍（绝对路径/密钥/CQ 码 + 自定义词与正则）
+    "guard_on": False,
+    "guard_action": "log",
+    "guard_replace": "（这句话不能说，换个话题好不好）",
+    "guard_builtin": True,
+    "guard_words": "",
+    "guard_patterns": "",
     # 每会话回复节流（频率闸；和用量预算是两道闸）
     "throttle_on": False,
     "throttle_per_min": 6,

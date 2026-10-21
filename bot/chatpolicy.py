@@ -12,11 +12,14 @@
 存放：`state/chat_policy.json`
 
     {"chats": {"group:123456": {"mode": "open", "quiet": ["23:30", "07:00"],
-                                "quiet_mention": false, "note": "小群"}}}
+                                "quiet_mention": false, "review": true,
+                                "note": "小群"}}}
 
 - `mode`：inherit（跟全局）/ open / mention / disabled
 - `quiet`：`["HH:MM","HH:MM"]`，跨零点也支持（from > to）
 - `quiet_mention`：静默时被 @ 还回不回（默认不回 —— 否则「静默」没意义）
+- `review`：这个会话的回复先存草稿等人工确认（不写 = 跟全局 `review_on`；
+  显式 `false` 就是「这个群不用审」—— 所以它必须能和三态区分开）
 
 全是纯函数 + 一个原子写，`resolve()` 不做 I/O 之外的副作用。
 """
@@ -66,6 +69,8 @@ def _clean(row: dict) -> dict:
             out["quiet"] = [f"{a // 60:02d}:{a % 60:02d}", f"{b // 60:02d}:{b % 60:02d}"]
     if "quiet_mention" in row:
         out["quiet_mention"] = bool(row.get("quiet_mention"))
+    if "review" in row:
+        out["review"] = bool(row.get("review"))
     note = str(row.get("note") or "").strip()[:40]
     if note:
         out["note"] = note
@@ -82,6 +87,7 @@ def _is_default(row: dict) -> bool:
             or (row.get("mode", "inherit") == "inherit"
                 and not row.get("quiet")
                 and not row.get("quiet_mention")
+                and "review" not in row
                 and not row.get("note")))
 
 
@@ -145,6 +151,12 @@ def _set_chat_locked(state_dir: Path | str, chat_id: str, patch: dict) -> dict:
             row["quiet"] = cleaned["quiet"]
     if "quiet_mention" in patch:
         row["quiet_mention"] = bool(patch.get("quiet_mention"))
+    if "review" in patch:
+        q = patch.get("review")
+        if q in (None, ""):
+            row.pop("review", None)          # 回到「跟全局」
+        else:
+            row["review"] = bool(q)
     if "note" in patch:
         row["note"] = str(patch.get("note") or "").strip()[:40]
     if _is_default(_clean(row)):
@@ -201,7 +213,10 @@ def resolve(state_dir: Path | str, chat_id: str, base_mode: str = "mention",
         why.append("单独设成「" + MODES_CN.get(eff, eff) + "」")
     if quiet:
         why.append("静默时段 " + "~".join(row["quiet"]))
+    if "review" in row:
+        why.append("回复先审后发" if row["review"] else "不用审")
     return {"mode": eff, "global_mode": gm, "configured": mode,
             "quiet": quiet, "quiet_win": list(row.get("quiet") or []),
             "quiet_mention": bool(row.get("quiet_mention")),
+            "review": row.get("review"),
             "note": str(row.get("note") or ""), "why": "；".join(why)}

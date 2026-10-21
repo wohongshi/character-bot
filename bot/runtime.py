@@ -25,6 +25,7 @@ from . import adapters as adapters_mod
 from . import chat_char
 from . import promptdbg
 from . import throttle as throttle_mod
+from .trace import Trace
 from .adapters.base import AdapterError, BaseAdapter
 from .features_ext import RuntimeFeatures
 from .characters import CharacterStore
@@ -245,10 +246,13 @@ class BotRuntime(RuntimeFeatures):
                       "images": 0, "vision": 0, "vision_fail": 0, "vision_skip": 0,
                       "agent_runs": 0, "agent_tool_calls": 0, "agent_errors": 0,
                       "agent_fallbacks": 0, "requests": 0, "recalls": 0,
+                      "drafted": 0, "guard_hits": 0, "coalesced": 0,
                       # 入站三兄弟：收下的 / 鉴权被拒的 / 其它被拒的。
                       # 面板上「已登录但 QQ 不回消息」第一眼就要看这三个数。
                       "ingress_ok": 0, "auth_reject": 0, "ingress_reject": 0,
                       "last_event_ts": 0.0, "last_event_text": ""}
+        self.trace = Trace()
+        self._coal: dict = {}          # chat_id → {texts, ctx, task}（连发合并窗口）
         self._chat_locks: dict = {}
         self._hist_lock = asyncio.Lock()
         self._watch_task: asyncio.Task | None = None
@@ -546,6 +550,12 @@ class BotRuntime(RuntimeFeatures):
             self._watch_task = asyncio.create_task(self._watch_plugins())
 
     async def stop(self) -> None:
+        # 还没到点的合并窗口：取消掉，别让它们在关服务的路上再发一条
+        for chat_id, st in list(self._coal.items()):
+            t = st.get("task")
+            if t is not None and not t.done():
+                t.cancel()
+        self._coal.clear()
         task, self._watch_task = self._watch_task, None
         if task is not None:
             task.cancel()
@@ -657,6 +667,8 @@ class BotRuntime(RuntimeFeatures):
     async def send(self, chat_id: str, content, reply_to: str | None = None,
                    sentence_split: bool | None = None, **kwargs) -> SimpleNamespace:
         text = str(content or "").strip()
+        if text:
+            text = self._guard_text(chat_id, text)
         voice_texts = []
         if self.tts_enabled and text:
             text, voice_texts = self.extract_voice_tags(text)
@@ -764,7 +776,9 @@ class BotRuntime(RuntimeFeatures):
                       if isinstance(c, dict)]
             out = [str(c.get("text") or c.get("content") or "") for c in chunks[:5]]
             ctx_text = "\n".join(x for x in out if x)[: int(self.config.get("kb_max_chars") or 800)]
-            if chunks and log_hits:      # 试跑不记命中（否则排障数据里全是假查询）
+            # 没命中也要记（`hits: []`）：面板「她答不上来的」全靠这些空行攒出来。
+            # 以前只在有命中时写，于是「她不懂什么」永远查不到。
+            if log_hits:                 # 试跑不记（否则排障数据里全是假查询）
                 # 面板「知识库 → 最近命中」按角色读这条日志；写失败不影响聊天。
                 try:
                     row = {
@@ -775,6 +789,15 @@ class BotRuntime(RuntimeFeatures):
                     }
                     with (self.state_dir / "kb_hits.jsonl").open("a", encoding="utf-8") as f:
                         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    # 每 200 次检查一次大小：每条都 stat 是白给，从不管又会无限长
+                    n = int(getattr(self, "_kb_log_n", 0)) + 1
+                    self._kb_log_n = n
+                    if not n % 200:
+                        from . import kbgaps
+                        try:
+                            kbgaps.maybe_rotate(self.state_dir / kbgaps.HITS)
+                        except Exception as e2:                    # noqa: BLE001
+                            logger.debug("KB 命中日志轮转失败: %s", e2)
                 except OSError as e:                              # noqa: BLE001
                     logger.debug("KB 命中日志写入失败: %s", e)
             return ctx_text
@@ -891,6 +914,7 @@ class BotRuntime(RuntimeFeatures):
         sender = ev.get("sender") or {}
         user_id = str(ev.get("user_id") or sender.get("user_id") or "")
         if not user_id or user_id == self.self_id:                 # 忽略自己
+            self.note(self._chat_id(is_group, group_id, user_id), "", "self")
             return
 
         parts, images, mentioned, reply_ids = [], [], False, []
@@ -932,6 +956,7 @@ class BotRuntime(RuntimeFeatures):
 
         text = "".join(parts).strip()
         if not text and not images:
+            self.note(self._chat_id(is_group, group_id, user_id), "", "empty")
             return
         self.stats["events"] += 1
         with self._event_lock:
@@ -979,6 +1004,7 @@ class BotRuntime(RuntimeFeatures):
         pol = self.policy_for(chat_id, is_group=is_group)
         # 判定在 chatpolicy.blocks_all 里（模拟器共用同一份规则）
         if pol["blocks_all"]:
+            self.note(chat_id, text, "disabled", "这个会话设成「完全不理」")
             return
 
         ctx = FeatureContext(
@@ -994,10 +1020,12 @@ class BotRuntime(RuntimeFeatures):
 
         # 1) 入站钩子（违禁词/复读等）—— 群里没 @ 也生效
         if not await self.mgr.run_message_hooks(ctx):
+            self.note(chat_id, text, "hook", "插件钩子拦下了")
             return
         # 2) 命令 —— 前缀命令群里不需要 @（与旧适配器顺序一致）
         if await self.mgr.handle_command(ctx):
             self.stats["commands"] += 1
+            self.note(chat_id, text, "command", "前缀命令", user=ctx.user_name)
             return
 
         # 2.5) 关键词规则：确定性的那一层（问答、拦广告、不理某些话）。
@@ -1013,6 +1041,7 @@ class BotRuntime(RuntimeFeatures):
         if hit:
             self.stats["rules"] = int(self.stats.get("rules") or 0) + 1
             if hit["action"] == "ignore":
+                self.note(chat_id, text, "rule_ignore", "命中「不理」规则")
                 return
             if hit["action"] == "command":
                 # 按配置的前缀字符剥（和模拟器同一套）；无条件 lstrip 会在
@@ -1034,6 +1063,7 @@ class BotRuntime(RuntimeFeatures):
                 if reply:
                     self._log_msg(chat_id, "assistant", reply)
                     await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
+                self.note(chat_id, text, "rule_reply", "命中关键词规则", user=ctx.user_name)
                 return
 
         chime = False
@@ -1045,6 +1075,8 @@ class BotRuntime(RuntimeFeatures):
             # 而这条消息马上会被静默判定丢掉 —— 等于白白烧掉一次彩蛋机会。
             chime = False if quiet_now else self._maybe_chime(group_id)
             if not chime:
+                self.note(chat_id, text, "not_mentioned",
+                          "群里没 @ 她（群策略=被叫才应）", user=ctx.user_name)
                 return                                            # 闲聊/ NLU 必须被叫到
         # open = 群里的每条都看；mention 已在上面的分支筛过；私聊永远看
         allow_chat = (not ctx.is_group or pol["mode"] == "open"
@@ -1053,6 +1085,7 @@ class BotRuntime(RuntimeFeatures):
         if allow_chat and pol["quiet"] and not (mentioned and pol["quiet_mention"]):
             logger.info("静默时段（%s），这条不聊天：%s", "~".join(pol.get("quiet_win") or []),
                         text[:40])
+            self.note(chat_id, text, "quiet", "静默时段 " + "~".join(pol.get("quiet_win") or []))
             return
 
         # 3) 自然语言（只有被叫到/私聊/开放模式才尝试）
@@ -1063,10 +1096,14 @@ class BotRuntime(RuntimeFeatures):
                 ctx.text = self.feature_prefix + strip_prefix(hit, getattr(self.mgr, "prefix_chars", None))
                 if await self.mgr.handle_command(ctx):
                     self.stats["commands"] += 1
+                    self.note(chat_id, text, "command", "自然语言命令", user=ctx.user_name)
                     return
             ctx.text = chat_text              # 进模型时才把引用上下文带上
             # 4) 图片理解：先把图交给 vision 模型，换成文字描述再进聊天
             if images and not await self._prepare_images(ctx, images):
+                return
+            # 4.5) 连发合并：同一会话短时间内的几句话攒成一段再回
+            if await self._coalesce(ctx, images):
                 return
             # 5) 聊天
             await self._chat(ctx)
@@ -1112,6 +1149,7 @@ class BotRuntime(RuntimeFeatures):
         """
         if images:
             if await self._throttle_check(ctx.chat_id, ctx):
+                self.note(ctx.chat_id, ctx.text, "throttle", "看图也过闸：太频繁了")
                 return False
             # 已经记过一次：_chat 里别再记一遍（一条用户消息只该算一条）
             ctx.throttle_passed = True
@@ -1159,6 +1197,7 @@ class BotRuntime(RuntimeFeatures):
         only_image = not self._IMG_NOTE_RE.sub("", ctx.text).strip()
         if only_image and not ok_n:
             self.stats["vision_skip"] += 1
+            self.note(ctx.chat_id, ctx.text, "image", f"没看懂图（{reason or '未知'}）")
             await self.send(ctx.chat_id, self._vision_friendly(reason),
                             reply_to=ctx.message_id, sentence_split=False)
             return False
@@ -1483,6 +1522,261 @@ class BotRuntime(RuntimeFeatures):
             "action": self.config.get("throttle_action"),
         })
 
+    # ---------- 出站内容闸 ----------
+    def guard_view(self, limit: int = 20) -> dict:
+        """面板那张卡：配置 + 最近命中（命中日志是 jsonl，读尾部就够）。"""
+        from . import guard as guard_mod
+        rows = []
+        p = self.state_dir / "guard_log.jsonl"
+        try:
+            with p.open("rb") as f:
+                f.seek(max(0, p.stat().st_size - 256 * 1024))
+                raw = f.read().decode("utf-8", "replace")
+            for line in raw.split("\n")[-200:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+        except OSError:
+            rows = []
+        return {"ok": True, "config": {
+                    "on": bool(self.config.get("guard_on")),
+                    "action": str(self.config.get("guard_action") or "log"),
+                    "replace": str(self.config.get("guard_replace") or guard_mod.REPLACE_DEFAULT),
+                    "builtin": bool(self.config.get("guard_builtin", True)),
+                    "words": str(self.config.get("guard_words") or ""),
+                    "patterns": str(self.config.get("guard_patterns") or "")},
+                "actions": guard_mod.ACTIONS_CN,
+                "recent": rows[-max(1, min(int(limit or 20), 50)):][::-1],
+                "hits": int(self.stats.get("guard_hits") or 0),
+                "builtin_rules": [b[0] for b in guard_mod.BUILTIN],
+                "hint": "所有出站文字都过这里（闲聊、命令回复、提醒、主动消息）"}
+
+    def _guard_text(self, chat_id: str, text: str) -> str:
+        """出站内容闸：返回该发的文本；没命中就原样返回（零成本路径）。"""
+        if not text or not bool(self.config.get("guard_on")):
+            return text
+        try:
+            from . import guard as guard_mod
+            v = guard_mod.apply(text, action=str(self.config.get("guard_action") or "log"),
+                                replace_text=str(self.config.get("guard_replace")
+                                                 or guard_mod.REPLACE_DEFAULT),
+                                words=str(self.config.get("guard_words") or ""),
+                                patterns=str(self.config.get("guard_patterns") or ""),
+                                builtin=bool(self.config.get("guard_builtin", True)))
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("出站内容闸异常（按原样发）：%s", e)
+            return text
+        if not v.get("hit"):
+            return text
+        self.stats["guard_hits"] = int(self.stats.get("guard_hits") or 0) + 1
+        try:
+            with (self.state_dir / "guard_log.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(guard_mod.log_row(chat_id, v, text), ensure_ascii=False) + "\n")
+            n = int(getattr(self, "_guard_log_n", 0)) + 1
+            self._guard_log_n = n
+            if not n % 200:                        # 别每条都 stat；也别无限长
+                gp = self.state_dir / "guard_log.jsonl"
+                if gp.stat().st_size > 2 * 1024 * 1024:
+                    tail = [ln for ln in gp.read_text(encoding="utf-8", errors="replace")
+                            .split("\n") if ln.strip()][-1000:]
+                    gp.write_text("\n".join(tail) + "\n", encoding="utf-8")
+        except OSError as e:                       # noqa: BLE001
+            logger.debug("内容闸日志写入失败: %s", e)
+        logger.info("出站内容闸命中 %s（动作 %s）", v.get("labels"), v.get("action"))
+        # log 动作只记录，不改内容（先观察，确认没有误报再加严）
+        return str(v.get("text") if v.get("action") in ("mask", "replace") else text)
+
+    # ---------- 连发合并 ----------
+    def coalesce_cfg(self) -> dict:
+        from . import coalesce as coal_mod
+        return coal_mod.clamp_cfg({
+            "on": self.config.get("coalesce_on", False),
+            "window": self.config.get("coalesce_window", 1.5),
+            "max_msgs": self.config.get("coalesce_max", 4),
+        })
+
+    async def _coalesce(self, ctx: FeatureContext, images: list) -> bool:
+        """进合并窗口就返回 True（调用方别再生成了）；False = 照常处理。"""
+        from . import coalesce as coal_mod
+        cfg = self.coalesce_cfg()
+        chat_id = ctx.chat_id
+        if not coal_mod.should_merge(cfg, text=ctx.text, has_images=bool(images)):
+            # 这条不能合并（命令/图/太长）：先把攒着的发掉，顺序不能乱
+            await self._flush_coalesce(chat_id)
+            return False
+        st = self._coal.get(chat_id)
+        if st is None:
+            st = {"texts": [], "ctx": ctx, "task": None}
+            self._coal[chat_id] = st
+            st["task"] = asyncio.ensure_future(self._coal_flush_later(chat_id, cfg["window"]))
+        st["texts"].append(ctx.text)
+        st["ctx"] = ctx                            # 用最后一条的 message_id 去引用
+        self.note(chat_id, ctx.text, "coalesce", f"已攒 {len(st['texts'])} 条")
+        if len(st["texts"]) >= cfg["max_msgs"]:
+            await self._flush_coalesce(chat_id)
+        return True
+
+    async def _coal_flush_later(self, chat_id: str, window: float) -> None:
+        try:
+            await asyncio.sleep(max(0.05, float(window)))
+        except asyncio.CancelledError:
+            return
+        try:
+            await self._flush_coalesce(chat_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                                     # noqa: BLE001
+            logger.warning("合并后的消息发送失败（%s）：%s", chat_id, e)
+
+    async def _flush_coalesce(self, chat_id: str) -> None:
+        """把窗口里的几句合成一段，走正常的 `_chat`。"""
+        st = self._coal.pop(chat_id, None)
+        if not st:
+            return
+        task = st.get("task")
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:                       # 不在 loop 里（测试/坏调用）
+            cur = None
+        if task is not None and task is not cur and not task.done():
+            task.cancel()
+        from . import coalesce as coal_mod
+        text = coal_mod.merge_texts(st.get("texts"))
+        if not text:
+            return
+        ctx = st["ctx"]
+        ctx.text = text
+        if len(st.get("texts") or []) > 1:
+            self.stats["coalesced"] = int(self.stats.get("coalesced") or 0) + 1
+        await self._chat(ctx)
+
+    # ---------- 决策追踪 ----------
+    def note(self, chat_id: str, text: str, stage: str, detail: str = "",
+             user: str = "") -> None:
+        """留一条「这条消息怎么处理的」。追踪是辅助，出错绝不影响收发。"""
+        try:
+            self.trace.note(chat_id, text, stage, detail, user=user,
+                            character=self.active_character)
+        except Exception:                                          # noqa: BLE001
+            pass
+
+    def trace_view(self, *, chat: str = "", limit: int = 60) -> dict:
+        labels = {}
+        try:
+            from . import trace as trace_mod
+            labels = trace_mod.labels()
+        except Exception:                                          # noqa: BLE001
+            pass
+        return {"ok": True, "items": self.trace.rows(chat=chat, limit=limit),
+                "counts": self.trace.counts(chat=chat), "labels": labels,
+                "total": len(self.trace),
+                "hint": "内存里最近 200 条；重启清空。看 counts 就知道她最近为什么安静"}
+
+    # ---------- 回复审核（先审后发） ----------
+    def review_for(self, chat_id: str, *, is_group: bool | None = None) -> bool:
+        """这个会话要不要先审后发。
+
+        三态：会话里显式设过就听会话的（`true` / `false`），没设就跟全局
+        `review_on`。别把「没设」当成 false —— 那全局开关就永远没用。
+        """
+        if is_group is None:
+            is_group = str(chat_id or "").startswith("group:")
+        try:
+            pol = self.policy_for(chat_id, is_group=is_group)
+        except Exception:                                          # noqa: BLE001
+            return bool(self.config.get("review_on"))
+        val = pol.get("review")
+        if val is None:
+            return bool(self.config.get("review_on"))
+        return bool(val)
+
+    def _queue_draft(self, ctx: FeatureContext, reply: str, images: list[str]) -> dict:
+        """回复不发了，进草稿队列（面板「待她发」）。"""
+        from . import drafts as drafts_mod
+        try:
+            out = drafts_mod.add(self.state_dir, chat=ctx.chat_id,
+                                 character=self.active_character,
+                                 user=str(ctx.text or ""), text=reply,
+                                 images=images)
+        except (OSError, ValueError) as e:
+            # 存不进就别装死：宁可照常发出去（审核是加分项，不是单点故障）
+            logger.warning("草稿入队失败，改为直接发：%s", e)
+            return {"ok": False, "error": str(e)}
+        self.stats["drafted"] += 1
+        if out.get("dropped"):
+            logger.info("草稿队列满了，挤掉 %s 条最旧的", out["dropped"])
+        return {"ok": True, **out}
+
+    async def send_draft(self, did: str) -> dict:
+        """面板「发送」：把一条草稿真的发出去。
+
+        先 `pop` 再发：面板连点两下、或者网页和 App 同时开着，读到同一条
+        各发一次 —— 群里就看到她说两遍。发失败 `restore` 回去，不丢。
+        """
+        from . import drafts as drafts_mod
+        item = drafts_mod.pop(self.state_dir, did)
+        if not item:
+            raise ValueError("这条草稿已经不在了（可能刚发过）")
+        chat = item["chat"]
+        cid = str(item.get("character") or "") or self.active_character
+        try:
+            for fp in item.get("images") or []:
+                res = await self.send_image_file(chat, str(fp))
+                if not getattr(res, "success", False):
+                    raise RuntimeError("图片没发出去")
+            if item.get("text"):
+                res = await self.send(chat, item["text"], sentence_split=True)
+                if not getattr(res, "success", False):
+                    raise RuntimeError("发送失败（限流或适配器出错）")
+        except Exception:
+            drafts_mod.restore(self.state_dir, item)
+            raise
+        self._log_msg(chat, "assistant", item.get("text") or "")
+        try:
+            from . import mood as mood_mod
+            mood_mod.apply_turn(self.state_dir, cid, str(item.get("user") or ""),
+                                str(item.get("text") or ""))
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("记心情失败（不影响发送）：%s", e)
+        # 审核期间**没写**历史（万一你丢弃了，她不能记得自己说过）。
+        # 现在真发出去了才补上；顺序按「用户那句 → 她的回复」。
+        try:
+            async with self._hist_lock:
+                hist = self.hist.setdefault(f"{cid}:{chat}", [])
+                now = time.time()
+                hist.extend([{"role": "user", "content": str(item.get("user") or "")[:500],
+                              "ts": now},
+                             {"role": "assistant", "content": str(item.get("text") or "")[:800],
+                              "ts": now + 0.001}])
+                del hist[:-max(2, self.hist_limit * 2)]
+                blob = json.dumps(self.hist, ensure_ascii=False, indent=2) + "\n"
+                await asyncio.to_thread(self._write_text_atomic, self.hist_path, blob)
+        except Exception as e:                                     # noqa: BLE001
+            logger.info("草稿发送后补历史失败：%s", e)
+        return {"ok": True, "id": did, "chat": chat, "text": item.get("text") or ""}
+
+    def drafts_view(self, *, chat: str = "", limit: int = 50) -> dict:
+        """面板那张卡：队列 + 每个会话的审核状态（不然你不知道该给谁开）。"""
+        from . import drafts as drafts_mod
+        items = drafts_mod.list_items(self.state_dir, chat=chat, limit=limit)
+        labels = {}
+        try:
+            labels = self._chat_labels()
+        except Exception:                                          # noqa: BLE001
+            labels = {}
+        for it in items:
+            it["label"] = labels.get(it["chat"]) or it["chat"]
+        return {"ok": True, "items": items, "count": len(items),
+                "total": drafts_mod.count(self.state_dir),
+                "review_on": bool(self.config.get("review_on")),
+                "hint": "开了「先审后发」的会话，她的回复会停在这里，等你在面板点发送"}
+
     async def _throttle_check(self, chat_id: str, ctx: FeatureContext | None = None) -> bool:
         """超频就拦下并返回 True（已经说过「慢点」或静默）。
 
@@ -1528,15 +1822,18 @@ class BotRuntime(RuntimeFeatures):
 
     async def _chat(self, ctx: FeatureContext) -> None:
         if not self.config.get("chat_enabled", True):
+            self.note(ctx.chat_id, ctx.text, "disabled", "聊天回复总开关关着")
             return
         text = ctx.text.strip()
         if not text:
             return
         chat_id = ctx.chat_id
+        review = self.review_for(chat_id, is_group=ctx.is_group)
         # 频率闸：放在**调模型之前**（放后面等于钱已经花了）。
         # 看图路径已经记过账的话就不再记（否则带图的一条消息算两条）。
         if not getattr(ctx, "throttle_passed", False):
             if await self._throttle_check(chat_id, ctx):
+                self.note(chat_id, ctx.text, "throttle", "太频繁了", user=ctx.user_name)
                 return
         async with self._hist_lock:
             hist_key = self._hist_key(chat_id)
@@ -1553,11 +1850,19 @@ class BotRuntime(RuntimeFeatures):
         msgs = self._build_messages(ctx, text, hist=hist_used, kb=kb, summary=ctx_sum)
         self.stats["chats"] += 1
         reply = ""
+        held_imgs: list[str] = []          # 审核模式下随回复一起等的图
         if self._agent_allowed(ctx):
             try:
                 res = await asyncio.to_thread(self._agent_call, msgs, ctx)
                 for img in (res.get("images") or [])[:3]:
-                    await self.send_image_file(chat_id, img.get("path") or "",
+                    fp = str(img.get("path") or "")
+                    if review:
+                        # 审核模式：图也扣住。只审嘴、不审图的话，她照样能
+                        # 先把一张不该发的图甩进群。
+                        if fp:
+                            held_imgs.append(fp)
+                        continue
+                    await self.send_image_file(chat_id, fp,
                                                img.get("caption") or None)
                 reply = str(res.get("text") or "").strip()
                 self.stats["agent_runs"] += 1
@@ -1575,6 +1880,7 @@ class BotRuntime(RuntimeFeatures):
                     # 也不算 agent 故障。发**原始的那句**：agent 包过一层之后
                     # 文案会变成「模型调用失败：BudgetExceeded: …」，别把内部类名甩到群里
                     logger.info("预算拦下这一轮（agent）：%s", budget_e)
+                    self.note(chat_id, ctx.text, "budget", str(budget_e), user=ctx.user_name)
                     await self.send(chat_id, f"（{budget_e}）", reply_to=ctx.message_id)
                     return
                 self.stats["agent_errors"] += 1
@@ -1599,9 +1905,12 @@ class BotRuntime(RuntimeFeatures):
                 from .llm import BudgetExceeded
                 if isinstance(e, BudgetExceeded):
                     logger.info("预算拦下这一轮：%s", e)
+                    self.note(chat_id, ctx.text, "budget", str(e), user=ctx.user_name)
                     await self.send(chat_id, f"（{e}）", reply_to=ctx.message_id)
                     return
                 self.stats["errors"] += 1
+                self.note(chat_id, ctx.text, "error", f"{type(e).__name__}: {e}",
+                          user=ctx.user_name)
                 logger.warning("聊天失败: %s", e)
                 await self.send(chat_id, "呜……脑袋卡住了，等等再试好不好～",
                                 reply_to=ctx.message_id)
@@ -1617,7 +1926,16 @@ class BotRuntime(RuntimeFeatures):
             mark_files = []
             logger.info("表情替换失败（按原样发）：%s", e)
         for fp in (mark_files or [])[:3]:
-            await self.send_image_file(chat_id, str(fp))
+            if review:
+                held_imgs.append(str(fp))
+            else:
+                await self.send_image_file(chat_id, str(fp))
+        if review:
+            out = self._queue_draft(ctx, reply, held_imgs)
+            if out.get("ok"):
+                self.note(chat_id, ctx.text, "draft", f"等确认（{reply[:20]}…）")
+                return
+            # 存不进草稿就往下走正常发送（见 _queue_draft 的注释）
         self._log_msg(chat_id, "assistant", reply)
         try:
             from . import mood as mood_mod
@@ -1633,6 +1951,7 @@ class BotRuntime(RuntimeFeatures):
             blob = json.dumps(self.hist, ensure_ascii=False, indent=2) + "\n"
             await asyncio.to_thread(self._write_text_atomic, self.hist_path, blob)
         await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
+        self.note(chat_id, ctx.text, "replied", reply[:40], user=ctx.user_name)
 
     async def _resolve_quoted(self, mid: str):
         """取被引用消息的文本（失败返回空串）。"""
