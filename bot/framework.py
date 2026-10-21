@@ -1155,6 +1155,8 @@ class FeatureManager:
                     info = self.plugins.get(name) or {}
                     chars = {str(x).strip().lower()
                              for x in (info.get("characters") or ())}
+                    if not chars:
+                        chars = set(self._file_chars(path))
                     if chars & self._loaded_chars:
                         todo.append((name, path))
             ok_cid = False
@@ -1196,16 +1198,20 @@ class FeatureManager:
             if not self._retry_plugins.get(cid):
                 self._retry_plugins.pop(cid, None)
             if not ok_cid and not pending and todo and cid in self._loaded_chars:
-                # 「这个角色一个已注册的插件都没有」才摘标记 ——
-                # 只要还有别人替它注册过（共享插件、或上一轮已成功的），就不能摘：
-                # 摘了 release_character 会早退，那些插件再也回收不了。
-                still = any(
-                    cid in (self._file_chars(self.dir / str((i.get("file") or f"{n}.py")))
-                            or tuple(i.get("characters") or ()))
-                    for n, i in list(self.plugins.items()) if i.get("registered"))
-                if not still:
+                # 「这个角色一个**可用的**已注册插件都没有」才摘标记：注册失败
+                # 也算没有（info["registered"] 在 register() 之前就置 True 了）。
+                if not self._has_live(cid):
                     self._loaded_chars.discard(cid)
             return bool(todo)
+
+    def _has_live(self, cid: str) -> bool:
+        """这个角色还有没有「已注册且没报错」的插件（决定能不能摘掉已加载标记）。"""
+        for info in list(self.plugins.values()):
+            if not info.get("registered") or info.get("error"):
+                continue
+            if cid in (info.get("characters") or ()):
+                return True
+        return False
 
     def release_character(self, cid: str) -> list[str]:
         """卸掉这个角色的插件（只卸「没有别的已加载角色在用」的那些）。"""
@@ -1329,9 +1335,14 @@ class FeatureManager:
                 raise
         except Exception as e:                                # noqa: BLE001
             info["error"] = f"{type(e).__name__}: {e}"
-            self.plugins[name] = info
-            if info.get("locked"):
+            # exec 之前没读到 CHARACTERS：从源码补一次，否则「角色限定」这个
+            # 身份就丢了（既不进待命表，也没法归属到角色重试）
+            fchars = list(self._file_chars(path))
+            if fchars:
+                info["characters"] = fchars
+                info["locked"] = True
                 self._dormant[name] = path       # 角色限定：留着待命，能补装
+            self.plugins[name] = info
             self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 加载失败 — %s", name, info["error"])
             return
