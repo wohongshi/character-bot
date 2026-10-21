@@ -260,6 +260,7 @@ class BotRuntime(RuntimeFeatures):
                       "ingress_ok": 0, "auth_reject": 0, "ingress_reject": 0,
                       "last_event_ts": 0.0, "last_event_text": ""}
         self.trace = Trace()
+        self._send_progress: dict = {}     # chat_id → (已发段数, 分段列表)
         self._coal: dict = {}          # chat_id → {texts, ctx, task}（连发合并窗口）
         self._chat_locks: dict = {}
         self._hist_lock = asyncio.Lock()
@@ -723,6 +724,11 @@ class BotRuntime(RuntimeFeatures):
                         at_uid=(at_uid if i == 0 else None))
                     self._remember_own(str((data or {}).get("message_id") or ""))
                     self.stats["sent"] += 1
+                except asyncio.CancelledError:
+                    # 取消（wait_for 超时/关服务）发生在第 i 段之前：把进度记到
+                    # 实例上，`send_draft` 的 restore 才能只补没发出去的部分
+                    self._send_progress[chat_id] = (i, list(parts))
+                    raise
                 except Exception as e:                             # noqa: BLE001
                     self.stats["errors"] += 1
                     logger.warning("发送失败（%s）: %s", chat_id, e)
@@ -932,7 +938,8 @@ class BotRuntime(RuntimeFeatures):
         sender = ev.get("sender") or {}
         user_id = str(ev.get("user_id") or sender.get("user_id") or "")
         if not user_id or user_id == self.self_id:                 # 忽略自己
-            self.note(self._chat_id(is_group, group_id, user_id), "", "self")
+            _early = self._chat_id(is_group, group_id, user_id)
+            self.note(_early, "", "self", character=self.char_for(_early))
             return
 
         parts, images, mentioned, reply_ids = [], [], False, []
@@ -974,7 +981,8 @@ class BotRuntime(RuntimeFeatures):
 
         text = "".join(parts).strip()
         if not text and not images:
-            self.note(self._chat_id(is_group, group_id, user_id), "", "empty")
+            _early = self._chat_id(is_group, group_id, user_id)
+            self.note(_early, "", "empty", character=self.char_for(_early))
             return
         self.stats["events"] += 1
         with self._event_lock:
@@ -1737,11 +1745,15 @@ class BotRuntime(RuntimeFeatures):
 
     # ---------- 决策追踪 ----------
     def note(self, chat_id: str, text: str, stage: str, detail: str = "",
-             user: str = "") -> None:
-        """留一条「这条消息怎么处理的」。追踪是辅助，出错绝不影响收发。"""
+             user: str = "", character: str = "") -> None:
+        """留一条「这条消息怎么处理的」。追踪是辅助，出错绝不影响收发。
+
+        `character`：早期分支（self/empty）还没走到 `chat_char.set_value`，
+        不显式传的话会记成全局角色 —— 绑了别的角色的群在面板上会看不出来。
+        """
         try:
-            self.trace.note(chat_id, text, stage, detail, user=user,
-                            character=self.active_character)
+            cid = str(character or "").strip() or self.active_character
+            self.trace.note(chat_id, text, stage, detail, user=user, character=cid)
         except Exception:                                          # noqa: BLE001
             pass
 
@@ -1775,7 +1787,7 @@ class BotRuntime(RuntimeFeatures):
             return bool(self.config.get("review_on"))
         return bool(val)
 
-    def _queue_draft(self, ctx: FeatureContext, reply: str, images: list[str]) -> dict:
+    def _queue_draft(self, ctx: FeatureContext, reply: str, images: list[dict]) -> dict:
         """回复不发了，进草稿队列（面板「待她发」）。"""
         from . import drafts as drafts_mod
         try:
@@ -1840,6 +1852,20 @@ class BotRuntime(RuntimeFeatures):
                 # 只补没发出去的那几句（前面的气泡已经进群了）
                 rest["text"] = exc.remaining
                 logger.warning("草稿只发出了一部分，剩下的 %s 字放回队列", len(exc.remaining))
+            elif isinstance(exc, asyncio.CancelledError):
+                # 取消发生在 `send()` 的多段循环里：`send()` 已经把「发到第几段」
+                # 记在 `_send_progress` 上（它只 catch Exception，取消走不到那条）
+                prog = self._send_progress.pop(chat, None)
+                if prog and prog[1]:
+                    done_n, parts = prog
+                    rest["text"] = "".join(parts[done_n:])
+                    logger.warning("草稿发送被取消，已发 %s 段，剩下 %s 字放回队列",
+                                   done_n, len(rest["text"]))
+                else:
+                    # 取消发生在开跑之前（还没进分段循环）：什么都没发出去，
+                    # 整段放回去。`send()` 在循环里被取消时会先记进度，
+                    # 走不到这里；真到了这里说明消息一条都没进群。
+                    logger.warning("草稿发送在开始前被取消，整段放回队列")
             # 这里是失败/取消路径（很少走到），而且**不能 await**：
             # 任务已经被取消，后续 await 会立刻再抛 CancelledError，
             # 草稿就放不回去了。同步写一次，几毫秒。
@@ -1849,6 +1875,7 @@ class BotRuntime(RuntimeFeatures):
                 # 不然那条就静默消失了
                 logger.warning("草稿放回时队列已满，挤掉 %s 条最旧的", back["dropped"])
             raise
+        self._send_progress.pop(chat, None)
         self._log_msg(chat, "assistant", item.get("text") or "")
         try:
             from . import mood as mood_mod
@@ -2041,6 +2068,7 @@ class BotRuntime(RuntimeFeatures):
         if review:
             # 没有正文也没有图 = 没有可审的东西。放进去会让 drafts.add 抛
             # 「草稿是空的」，日志变成假的「入队失败」，最后还记一条 replied
+            reply = str(reply or "").strip()
             if not reply and not held_imgs:
                 self.note(chat_id, ctx.text, "empty", "模型回了空字符串（无可审内容）")
                 return
@@ -2075,8 +2103,15 @@ class BotRuntime(RuntimeFeatures):
             del hist[:-max(2, self.hist_limit * 2)]
             blob = json.dumps(self.hist, ensure_ascii=False, indent=2) + "\n"
             await asyncio.to_thread(self._write_text_atomic, self.hist_path, blob)
-        await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
-        self.note(chat_id, ctx.text, "replied", reply[:40], user=ctx.user_name)
+        res = await self.send(chat_id, reply, reply_to=ctx.message_id, sentence_split=True)
+        if getattr(res, "success", False):
+            self.note(chat_id, ctx.text, "replied", reply[:40], user=ctx.user_name)
+            return
+        # 限流 / 适配器报错时消息根本没进群：记成「已回复」会把排查方向带偏
+        self.stats["errors"] += 1
+        self.note(chat_id, ctx.text, "error",
+                  f"没发出去（{getattr(res, 'error', '') or '限流或平台出错'}）",
+                  user=ctx.user_name)
 
     async def _resolve_quoted(self, mid: str):
         """取被引用消息的文本（失败返回空串）。"""

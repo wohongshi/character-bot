@@ -468,6 +468,8 @@ check("服务端有两个方向的路由", SRV.count('u.path == "/api/drafts"') 
 check("敏感 GET 白名单里有", '"/api/drafts",' in SRV)
 check("默认配置有 review_on", '"review_on"' in CFG)
 # 「全部发送」：先快照、按时间正序、超时在 loop 里取消
+sd = SRV.split("_drafts_post")[1][:9000]   # 这一段的源码（下面几条断言共用）
+
 check("全部发送先快照 id 再发", "DF.list_items(STATE_DIR, chat=chat, limit=DF.MAX_ITEMS)" in SRV)
 check("全部发送按时间正序", "batch.sort(key=DF._order)" in SRV)
 check("超时在 loop 内部取消（wait_for）", "_send_draft_bounded" in SRV
@@ -476,14 +478,13 @@ check("不再边发边重读队列", "while True:" not in SRV.split("send_all")[
 # wait_for 超时会让 fut.result() 抛 CancelledError（BaseException）——
 # 只接 Exception 的话整轮中断、响应也写不出去
 check("全部发送接得住取消",
-      "except (Exception, asyncio.CancelledError)" in SRV.split("send_all")[1][:1600])
+      "except (Exception, asyncio.CancelledError)" in sd)
 check("默认关（不打扰现有行为）", '"review_on": False' in CFG)
 # 清空输入框后点发送要真的提交（否则发出去的是存着的旧稿）
 check("drSend 不再用「非空」当条件",
       "ta && item && ta.value.trim() !==" in HTML and "ta.value.trim() && ta.value" not in HTML)
 check("草稿箱空文本由服务端拒（400）", "回复不能是空的" in (ROOT / "bot" / "drafts.py").read_text(encoding="utf-8"))
 # 全部发送：坏文件先报错、整轮有时间预算
-sd = SRV.split("_drafts_post")[1][:6000]
 check("全部发送前先 strict 读（坏文件要报错）", "DF._load(STATE_DIR, strict=True)" in sd)
 check("全部发送有整轮时间预算", "deadline = time.time() +" in sd)
 check("单条发送也接得住取消", "except (Exception, asyncio.CancelledError)" in sd)

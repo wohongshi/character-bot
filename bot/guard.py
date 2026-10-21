@@ -200,7 +200,9 @@ def append_log(path: Path, row: dict, *, max_bytes: int = LOG_MAX_BYTES,
         except OSError:
             return False
         _log_n += 1
-        if _log_n % max(1, int(every)):
+        # 计数器随进程重启归零：只按 every 取模的话，命中量低的安装一次运行
+        # 到不了 200 次，`LOG_MAX_BYTES` 永远不生效，日志跨重启一直长
+        if _log_n != 1 and _log_n % max(1, int(every)):
             return True
         try:
             if path.stat().st_size <= max_bytes:

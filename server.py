@@ -6759,11 +6759,15 @@ class Handler(BaseHTTPRequestHandler):
                     failed.append(f"时间到，剩下 {len(batch) - sent - len(failed)} 条没发")
                     break
                 try:
+                    # 单条超时按**剩余预算**算：写死 40 秒的话，最后一条在
+                    # 第 49 秒开始，整轮还是会跑到 90 秒（浏览器早断了）
+                    left = max(1.0, deadline - time.time())
+                    inner = min(40.0, left)
                     # 外层等待必须**大于**内层超时：反过来的话这边先放弃、
                     # 内层还在发，两条草稿会同时在飞（顺序乱），面板还记失败
                     fut = asyncio.run_coroutine_threadsafe(
-                        _send_draft_bounded(rt, it["id"], timeout=40), BOT.loop)
-                    fut.result(timeout=50)
+                        _send_draft_bounded(rt, it["id"], timeout=inner), BOT.loop)
+                    fut.result(timeout=inner + 10)
                     sent += 1
                 except (Exception, asyncio.CancelledError) as e:
                     # `wait_for` 到点会 cancel 内层任务，而 `fut.result()`
@@ -6802,8 +6806,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _gaps_post(self, body: dict) -> None:
         """知识库缺口的写操作（补录 / 忽略）。"""
-        if not self._guard():
-            return
+        # `do_POST` 入口已经统一校验过 `_guard()`
         from bot import kbgaps as KG
         act = str(body.get("action") or "").strip().lower()
         text = str(body.get("text") or "").strip()
@@ -6847,7 +6850,9 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             try:
                 msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
-            except ValueError:
+            except (ValueError, OSError):
+                # 读错误体时连接被重置是 OSError（IncompleteRead/Reset）：
+                # 不接的话会被外层当成「本地磁盘读写失败」，排查方向全错
                 msg = None
             self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
             return
@@ -8047,8 +8052,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/api/guard":
-            if not self._guard():
-                return
             # 「试一下」：用**面板上正在生效的**配置跑一遍，不依赖前端复制规则
             from bot import guard as GD
             cfg = (BOT.config if BOT is not None else {}) or {}
@@ -8059,8 +8062,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/api/drafts":
-            if not self._guard():
-                return
+            # `do_POST` 入口已经统一校验过 `_guard()`，这里别再调一次
             try:
                 self._drafts_post(body)
             except ValueError as e:
@@ -8072,8 +8074,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/api/kb/gaps":
-            if not self._guard():
-                return
             try:
                 self._gaps_post(body)
             except ValueError as e:
