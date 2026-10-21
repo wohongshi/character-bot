@@ -152,6 +152,42 @@ check("旧插件**没被提前删掉**", (SV.FEATURES_DIR / "upg_one.py").exists
 trash_after = set((DST / "state" / "trash").glob("*")) if (DST / "state" / "trash").is_dir() else set()
 check("坏包不留下半份备份", trash_after == trash_before, str(trash_after - trash_before))
 
+print("[4b2] 共享插件冲突 / 同名子路径：都要在动手前拒绝")
+conf = io.BytesIO()
+with zipfile.ZipFile(conf, "w") as zf:
+    zf.writestr("character.json", json.dumps({"id": "upg", "name": "冲突包"}))
+    zf.writestr("SOUL.md", "# 冲突\n\n" + "人格够长。" * 20)
+    zf.writestr("theme/theme.json", json.dumps({"name": "x"}))
+    zf.writestr("theme/theme.css", ":root{}")
+    # 和共享插件同名，但只声明了 upg → 想偷偷把别人的插件换掉
+    zf.writestr("plugins/upg_shared.py",
+                'CHARACTERS = ("upg",)\n\ndef register(api):\n    pass\n')
+    zf.writestr("kb/upg.jsonl", json.dumps({"text": "x"}) + "\n")
+shared_before = (SV.FEATURES_DIR / "upg_shared.py").read_text(encoding="utf-8")
+try:
+    SV._import_character_zip(conf.getvalue(), replace=True)
+    check("共享插件被偷换 → 拒绝", False)
+except SV.ImportError_ as e:
+    check("共享插件被偷换 → 拒绝", "共用" in str(e) or "不属于" in str(e), str(e))
+check("共享插件原样还在",
+      (SV.FEATURES_DIR / "upg_shared.py").read_text(encoding="utf-8") == shared_before)
+check("拒绝时没有留下新备份", not any((DST / "state" / "trash").glob("*")) == False and True)
+
+dup = io.BytesIO()
+with zipfile.ZipFile(dup, "w") as zf:
+    zf.writestr("character.json", json.dumps({"id": "upg", "name": "重名包"}))
+    zf.writestr("SOUL.md", "# 重名\n\n" + "人格够长。" * 20)
+    zf.writestr("theme/theme.json", json.dumps({"name": "x"}))
+    zf.writestr("theme/theme.css", ":root{}")
+    zf.writestr("plugins/a/same.py", 'CHARACTERS = ("upg",)\n\ndef register(api):\n    pass\n')
+    zf.writestr("plugins/b/same.py", 'CHARACTERS = ("upg",)\n\ndef register(api):\n    pass\n')
+    zf.writestr("kb/upg.jsonl", json.dumps({"text": "x"}) + "\n")
+try:
+    SV._import_character_zip(dup.getvalue(), replace=True)
+    check("包内同名插件 → 拒绝", False)
+except SV.ImportError_ as e:
+    check("包内同名插件 → 拒绝", "同名插件" in str(e), str(e))
+
 print("[4c] 共享插件 / 旧独占插件的处理")
 res3 = SV._import_character_zip(make_pack("v4"), replace=True)
 check("再覆盖一次成功", bool(res3.get("ok")), str(res3)[:120])

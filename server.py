@@ -3902,8 +3902,14 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
 
     # 插件文件先「只校验不落盘」过一遍：文件名规则、语法、CHARACTERS 含 cid。
     # 等真的写盘时才发现语法错，等于旧插件已经删掉了。
+    seen_names: set = set()
     for rel, text in plugin_files.items():
         fname0 = Path(rel).name
+        if fname0 in seen_names:
+            # _install_plugins 会按 basename 落到 FEATURES_DIR：两个同名子路径会
+            # 在写盘时才撞车（那时主题已换、旧插件已删）
+            raise ImportError_(f"包里有两个同名插件：{fname0}（换一个文件名）")
+        seen_names.add(fname0)
         if not fname0.endswith(".py") or fname0.startswith("_"):
             raise ImportError_(f"插件文件名不合法：{rel}（不能以下划线开头）")
         m0 = IMPORT_CHARS.search(text)
@@ -3915,6 +3921,35 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
             compile(text, fname0, "exec")
         except SyntaxError as e:
             raise ImportError_(f"{fname0} 有语法错误：第 {e.lineno} 行 {e.msg}") from None
+
+    # 新包里与已有文件同名的插件：只有「确实属于这个角色」才能覆盖。
+    # 这是**纯输入校验**（读旧文件比 CHARACTERS），必须在备份/删除之前做完 ——
+    # 放在后面的话，一个冲突包会在删掉旧插件之后才被拒。
+    for rel in plugin_files:
+        fname = Path(rel).name
+        dest = FEATURES_DIR / fname
+        if not dest.exists():
+            continue
+        try:
+            old_src = dest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = IMPORT_CHARS.search(old_src)
+        ids = ({x.strip().strip("\"'") for x in (m.group(1) or "").split(",") if x.strip()}
+               if m else set())
+        if cid not in ids:
+            raise ImportError_(f"插件 {fname} 已存在且不属于 {cid}（换个文件名再试）")
+        if len(ids) > 1:
+            # 共享插件：新包里的同名文件必须仍然覆盖**原来那几个角色**，
+            # 否则换上去等于把别人的插件弄没了（备份在 trash 里，但运行时已经坏）
+            m_new = IMPORT_CHARS.search(str(plugin_files[rel]))
+            new_ids = ({x.strip().strip("\"'") for x in (m_new.group(1) or "").split(",")
+                        if x.strip()} if m_new else {cid})
+            missing = ids - new_ids
+            if missing:
+                raise ImportError_(f"插件 {fname} 是和 {'/'.join(sorted(ids))} 共用的，"
+                                   f"新包里它不包含 {'/'.join(sorted(missing))} —— 换个文件名再试")
+
 
     # —— 到这里所有输入都校验过了，才开始动旧数据 ——
     # 覆盖安装：先备份，再删「**只属于这个角色**」的旧插件。
@@ -3943,38 +3978,15 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
                     fp.unlink()
                 except OSError:
                     pass
-    # 新包里与已有文件同名的插件：只有「确实属于这个角色」才能覆盖
-    for rel in plugin_files:
-        fname = Path(rel).name
-        dest = FEATURES_DIR / fname
-        if not dest.exists():
-            continue
-        try:
-            old_src = dest.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        m = IMPORT_CHARS.search(old_src)
-        ids = ({x.strip().strip("\"'") for x in (m.group(1) or "").split(",") if x.strip()}
-               if m else set())
-        if cid not in ids:
-            raise ImportError_(f"插件 {fname} 已存在且不属于 {cid}（换个文件名再试）")
-        if len(ids) > 1:
-            # 共享插件：新包里的同名文件必须仍然覆盖**原来那几个角色**，
-            # 否则换上去等于把别人的插件弄没了（备份在 trash 里，但运行时已经坏）
-            m_new = IMPORT_CHARS.search(str(plugin_files[rel]))
-            new_ids = ({x.strip().strip("\"'") for x in (m_new.group(1) or "").split(",")
-                        if x.strip()} if m_new else {cid})
-            missing = ids - new_ids
-            if missing:
-                raise ImportError_(f"插件 {fname} 是和 {'/'.join(sorted(ids))} 共用的，"
-                                   f"新包里它不包含 {'/'.join(sorted(missing))} —— 换个文件名再试")
-        if backup:
-            # 是同名、且属于这个角色：覆盖安装允许换掉（已备份），先删再装
+        # 同名、且属于这个角色（上面已校验过）：覆盖安装允许换掉，先删再装
+        for rel in plugin_files:
+            dest2 = FEATURES_DIR / Path(rel).name
+            if not dest2.exists():
+                continue
             try:
-                dest.unlink()
+                dest2.unlink()
             except OSError as e:
-                raise ImportError_(f"旧的 {fname} 删不掉（{e}），先停掉它再试") from None
-
+                raise ImportError_(f"旧的 {dest2.name} 删不掉（{e}），先停掉它再试") from None
     # —— 落盘 ——
     # 先把主题写到临时目录，全部写完再一次性换掉旧目录：
     # 中途写失败不会留下半个主题，也不会先把能用的旧主题删掉。
