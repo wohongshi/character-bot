@@ -205,10 +205,18 @@ KG.maybe_rotate = lambda path, **kw: calls.append(path) or False
 try:
     ar = st / "append.jsonl"
     KG._APPENDS = 0
-    for i in range(KG.ROTATE_EVERY + 1):
+    # 第 1 次也查一次（计数器随重启归零，不然升级前就超限的日志要等到第 200 条）
+    KG.append_row(ar, {"ts": 0, "query": "q0"})
+    check("第一次追加就查一次体量", len(calls) == 1, str(len(calls)))
+    check("普通追加不查", KG.append_row(ar, {"ts": 1, "query": "q1"}) is True
+          and len(calls) == 1, str(len(calls)))
+    for i in range(2, KG.ROTATE_EVERY + 1):          # 到第 200 次
         KG.append_row(ar, {"ts": i, "query": f"q{i}"})
-    check("每 200 次追加查一次体量", len(calls) == 1, str(len(calls)))
-    check("追加的内容能读回来", len(KG.read_rows(ar)) == KG.ROTATE_EVERY + 1,
+    check("第 200 次再查", len(calls) == 2, str(len(calls)))
+    check("第 201 次不查", KG.append_row(ar, {"ts": 999, "query": "q999"}) is True
+          and len(calls) == 2, str(len(calls)))
+    # 1（q0）+ 1（q1）+ 199（q2..q200）+ 1（q999）= ROTATE_EVERY + 2
+    check("追加的内容能读回来", len(KG.read_rows(ar)) == KG.ROTATE_EVERY + 2,
           str(len(KG.read_rows(ar))))
 finally:
     KG.maybe_rotate = real_rotate

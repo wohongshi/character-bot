@@ -258,8 +258,13 @@ def append_row(path: Path, row: dict) -> bool:
         except OSError:
             return False
         _APPENDS += 1
-        rotate = not _APPENDS % ROTATE_EVERY
-    # 放在锁外：maybe_rotate 自己会再拿锁（RLock，重入也行，但别在持锁时读 12MB）
+        # 第一次也查一次：计数器随进程重启归零，只按「每 200 次」算的话，
+        # 一个升级前就已经超限的日志要等到第 200 条新记录才会被截
+        # （面板只在有命中时写，可能永远等不到）。
+        rotate = _APPENDS == 1 or not _APPENDS % ROTATE_EVERY
+    # 锁外只做「要不要轮转」这一步；真正的读全文 + 替换必须在锁里，
+    # 否则读完之后、替换之前别人 append 的行会随旧文件一起消失。
+    # 代价是轮转那一刻（每 200 条一次）会短暂挡住写入，12MB 大约几十毫秒。
     if rotate:
         maybe_rotate(path)
     return True
@@ -267,7 +272,11 @@ def append_row(path: Path, row: dict) -> bool:
 
 def maybe_rotate(path: Path, *, max_bytes: int = ROTATE_BYTES,
                  keep: int = ROTATE_KEEP_LINES) -> bool:
-    """命中日志太长就截到最近 `keep` 行（不换文件：读的人都只看这一个路径）。"""
+    """命中日志太长就截到最近 `keep` 行（不换文件：读的人都只看这一个路径）。
+
+    `stat` 在锁外；读全文和 `os.replace` 在锁内 —— 这是必须的（见 append_row
+    的注释），代价是轮转期间写入短暂阻塞。
+    """
     try:
         if path.stat().st_size <= max_bytes:
             return False
