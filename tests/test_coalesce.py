@@ -63,6 +63,10 @@ long_tail = C.merge_texts(["在吗", "那个"] + [f"{i}" + "啊" * 200 for i in 
                           + ["明天几点集合"])
 check("超长时保住最新的问题", long_tail.endswith("明天几点集合"), long_tail[-40:])
 check("超长时开场白先被丢", "在吗" not in long_tail, long_tail[:40])
+# 只有一条本身超长：要留尾部（截头会把问题切掉）
+one_long = C.merge_texts(["开头废话" * 100 + "真正的问题"])
+check("单条超长保留尾部", one_long.endswith("真正的问题"), one_long[-30:])
+check("单条超长也守上限", len(one_long) <= C.MAX_MERGED, str(len(one_long)))
 
 print("[4] 运行时：三条只回一次")
 from bot.characters import CharacterStore              # noqa: E402
@@ -217,6 +221,32 @@ asyncio.run(main35())
 check("换人立刻把上一个人的发掉", ms.calls == 1 and len(sent) == 1, f"{ms.calls} {sent}")
 check("发出去的是第一个人的问题", "第一个人问的" in (ms.last_user or ""), ms.last_user[-60:])
 check("第二个人还在自己的窗口里", "group:55" in rt._coal, str(list(rt._coal)))
+
+print("[6.6] 乱序到达也按原顺序拼")
+st_b = {"items": [(2, "第二个问题"), (1, "第一个问题")], "ctx": None, "task": None,
+        "user_id": "9"}
+
+
+class _Ctx:
+    chat_id = "private:9"
+    message_id = "1"
+    user_name = "t"
+    is_group = False
+    group_id = ""
+    user_id = "9"
+    text = ""
+    images = []
+    role = "member"
+    character = ""
+
+
+st_b["ctx"] = _Ctx()
+ms.calls = 0
+sent.clear()
+rt._coal["private:9"] = st_b
+asyncio.run(rt._flush_coalesce("private:9"))
+check("按序号拼（不是按到达顺序）",
+      "第一个问题\n第二个问题" in (ms.last_user or ""), (ms.last_user or "")[-40:])
 
 print("[7] 关掉服务不留尾巴")
 rt.config["coalesce_window"] = 10

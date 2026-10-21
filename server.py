@@ -6759,9 +6759,11 @@ class Handler(BaseHTTPRequestHandler):
                     failed.append(f"时间到，剩下 {len(batch) - sent - len(failed)} 条没发")
                     break
                 try:
+                    # 外层等待必须**大于**内层超时：反过来的话这边先放弃、
+                    # 内层还在发，两条草稿会同时在飞（顺序乱），面板还记失败
                     fut = asyncio.run_coroutine_threadsafe(
-                        _send_draft_bounded(rt, it["id"]), BOT.loop)
-                    fut.result(timeout=45)
+                        _send_draft_bounded(rt, it["id"], timeout=40), BOT.loop)
+                    fut.result(timeout=50)
                     sent += 1
                 except (Exception, asyncio.CancelledError) as e:
                     # `wait_for` 到点会 cancel 内层任务，而 `fut.result()`
@@ -6780,9 +6782,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "bot 没在跑"}, 503)
                 return
             try:
-                fut = asyncio.run_coroutine_threadsafe(_send_draft_bounded(rt, did),
-                                                      BOT.loop)
-                res = fut.result(timeout=90)
+                fut = asyncio.run_coroutine_threadsafe(
+                    _send_draft_bounded(rt, did, timeout=40), BOT.loop)
+                res = fut.result(timeout=50)
             except ValueError as e:
                 self._json({"ok": False, "error": str(e)}, 404)
                 return

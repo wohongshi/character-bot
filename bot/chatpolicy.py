@@ -75,6 +75,9 @@ def _clean(row: dict) -> dict:
         val = row.get("review")
         if isinstance(val, bool):
             out["review"] = val
+        elif isinstance(val, int) and val in (0, 1):
+            # JSON 里的 0/1 很常见（很多客户端拿它当布尔）
+            out["review"] = bool(val)
         elif isinstance(val, str) and val.strip().lower() in ("1", "true", "yes", "on"):
             out["review"] = True
         elif isinstance(val, str) and val.strip().lower() in ("0", "false", "no", "off"):
@@ -165,8 +168,12 @@ def _set_chat_locked(state_dir: Path | str, chat_id: str, patch: dict) -> dict:
             row.pop("review", None)          # 回到「跟全局」
         else:
             # 走一遍 `_clean()`：`bool("false")` 是 True，面板/接口把字符串
-            # 原样传进来时（JSON 里 `"review": "false"`）会存成反的
-            row["review"] = _clean({"review": q}).get("review", True)
+            # 原样传进来时（JSON 里 `"review": "false"`）会存成反的。
+            # 解析不出来就**报错**：静默存成 true 等于「用户说什么都不重要」。
+            cleaned = _clean({"review": q})
+            if "review" not in cleaned:
+                raise ValueError("审核只能是 true / false（或者留空 = 跟全局）")
+            row["review"] = cleaned["review"]
     if "note" in patch:
         row["note"] = str(patch.get("note") or "").strip()[:40]
     if _is_default(_clean(row)):

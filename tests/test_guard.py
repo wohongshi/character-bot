@@ -211,9 +211,16 @@ check("日志里有命中的规则名", rows[0]["labels"] == ["本地路径"], s
 # replace 动作
 rt.config["guard_action"] = "replace"
 rt.config["guard_replace"] = "（这个不能说哦）"
+_rows_before = len([x for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()])
 sent.clear()
 asyncio.run(feed("再说一次"))
 check("replace 整条换掉", sent == ["（这个不能说哦）"], str(sent))
+_rows = [json.loads(x) for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()]
+_last = _rows[-1]
+check("replace 的日志 after 就是真正发出去的那句", _last["after"] == "（这个不能说哦）",
+      str(_last.get("after")))
+check("replace 的日志 before 仍然打码（不落原文）", "/root/.hermes" not in _last["before"],
+      str(_last.get("before")))
 
 # 关掉之后原样发
 rt.config["guard_on"] = False

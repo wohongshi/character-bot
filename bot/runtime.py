@@ -813,7 +813,9 @@ class BotRuntime(RuntimeFeatures):
                     from . import kbgaps
                     # 轮转交给 append_row 自己（它按 ROTATE_EVERY 计数，
                     # 这里再挂一个计数器就是两套轮转）
-                    kbgaps.append_row(self.state_dir / kbgaps.HITS, row)
+                    if not kbgaps.append_row(self.state_dir / kbgaps.HITS, row):
+                        # 静默丢样本的话，「她答不上来什么」这条数据链就断了
+                        logger.debug("KB 命中日志写入失败（磁盘满/权限？）")
                 except OSError as e:                              # noqa: BLE001
                     logger.debug("KB 命中日志写入失败: %s", e)
             return ctx_text
@@ -1627,7 +1629,10 @@ class BotRuntime(RuntimeFeatures):
                                patterns=str(self.config.get("guard_patterns") or ""),
                                builtin=bool(self.config.get("guard_builtin", True))).get("text")
         safe_v = dict(verdict)
-        safe_v["text"] = str(safe or "")
+        if verdict.get("action") != "replace":
+            # `replace` 的 text 是替换后的那句（本身安全），覆盖会让日志里的
+            # after 和真正发出去的内容对不上；`log` 动作才可能漏原文
+            safe_v["text"] = str(safe or "")
         # 计数 + 轮转在 guard 模块自己的锁里：这里是 `to_thread` 并发调用的，
         # 无锁的「读全文 → 覆盖」会把别的线程刚写进去的行一起抹掉
         guard_mod.append_log(self.state_dir / guard_mod.LOG_FILE,
@@ -1658,11 +1663,13 @@ class BotRuntime(RuntimeFeatures):
         # 这期间**同一会话的第三条消息**会在另一个 task 里建好新窗口。回来之后
         # 无条件写 `self._coal[chat_id]` 会把它覆盖掉 —— 那个窗口的 texts 只存在
         # dict 里，消息直接消失。所以每轮都重新取一次，并且只认自己的。
+        self._coal_seq = int(getattr(self, "_coal_seq", 0)) + 1
+        seq = self._coal_seq
         st = None
         for _ in range(3):
             cur = self._coal.get(chat_id)
             if cur is None:
-                st = {"texts": [], "ctx": ctx, "task": None, "user_id": ctx.user_id}
+                st = {"items": [], "ctx": ctx, "task": None, "user_id": ctx.user_id}
                 self._coal[chat_id] = st
                 st["task"] = asyncio.ensure_future(
                     self._coal_flush_later(chat_id, cfg["window"]))
@@ -1674,10 +1681,13 @@ class BotRuntime(RuntimeFeatures):
         if st is None:
             # 一直在换人（群很吵）：别等了，这条直接走正常流程
             return False
-        st["texts"].append(ctx.text)
+        # 带序号插：上面那个 `await _flush_coalesce` 会让这条**更早**的消息
+        # 在别人之后才落到窗口里，直接 append 就变成 `B2\nB1`（模型先看到追问）
+        st["items"].append((seq, ctx.text))
+        st["items"].sort(key=lambda x: x[0])
         st["ctx"] = ctx                            # 用最后一条的 message_id 去引用
-        self.note(chat_id, ctx.text, "coalesce", f"已攒 {len(st['texts'])} 条")
-        if len(st["texts"]) >= cfg["max_msgs"]:
+        self.note(chat_id, ctx.text, "coalesce", f"已攒 {len(st['items'])} 条")
+        if len(st["items"]) >= cfg["max_msgs"]:
             await self._flush_coalesce(chat_id)
         return True
 
@@ -1713,12 +1723,15 @@ class BotRuntime(RuntimeFeatures):
         if task is not None and task is not me and not task.done():
             task.cancel()
         from . import coalesce as coal_mod
-        text = coal_mod.merge_texts(st.get("texts"))
+        raw = st.get("items") or st.get("texts") or []
+        texts = [t for _, t in sorted(raw, key=lambda x: x[0])] if raw and isinstance(
+            raw[0], tuple) else list(raw)
+        text = coal_mod.merge_texts(texts)
         if not text:
             return
         ctx = st["ctx"]
         ctx.text = text
-        if len(st.get("texts") or []) > 1:
+        if len(st.get("items") or st.get("texts") or []) > 1:
             self.stats["coalesced"] = int(self.stats.get("coalesced") or 0) + 1
         await self._chat(ctx)
 
@@ -1827,8 +1840,6 @@ class BotRuntime(RuntimeFeatures):
                 # 只补没发出去的那几句（前面的气泡已经进群了）
                 rest["text"] = exc.remaining
                 logger.warning("草稿只发出了一部分，剩下的 %s 字放回队列", len(exc.remaining))
-            elif getattr(exc, "sent_parts", 0):
-                rest["text"] = ""          # 说不清发了哪几段：宁可不补，也不重复
             # 这里是失败/取消路径（很少走到），而且**不能 await**：
             # 任务已经被取消，后续 await 会立刻再抛 CancelledError，
             # 草稿就放不回去了。同步写一次，几毫秒。
@@ -2028,6 +2039,11 @@ class BotRuntime(RuntimeFeatures):
             else:
                 await self.send_image_file(chat_id, str(fp))
         if review:
+            # 没有正文也没有图 = 没有可审的东西。放进去会让 drafts.add 抛
+            # 「草稿是空的」，日志变成假的「入队失败」，最后还记一条 replied
+            if not reply and not held_imgs:
+                self.note(chat_id, ctx.text, "empty", "模型回了空字符串（无可审内容）")
+                return
             # 读改写整份 drafts.json（最多 100 条 × 4000 字），别在事件循环里做
             out = await asyncio.to_thread(self._queue_draft, ctx, reply, held_imgs)
             if out.get("ok"):

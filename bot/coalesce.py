@@ -90,4 +90,8 @@ def merge_texts(texts) -> str:
         kept.append(body)
         total += add
     kept.reverse()
-    return "\n".join(kept)[:MAX_MERGED]
+    text = "\n".join(kept)
+    if len(kept) == 1 and len(text) > MAX_MERGED:
+        # 只剩一条（最新那条本身超长）：截尾会把问题切掉，保留尾部更有信息量
+        return "…" + text[-(MAX_MERGED - 1):]
+    return text[:MAX_MERGED]

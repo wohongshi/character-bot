@@ -229,6 +229,18 @@ check("setter：字符串 \"false\" 存成 False",
       CP.load(tri2)["chats"].get("group:1", {}).get("review") is False,
       str(CP.load(tri2)["chats"].get("group:1")))
 
+tri3 = TMP / "tri3"
+tri3.mkdir()
+CP.set_chat(tri3, "group:1", review=0)
+check("setter：数字 0 存成 False（JSON 客户端常这么传）",
+      CP.load(tri3)["chats"].get("group:1", {}).get("review") is False,
+      str(CP.load(tri3)["chats"].get("group:1")))
+CP.set_chat(tri3, "group:1", review=1)
+check("setter：数字 1 存成 True",
+      CP.load(tri3)["chats"].get("group:1", {}).get("review") is True)
+check("解析不出来的值直接报错（不静默存成 true）",
+      _err(lambda: CP.set_chat(tri3, "group:1", review="maybe")))
+
 print("[5] 运行时：回复进草稿，不发")
 from bot.characters import CharacterStore              # noqa: E402
 from bot.llm import ModelStore                         # noqa: E402
@@ -309,6 +321,23 @@ check("草稿记住了触发它的那条消息（审批晚了也不会 @ 错人�
 check("统计里有 drafted", int(rt.stats.get("drafted") or 0) == 1, str(rt.stats.get("drafted")))
 check("没有写进聊天历史", not (rt.hist.get(f"{rt.active_character}:private:9") or []),
       str(rt.hist)[:80])
+
+print("[5.5] 审核模式下模型回了空字符串")
+n_before = D.count(ST)                      # 队列里还有 [5] 那条
+ms2.reply = ""
+asyncio.run(feed("这句她会回空"))
+check("空回复不入队（drafts.add 会抛「草稿是空的」）", D.count(ST) == n_before,
+      f"{n_before} → {D.count(ST)}")
+check("空回复也不假装已回复", rt.trace.rows(limit=1)[0]["stage"] == "empty",
+      str(rt.trace.rows(limit=1)[0]))
+ms2.reply = "我在的呀～"
+asyncio.run(feed("恢复正常的问一句"))
+check("恢复正常后又开始攒草稿", D.count(ST) == n_before + 1,
+      f"{n_before} → {D.count(ST)}")
+# 只清掉 5.5 新加的那条（[5] 的那条留给 [6] 用）
+for it in D.list_items(ST, limit=100):
+    if it["chat"] == "private:9" and it["user"] == "恢复正常的问一句":
+        D.drop(ST, it["id"])
 
 print("[6] 面板点「发送」")
 res = asyncio.run(rt.send_draft(queued[0]["id"]))
@@ -458,6 +487,8 @@ sd = SRV.split("_drafts_post")[1][:6000]
 check("全部发送前先 strict 读（坏文件要报错）", "DF._load(STATE_DIR, strict=True)" in sd)
 check("全部发送有整轮时间预算", "deadline = time.time() +" in sd)
 check("单条发送也接得住取消", "except (Exception, asyncio.CancelledError)" in sd)
+check("外层等待大于内层超时（否则两条同时在飞）",
+      "timeout=40" in sd and "fut.result(timeout=50)" in sd, sd[:0])
 # 保存自定义正则时做一次编译校验
 check("保存配置时校验正则", "GD.compile_rules" in SRV and '"guard_patterns"' in SRV)
 check("「删」会连审核三态一起清", 'review: ""' in HTML)
