@@ -37,6 +37,9 @@ MAX_ITEMS = 100          # 队列上限（条）
 MAX_TEXT = 4000          # 单条回复上限（字符）
 MAX_USER = 600           # 触发它的那句用户消息，只留开头
 MAX_IMAGES = 3           # 一条草稿最多挂几张图
+# 引用用的消息 id：QQ 官方（`ROBOT1.0_...`）和飞书（`om_...`）都超过 32 字符，
+# 截短会引错消息、或者被平台当非法被动回复直接发失败
+MAX_REPLY_TO = 128
 FILE = "drafts.json"
 
 _LOCK = threading.RLock()
@@ -70,7 +73,7 @@ def _clean_item(raw) -> dict | None:
             "text": text[:MAX_TEXT], "images": images[:MAX_IMAGES],
             # 触发它的那条消息：审批可能过几分钟，那时候 `_last_inbound` 早就
             # 换成别人了 —— 不带上的话，引用/@ 都会指错人
-            "reply_to": str(raw.get("reply_to") or "")[:32]}
+            "reply_to": str(raw.get("reply_to") or "")[:MAX_REPLY_TO]}
 
 
 def _load(state_dir: Path | str) -> list[dict]:
@@ -129,7 +132,7 @@ def add(state_dir: Path | str, *, chat: str, character: str = "", user: str = ""
                 "character": str(character or "").strip().lower(),
                 "user": str(user or "")[:MAX_USER],
                 "text": text[:MAX_TEXT], "images": imgs,
-                "reply_to": str(reply_to or "")[:32]}
+                "reply_to": str(reply_to or "")[:MAX_REPLY_TO]}
         items.append(item)
         dropped = 0
         while len(items) > MAX_ITEMS:

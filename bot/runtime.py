@@ -728,15 +728,18 @@ class BotRuntime(RuntimeFeatures):
         return SimpleNamespace(success=True)
 
     async def send_image_file(self, chat_id: str, path: str, caption: str | None = None,
-                              **kwargs) -> SimpleNamespace:
+                              *, reply_to: str | None = None, **kwargs) -> SimpleNamespace:
         # 说明文字是模型写的，和正文一样是「出站文字」—— 只拦 send() 的话，
         # 把路径写进图片说明就绕过去了
         if caption:
             caption = self._guard_text(chat_id, str(caption))
         is_group = str(chat_id).startswith("group:")
         anchor_mid, anchor_uid = self._last_inbound.get(chat_id, ("", ""))
-        quote = (anchor_mid or None) if self.quote_reply else None
-        at_uid = anchor_uid if (is_group and self.at_sender) else None
+        # 和 send() 一套规则：显式给了 reply_to 就引用那条，否则才用「最后一条进来
+        # 的消息」。审批草稿时经常已经过了几分钟，按 anchor 算会 @ 到别人。
+        quote = reply_to or ((anchor_mid or None) if self.quote_reply else None)
+        at_uid = anchor_uid if (is_group and self.at_sender
+                                and (not reply_to or anchor_mid == quote)) else None
         lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
         try:
             async with lock:
@@ -1581,17 +1584,19 @@ class BotRuntime(RuntimeFeatures):
         except Exception as e:                                     # noqa: BLE001
             logger.info("出站内容闸异常（按原样发）：%s", e)
             return text
-        if not v.get("hit"):
-            return text
-        self.stats["guard_hits"] = int(self.stats.get("guard_hits") or 0) + 1
+        # 规则写错必须有人知道：静默跳过等于「以为拦了其实没拦」。
+        # 同一个错误只报一次（每条消息都刷屏就没法看了）。
+        # 注意要放在「没命中就返回」**之前** —— 正则全写错时 hit 恒为 False，
+        # 放后面这段永远不会执行（第一版就写错了）。
         if v.get("errors"):
-            # 规则写错必须有人知道：静默跳过等于「以为拦了其实没拦」。
-            # 同一个错误只报一次（每条消息都刷屏就没法看了）。
             key = "|".join(v["errors"])
             if key != getattr(self, "_guard_err_key", ""):
                 self._guard_err_key = key
                 logger.warning("出站内容闸有规则写错了（这些规则不会生效）：%s",
                                "；".join(v["errors"]))
+        if not v.get("hit"):
+            return text
+        self.stats["guard_hits"] = int(self.stats.get("guard_hits") or 0) + 1
         try:
             # 落盘的原文先打码：内置规则要拦的正是密钥/路径，把它原样写进
             # 日志再在面板回显，等于把闸自己拆了（日志会被截图、会被同步）
@@ -1599,8 +1604,12 @@ class BotRuntime(RuntimeFeatures):
                                    words=str(self.config.get("guard_words") or ""),
                                    patterns=str(self.config.get("guard_patterns") or ""),
                                    builtin=bool(self.config.get("guard_builtin", True))).get("text")
+            # verdict 里也要换成打码版：`log` 动作下 apply() 不改文本，
+            # v["text"] 就是原文 —— log_row 会把它写进 after，等于又漏一次
+            safe_v = dict(v)
+            safe_v["text"] = str(safe or "")
             with (self.state_dir / "guard_log.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(guard_mod.log_row(chat_id, v, str(safe or "")),
+                f.write(json.dumps(guard_mod.log_row(chat_id, safe_v, str(safe or "")),
                                    ensure_ascii=False) + "\n")
             n = int(getattr(self, "_guard_log_n", 0)) + 1
             self._guard_log_n = n
@@ -1755,7 +1764,7 @@ class BotRuntime(RuntimeFeatures):
         sent_imgs: list[str] = []
         try:
             for fp in item.get("images") or []:
-                res = await self.send_image_file(chat, str(fp))
+                res = await self.send_image_file(chat, str(fp), reply_to=reply_to)
                 if not getattr(res, "success", False):
                     raise RuntimeError("图片没发出去")
                 sent_imgs.append(str(fp))

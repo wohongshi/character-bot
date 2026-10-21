@@ -895,7 +895,9 @@ def _reminders() -> dict:
 
 
 # ---------- 日志保留 ----------
-LOG_JSONL = (ALERTS_JSONL, MSG_JSONL, STATE_DIR / "kb_hits.jsonl", STATE_DIR / "requests.jsonl")
+# kb_hits.jsonl 不在这里：它自己有轮转（bot/kbgaps.maybe_rotate），
+# 两套「读全文 → os.replace」的清理器同时跑会互相吃掉对方刚写的行
+LOG_JSONL = (ALERTS_JSONL, MSG_JSONL, STATE_DIR / "requests.jsonl")
 
 
 def _log_cfg() -> tuple[bool, int]:
@@ -3388,7 +3390,9 @@ def _kb_context(text: str, cid: str = "") -> str:
                    "hits": [{"id": c.get("id"), "source": c.get("source", ""),
                              "title": c.get("title", ""),
                              "dense": float(c.get("dense") or 0)} for c in chunks[:5]]}
-            _append_jsonl(KB_HITS, row)
+            # 和 runtime 共用 kbgaps 的锁：否则清理/轮转时这几行会随旧 inode 消失
+            from bot import kbgaps as _KG
+            _KG.append_row(KB_HITS, row)
         except Exception as e:                                      # noqa: BLE001
             logger.debug("KB 命中日志写入失败：%s", e)
     return ctx_text
@@ -6435,9 +6439,15 @@ class Handler(BaseHTTPRequestHandler):
                           ignored=st["ignored"], added=st["added"], weak=weak, cid=cid)
 
             def _mine(lst):
+                # 带当前角色前缀的 + 升级前写的裸 key（那时候还没按角色分）
                 pre = f"{cid}\t" if cid else ""
-                return [x[len(pre):] if pre and x.startswith(pre) else x
-                        for x in lst if not pre or x.startswith(pre)]
+                out = []
+                for x in lst:
+                    if not pre or x.startswith(pre):
+                        out.append(x[len(pre):] if pre else x)
+                    elif "\t" not in x:
+                        out.append(x)
+                return out
             self._json({"ok": True, "character": cid, "days": days, "weak": round(weak, 2),
                         **out,
                         "ignored": _mine(st["ignored"])[-40:], "added": _mine(st["added"])[-40:],

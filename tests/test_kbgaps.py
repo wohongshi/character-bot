@@ -158,6 +158,22 @@ check("klee 那边还在（名单按角色分）",
       any(i["key"] == KG.norm("你喜欢吃什么") for i in sc_k["items"]),
       str([i["text"] for i in sc_k["items"]]))
 
+# 升级兼容：旧版本存的是裸 key（没有角色前缀）
+legacy = TMP / "legacy"
+legacy.mkdir()
+legacy_path = legacy / KG.FILE
+legacy_path.write_text(json.dumps({"ignored": ["你喜欢吃什么"], "added": []},
+                                 ensure_ascii=False), encoding="utf-8")
+st_leg = KG.load_state(legacy)
+sc_leg = KG.scan(rows, days=30, now=NOW, ignored=st_leg["ignored"], cid="atri")
+check("旧的无前缀名单仍然生效",
+      all(i["key"] != KG.norm("你喜欢吃什么") for i in sc_leg["items"]),
+      str([i["text"] for i in sc_leg["items"]]))
+KG.set_status(legacy, "ignored", "你喜欢吃什么", on=False, cid="atri")
+check("撤销忽略会连旧裸 key 一起清掉",
+      "你喜欢吃什么" not in KG.load_state(legacy)["ignored"],
+      str(KG.load_state(legacy)["ignored"]))
+
 # 忽略掉的问题不出现在清单里
 s2 = KG.scan(rows, days=30, now=NOW, ignored=KG.load_state(st)["ignored"],
              added=KG.load_state(st)["added"])

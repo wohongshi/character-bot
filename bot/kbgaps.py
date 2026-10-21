@@ -109,13 +109,17 @@ def set_status(state_dir: Path | str, kind: str, key: str, on: bool = True,
     if not key:
         raise ValueError("缺问题内容")
     key = _skey(cid, key)
+    bare = str(key).split("\t", 1)[-1]
     with _LOCK:
         data = load_state(state_dir)
         other = "added" if kind == "ignored" else "ignored"
-        cur = [x for x in data[kind] if x != key]
+        # 旧版本存的是裸 key（没有角色前缀）：不论加还是撤，都一起清掉，
+        # 否则升级后「撤销忽略」只会删掉带前缀的那条，裸 key 还在名单里
+        drop = {key, bare}
+        cur = [x for x in data[kind] if x not in drop]
         if on:
             cur.append(key)
-            data[other] = [x for x in data[other] if x != key]   # 两边互斥
+            data[other] = [x for x in data[other] if x not in drop]   # 两边互斥
         data[kind] = cur
         return save_state(state_dir, data)
 
@@ -217,9 +221,10 @@ def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
     open_items, n_ign, n_add = [], 0, 0
     for row in agg.values():
         row_key = _skey(cid, row["key"])
-        if row_key in add:
+        # 兼容升级前写的裸 key（那时候名单还没按角色分）
+        if row_key in add or row["key"] in add:
             row["status"], n_add = "added", n_add + 1
-        elif row_key in ign:
+        elif row_key in ign or row["key"] in ign:
             row["status"], n_ign = "ignored", n_ign + 1
         else:
             row["status"] = "open"

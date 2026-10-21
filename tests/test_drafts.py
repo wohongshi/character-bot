@@ -249,6 +249,16 @@ check("服务端有两个方向的路由", SRV.count('u.path == "/api/drafts"') 
 check("敏感 GET 白名单里有", '"/api/drafts",' in SRV)
 check("默认配置有 review_on", '"review_on"' in CFG)
 check("默认关（不打扰现有行为）", '"review_on": False' in CFG)
+check("「删」会连审核三态一起清", 'review: ""' in HTML)
+check("确认框用真实总数（列表只取 60 条）", "drTotal" in HTML and "${drTotal} 条" in HTML)
+check("最早一条按分钟/小时/天显示", "小时前" in HTML and "天前" in HTML)
+
+# 引用 id 不能被截短（QQ 官方 / 飞书的 id 都超过 32 字符）
+long_id = "ROBOT1.0_" + "x" * 80
+D.add(S, chat="group:8", text="长 id", reply_to=long_id)
+check("长 message_id 完整保留", D.list_items(S, chat="group:8")[0]["reply_to"] == long_id[:D.MAX_REPLY_TO],
+      str(len(D.list_items(S, chat="group:8")[0]["reply_to"])))
+check("上限够长（≥64）", D.MAX_REPLY_TO >= 64, str(D.MAX_REPLY_TO))
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(0 if FAIL == 0 else 1)

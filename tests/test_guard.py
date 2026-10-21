@@ -198,6 +198,28 @@ img_rows = [json.loads(x) for x in logp.read_text(encoding="utf-8").split("\n") 
 check("图片说明命中也会记账", any("本地路径" in (r.get("labels") or []) for r in img_rows),
       str(img_rows[-1:])[:160])
 
+# log 动作：内容照发，但**日志里不能留原文**
+rt.config.update({"guard_action": "log", "guard_words": "笨蛋"})
+n_before = len([x for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()])
+sent.clear()
+asyncio.run(rt.send("private:9", "你在 /root/.hermes/x 里找笨蛋"))
+rows_log = [json.loads(x) for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()]
+new_rows = rows_log[n_before:]
+check("log 动作照发（内容不改）", sent and "/root/.hermes" in sent[-1], str(sent))
+check("log 动作的日志也不落明文",
+      bool(new_rows) and all("/root/.hermes" not in (r.get("before") or "")
+                             and "/root/.hermes" not in (r.get("after") or "")
+                             for r in new_rows), str(new_rows)[:160])
+
+# 规则写错：即使没命中也要报一次（否则用户以为拦住了）
+rt.config.update({"guard_action": "mask", "guard_words": "", "guard_patterns": "([坏"})
+rt._guard_err_key = ""
+out = rt._guard_text("private:9", "一句完全正常的话")
+check("写错的正则不会改内容", out == "一句完全正常的话")
+check("写错的正则仍会记下错误", "正则" in str(getattr(rt, "_guard_err_key", "")),
+      str(getattr(rt, "_guard_err_key", "")))
+rt.config["guard_patterns"] = ""
+
 print("[6] 面板视图")
 v = rt.guard_view()
 check("视图 ok", v["ok"] is True)
@@ -217,6 +239,9 @@ for k in ("guard_on", "guard_action", "guard_builtin", "guard_words", "guard_pat
     check(f"默认配置有 {k}", f'"{k}"' in CFG)
     check(f"面板常用配置里有 {k}", f'{{k:"{k}"' in HTML)
 check("默认关（升级后不改变现有行为）", '"guard_on": False' in CFG)
+check("敏感词也是多行（单行 input 会吞掉换行，把两个词并成一个）",
+      '{k:"guard_words", label:"敏感词", multi:true' in HTML)
+check("多行框有 box-sizing（否则撑出格子）", "box-sizing:border-box" in HTML)
 check("服务端两个方向都有", SRV.count('u.path == "/api/guard"') == 2,
       str(SRV.count('u.path == "/api/guard"')))
 check("敏感 GET 白名单里有", '"/api/guard",' in SRV)

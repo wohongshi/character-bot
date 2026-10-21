@@ -6387,7 +6387,7 @@ const CFG_GROUPS = [
      {k:"guard_builtin", label:"检查内置规则", bool:true,
       hint:"路径、sk- 密钥、Bearer 令牌、[CQ:…] 原始协议码"},
      {k:"guard_replace", label:"整条换掉时发这句"},
-     {k:"guard_words", label:"敏感词", ph:"逗号分隔，比如：退群，骂人的词",
+     {k:"guard_words", label:"敏感词", multi:true, ph:"逗号或换行分隔，比如：退群，骂人的词",
       hint:"命中就按上面的动作处理；词按字面匹配，不分大小写"},
      {k:"guard_patterns", label:"自定义正则", multi:true, ph:"一行一条，比如：\\d{17}",
       hint:"写错了面板会直接报错 —— 不会「以为拦住了其实没拦」"},
@@ -7735,6 +7735,7 @@ async function ctlSim(){
 
 /* ---------- 待她发（回复审核的草稿箱） ---------- */
 let drItems = [];
+let drTotal = 0;
 function drTime(ts){
   const d = new Date(Number(ts || 0) * 1000);
   return d.toLocaleString("zh-CN", {hour12: false, month: "2-digit", day: "2-digit",
@@ -7748,10 +7749,13 @@ async function drLoad(){
     return;
   }
   drItems = d.items || [];
+  drTotal = Number(d.total || drItems.length);     // 确认框用真实总数（列表只取了 60 条）
   const meta = $("drMeta");
-  const age = d.oldest ? Math.max(0, Math.round((Date.now() / 1000 - Number(d.oldest)) / 60)) : 0;
+  const mins = d.oldest ? Math.max(0, Math.round((Date.now() / 1000 - Number(d.oldest)) / 60)) : 0;
+  const age = !mins ? "刚刚" : mins < 60 ? `${mins} 分钟前`
+              : mins < 1440 ? `${Math.round(mins / 60)} 小时前` : `${Math.round(mins / 1440)} 天前`;
   if (meta) meta.textContent = `· ${d.total} 条` + (d.review_on ? " · 全局默认要审" : "")
-    + (d.total ? ` · 最早一条 ${age ? age + " 分钟前" : "刚刚"}` : "");
+    + (d.total ? ` · 最早一条 ${age}` : "");
   if (!drItems.length){
     box.innerHTML = `<div class="empty"><b>📝</b><span>没有待发的</span><i>没开审核模式的会话，她是直接说的</i></div>`;
     return;
@@ -7790,8 +7794,9 @@ async function drDrop(id){
   drLoad();
 }
 async function drAll(act){
-  if (!drItems.length){ flash("没有待发的"); return; }
-  if (!confirm(act === "send" ? `真的把 ${drItems.length} 条全发出去？` : "全部丢弃？这个不能撤销")) return;
+  if (!drTotal){ flash("没有待发的"); return; }
+  if (!confirm(act === "send" ? `真的把 ${drTotal} 条全发出去？` : `全部丢弃 ${drTotal} 条？这个不能撤销`))
+    return;
   const d = await post("/api/drafts", {action: act === "send" ? "send_all" : "drop_all"});
   if (!d || !d.ok){ flash("失败：" + ((d && d.error) || "未知")); return; }
   flash(act === "send"
@@ -8044,8 +8049,10 @@ function cfgRow(field, vals){
       return `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(t)}</option>`;
     }).join("")}</select>`;
   } else if (field.multi) {
+    // box-sizing：不给的话 width:100% 加内边距会撑出格子；
+    // 等宽字体是给正则看的（`l`/`1`、`0`/`O` 要能分清）
     ctl = `<textarea rows="3" id="cfg_${field.k}" placeholder="${esc(field.ph || "")}"
-      style="width:100%;font-family:var(--font-body);font-size:13px">${esc(val)}</textarea>`;
+      style="width:100%;box-sizing:border-box;font-family:var(--font-mono,monospace);font-size:13px">${esc(val)}</textarea>`;
   } else if (field.secret) {
     ctl = `<div class="row" style="gap:6px;flex-wrap:nowrap">
       <input type="password" id="cfg_${field.k}" value="${esc(val)}" placeholder="${esc(field.ph || "")}" style="flex:1">
