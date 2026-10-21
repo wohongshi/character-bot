@@ -3390,9 +3390,12 @@ def _kb_context(text: str, cid: str = "") -> str:
                    "hits": [{"id": c.get("id"), "source": c.get("source", ""),
                              "title": c.get("title", ""),
                              "dense": float(c.get("dense") or 0)} for c in chunks[:5]]}
-            # 和 runtime 共用 kbgaps 的锁：否则清理/轮转时这几行会随旧 inode 消失
+            # 和 runtime 共用 kbgaps 的锁：否则清理/轮转时这几行会随旧 inode 消失。
+            # append_row 内部把 OSError 吞掉了（返回 False），这里要补一句日志 ——
+            # 磁盘满/权限不对时，这条日志是「最近命中」唯一的数据来源
             from bot import kbgaps as _KG
-            _KG.append_row(KB_HITS, row)
+            if not _KG.append_row(KB_HITS, row):
+                logger.debug("KB 命中日志写入失败：%s", KB_HITS)
         except Exception as e:                                      # noqa: BLE001
             logger.debug("KB 命中日志写入失败：%s", e)
     return ctx_text
@@ -6599,7 +6602,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/logs/meta":
             enabled, days = _log_cfg()
             files = []
-            for p in (GATEWAY_LOG,) + LOG_JSONL:
+            # kb_hits 不在 LOG_JSONL 里（它自己轮转、不按天清），但占用还是要能看见
+            for p in (GATEWAY_LOG,) + LOG_JSONL + (KB_HITS,):
                 try:
                     st = p.stat()
                     files.append({"name": p.name, "bytes": st.st_size,

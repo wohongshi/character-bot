@@ -37,8 +37,10 @@ FILE = "kb_gaps.json"
 HITS = "kb_hits.jsonl"
 ROTATE_BYTES = 12 * 1024 * 1024     # 命中日志超过这个大小就轮转（避免无限长）
 ROTATE_KEEP_LINES = 4000            # 轮转时保留最近这么多行
+ROTATE_EVERY = 200                  # 每追加这么多次顺手查一次体量
 
 _LOCK = threading.RLock()
+_APPENDS = 0
 _WS = re.compile(r"[\W_]+", re.UNICODE)      # 只在 Unicode 意义上算「非字」：CJK 不会被吃掉
 
 
@@ -246,6 +248,8 @@ def append_row(path: Path, row: dict) -> bool:
         body = json.dumps(row, ensure_ascii=False) + "\n"
     except (TypeError, ValueError):
         return False
+    global _APPENDS
+    rotate = False
     with _LOCK:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,6 +257,11 @@ def append_row(path: Path, row: dict) -> bool:
                 f.write(body)
         except OSError:
             return False
+        _APPENDS += 1
+        rotate = not _APPENDS % ROTATE_EVERY
+    # 放在锁外：maybe_rotate 自己会再拿锁（RLock，重入也行，但别在持锁时读 12MB）
+    if rotate:
+        maybe_rotate(path)
     return True
 
 

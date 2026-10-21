@@ -198,6 +198,21 @@ check("超限会轮转", KG.maybe_rotate(big, max_bytes=1000, keep=50) is True)
 kept = KG.read_rows(big)
 check("轮转后保留最近 50 行", len(kept) == 50 and kept[-1]["query"] == "q4999", str(len(kept)))
 
+# 追加自带轮转检查：只管 QQ 侧写入的话，纯用面板时这个文件会无限长
+calls = []
+real_rotate = KG.maybe_rotate
+KG.maybe_rotate = lambda path, **kw: calls.append(path) or False
+try:
+    ar = st / "append.jsonl"
+    KG._APPENDS = 0
+    for i in range(KG.ROTATE_EVERY + 1):
+        KG.append_row(ar, {"ts": i, "query": f"q{i}"})
+    check("每 200 次追加查一次体量", len(calls) == 1, str(len(calls)))
+    check("追加的内容能读回来", len(KG.read_rows(ar)) == KG.ROTATE_EVERY + 1,
+          str(len(KG.read_rows(ar))))
+finally:
+    KG.maybe_rotate = real_rotate
+
 print("[5] 运行时：没命中真的会记一行")
 import http.server                                          # noqa: E402
 
