@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import urllib.error
 from pathlib import Path
 
@@ -106,6 +107,55 @@ check("再次 ensure 是空操作（不重复注册）",
 n1 = len(fm.all_commands())
 fm.ensure_character("hutao")
 check("重复 ensure 不会把命令翻倍", len(fm.all_commands()) == n1, f"{n1} → {len(fm.all_commands())}")
+
+print("[2b] 装失败：部分成功也不丢已注册的，且到点会重试")
+FEAT_B = TMP / "feat_bad"
+FEAT_B.mkdir()
+(FEAT_B / "ok1.py").write_text(
+    'NAME = "好的"\nCHARACTERS = ("klee",)\n\n\ndef register(api):\n'
+    '    api.on_command("好的命令", lambda ctx: "ok")\n', encoding="utf-8")
+(FEAT_B / "bad1.py").write_text(
+    'NAME = "坏的"\nCHARACTERS = ("klee",)\n\n\ndef register(api):\n'
+    '    raise RuntimeError("装我必炸")\n', encoding="utf-8")
+
+
+class Ab:
+    features_dir = str(FEAT_B)
+    feature_prefix = "."
+    active_character = "klee"
+    active_character_info = {}
+    owner_id = "1"
+    state_dir = str(TMP / "state_bad")
+    config = {"lazy_plugins": True, "max_loaded_characters": 4}
+    loaded_characters = {"klee"}
+
+
+fmb = FeatureManager(Ab())
+fmb.load()
+check("一个成功一个失败", fmb.cmd_for("好的命令", "klee") is not None
+      and "bad1" in fmb._dormant, str(sorted(fmb._dormant)))
+check("失败的不摘掉整个角色（已注册的还要能回收）", "klee" in fmb._loaded_chars,
+      str(fmb._loaded_chars))
+check("记下了待重试的插件", "bad1" in (fmb._retry_plugins.get("klee") or set()),
+      str(fmb._retry_plugins))
+# 第一次用到会真的再试一次（仍然失败）→ 之后进入退避
+fmb.ensure_character("klee")
+check("失败后进入退避", "bad1" in fmb._dormant and
+      float(fmb._retry_at.get("klee") or 0) > time.time(), str(fmb._retry_at))
+check("退避期内不重试", fmb.ensure_character("klee") is False)
+# 把退避时间拨到过去 → 应该补装一次（仍然失败，但会真的再试）
+fmb._retry_at["klee"] = 0.0
+before = dict(fmb.errors)
+fmb.ensure_character("klee")
+check("到点后会再试一次", "bad1" in fmb._dormant and "klee" in fmb._loaded_chars)
+# 修好后能装上
+(FEAT_B / "bad1.py").write_text(
+    'NAME = "修好了"\nCHARACTERS = ("klee",)\n\n\ndef register(api):\n'
+    '    api.on_command("修好命令", lambda ctx: "ok")\n', encoding="utf-8")
+fmb._retry_at["klee"] = 0.0
+fmb.ensure_character("klee")
+check("修好后补装成功", fmb.cmd_for("修好命令", "klee") is not None, str(sorted(fmb._dormant)))
+check("成功后清掉待重试记录", "bad1" not in (fmb._retry_plugins.get("klee") or set()))
 
 print("[3] 卸载")
 freed = fm.release_character("hutao")

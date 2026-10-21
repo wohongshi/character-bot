@@ -719,6 +719,7 @@ class FeatureManager:
         self._dormant: Dict[str, Path] = {}         # 未装载的角色插件：name → 文件
         self._char_touch: Dict[str, float] = {}      # LRU：角色 → 上次用到的时间
         self._retry_at: Dict[str, float] = {}         # 装载失败的角色 → 什么时候再试
+        self._retry_plugins: Dict[str, set] = {}      # 角色 → 上次装失败的插件名
         self._enabled_cfg: Any = []
         self._settings: dict = {}
 
@@ -813,6 +814,7 @@ class FeatureManager:
         self._enabled_cfg, self._settings = enabled_cfg, settings
         self._dormant = {}
         self._retry_at.clear()          # 加载/重载 = 「这次算数」：别让旧退避挡住
+        self._retry_plugins.clear()
         self._loaded_chars = self._want_characters()
 
         self._register_builtin()
@@ -857,6 +859,14 @@ class FeatureManager:
         self.hooks_out.sort(key=lambda h: h.priority)
         self.hooks_notice.sort(key=lambda h: h.priority)
         self.hooks_request.sort(key=lambda h: h.priority)
+        # 装载期就失败的角色限定插件：记进「待重试」表，等它被用到时补装
+        # （否则它既没注册、也没人记得它失败过）
+        for _name, _path in list(self._dormant.items()):
+            _info = self.plugins.get(_name) or {}
+            if not _info.get("error"):
+                continue
+            for _c in (_info.get("characters") or ()):
+                self._retry_plugins.setdefault(str(_c), set()).add(_name)
         self.loaded = True
         self.last_reload_ts = time.time()
         self._fp_seen = fp_at_start
@@ -1093,7 +1103,12 @@ class FeatureManager:
         return want
 
     def ensure_character(self, cid: str) -> bool:
-        """确保这个角色的插件已注册。已注册 → False（便宜，可每条消息调）。"""
+        """确保这个角色的插件已注册。已注册 → False（便宜，可每条消息调）。
+
+        失败重试用**独立的待重试表**（`_retry_plugins`）：不能靠把角色从
+        `_loaded_chars` 里摘掉来触发重试 —— 那样会把已经注册成功的插件也变成
+        「没人管」（`release_character` 早退、LRU 也遍历不到它们）。
+        """
         cid = str(cid or "").strip().lower()
         if not cid:
             return False
@@ -1103,44 +1118,60 @@ class FeatureManager:
             return False
         with self._lock:
             self._char_touch[cid] = time.time()      # 面板会并发遍历它，必须持锁写
+            pending = set(self._retry_plugins.get(cid) or ())
             if cid in self._loaded_chars:
-                return False
-            if time.time() < float(self._retry_at.get(cid) or 0):
-                return False                         # 刚失败过，退避一会儿再试
-            self._loaded_chars.add(cid)
-            todo = []
-            for name, path in list(self._dormant.items()):
-                info = self.plugins.get(name) or {}
-                chars = {str(x).strip().lower() for x in (info.get("characters") or ())}
-                if chars & self._loaded_chars:
-                    todo.append((name, path))
-            ok_any = False
+                # 已经装过：只有当「上次失败的插件到点了」才补装
+                if not pending or time.time() < float(self._retry_at.get(cid) or 0):
+                    return False
+                todo = [(n, p) for n, p in list(self._dormant.items()) if n in pending]
+                if not todo:
+                    self._retry_plugins.pop(cid, None)
+                    return False
+            else:
+                if time.time() < float(self._retry_at.get(cid) or 0):
+                    return False                     # 刚失败过，退避一会儿再试
+                self._loaded_chars.add(cid)
+                todo = []
+                for name, path in list(self._dormant.items()):
+                    info = self.plugins.get(name) or {}
+                    chars = {str(x).strip().lower()
+                             for x in (info.get("characters") or ())}
+                    if chars & self._loaded_chars:
+                        todo.append((name, path))
+            ok_cid = False
             for name, path in todo:
+                info0 = self.plugins.get(name) or {}
+                mine = cid in {str(x).strip().lower()
+                               for x in (info0.get("characters") or ())}
                 try:
                     self._load_one(path, self._enabled_cfg, self._settings)
                 except Exception as e:                            # noqa: BLE001
                     logger.warning("OneBot: 按需装载插件 %s 失败 — %s", name, e)
                     self._dormant[name] = path
-                    self._retry_at[cid] = time.time() + RETRY_COOLDOWN
                     self._drop_modules(name)
+                    if mine:
+                        self._retry_plugins.setdefault(cid, set()).add(name)
+                        self._retry_at[cid] = time.time() + RETRY_COOLDOWN
                     continue
                 info = self.plugins.get(name) or {}
                 if info.get("error") or not info.get("registered"):
-                    # 失败：放回待命 + 把角色从「已加载」里摘掉，否则下次 ensure
-                    # 会在 `cid in _loaded_chars` 那行直接返回，这个角色整轮进程
-                    # 都再也装不上它（日志说「留待重试」但永远不重试）。
                     logger.warning("OneBot: 按需装载插件 %s 失败（%s），%d 秒后再试",
                                    name, str(info.get("error"))[:80] or "未注册",
                                    int(RETRY_COOLDOWN))
                     self._dormant[name] = path
-                    self._retry_at[cid] = time.time() + RETRY_COOLDOWN
+                    if mine:
+                        self._retry_plugins.setdefault(cid, set()).add(name)
+                        self._retry_at[cid] = time.time() + RETRY_COOLDOWN
                 else:
                     self._dormant.pop(name, None)
-                    ok_any = True
-            if not ok_any and todo:
-                # 一个都没装成：把角色从「已加载」摘掉，下次 ensure 才会重试。
-                # 只要有装成功的就**不能摘** —— 否则它注册的命令/钩子再也回收不了
-                # （release_character 会在 `cid not in _loaded_chars` 处早退）。
+                    self._retry_plugins.get(cid, set()).discard(name)
+                    if mine:
+                        ok_cid = True
+            if not self._retry_plugins.get(cid):
+                self._retry_plugins.pop(cid, None)
+            if not ok_cid and pending == set() and todo and cid in self._loaded_chars:
+                # 第一次装、且**这个角色自己的**插件一个都没成：摘掉已加载标记，
+                # 下次 ensure 会整批重来（已注册成功的那些不在这种情况里）
                 self._loaded_chars.discard(cid)
             return bool(todo)
 
@@ -1267,6 +1298,8 @@ class FeatureManager:
         except Exception as e:                                # noqa: BLE001
             info["error"] = f"{type(e).__name__}: {e}"
             self.plugins[name] = info
+            if info.get("locked"):
+                self._dormant[name] = path       # 角色限定：留着待命，能补装
             self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 加载失败 — %s", name, info["error"])
             return
@@ -1341,6 +1374,8 @@ class FeatureManager:
         if not callable(register):
             info["error"] = "没有 register(api) 函数"
             info["enabled"] = False
+            if info.get("locked"):
+                self._dormant[name] = path
             self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 缺少 register(api)，已跳过", name)
             return
@@ -1364,6 +1399,8 @@ class FeatureManager:
             self.pages.pop(name, None)
             info["error"] = f"register(): {type(e).__name__}: {e}"
             info["enabled"] = False
+            if info.get("locked"):
+                self._dormant[name] = path       # 注册失败：待命，等 ensure 重试
             self._drop_modules(name)
             logger.warning("OneBot: 插件 %s 注册失败（已回滚半截注册）— %s", name, info["error"])
 
