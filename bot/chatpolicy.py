@@ -164,7 +164,9 @@ def _set_chat_locked(state_dir: Path | str, chat_id: str, patch: dict) -> dict:
         if q in (None, ""):
             row.pop("review", None)          # 回到「跟全局」
         else:
-            row["review"] = bool(q)
+            # 走一遍 `_clean()`：`bool("false")` 是 True，面板/接口把字符串
+            # 原样传进来时（JSON 里 `"review": "false"`）会存成反的
+            row["review"] = _clean({"review": q}).get("review", True)
     if "note" in patch:
         row["note"] = str(patch.get("note") or "").strip()[:40]
     if _is_default(_clean(row)):

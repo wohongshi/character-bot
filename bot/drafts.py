@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -98,7 +99,9 @@ def _clean_item(raw) -> dict | None:
         ts = float(raw.get("ts") or 0)
     except (TypeError, ValueError):
         ts = 0.0
-    if ts <= 0:
+    # `json.loads` 认 `NaN`/`Infinity`，而 `nan <= 0`、`inf <= 0` 都是 False ——
+    # 不挡的话它会一路序列化成非法 JSON，让整个面板读不出来
+    if not math.isfinite(ts) or ts <= 0:
         ts = time.time()
     return {"id": did, "ts": ts, "chat": chat,
             "character": str(raw.get("character") or "").strip().lower(),
@@ -135,9 +138,15 @@ def _load(state_dir: Path | str, *, strict: bool = False) -> list[dict]:
         if strict:
             raise ValueError("草稿队列文件坏了（已备份），这次不改动") from None
         return []
-    rows = raw.get("items") if isinstance(raw, dict) else None
-    if not isinstance(rows, (list, tuple)):
+    shape_bad = not isinstance(raw, dict) or not isinstance(raw.get("items"), (list, tuple))
+    if shape_bad:
+        # 文件能解析但结构不对（别的脚本写的 `{"drafts": [...]}`、旧 schema…）。
+        # 读路径当空队列；**写路径不能**：`add/pop/restore/set_text` 会立刻
+        # 整份覆盖，把还可能存在的待审内容抹掉。
+        if strict:
+            raise ValueError("草稿队列文件结构不对（没动它）")
         return []
+    rows = raw["items"]
     out, seen = [], set()
     for row in rows:
         try:

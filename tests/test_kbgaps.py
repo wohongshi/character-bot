@@ -197,6 +197,19 @@ check("坏文件改名留档", any(p.name.startswith(KG.FILE + ".bad") for p in 
 check("写路径遇到坏文件拒绝覆盖（不把历史决定抹掉）",
       _err(lambda: KG.set_status(bad_dir, "ignored", "随便")))
 
+shape_dir = TMP / "shape_state"
+shape_dir.mkdir()
+(shape_dir / KG.FILE).write_text('{"ignored": 5}', encoding="utf-8")
+check("结构不对时读路径当空名单", KG.load_state(shape_dir) == {"ignored": [], "added": []})
+check("结构不对时写路径拒绝（不覆盖历史决定）",
+      _err(lambda: KG.set_status(shape_dir, "ignored", "随便")))
+
+# ts 是 NaN/Infinity：不能进 first/last（json.dumps 出来是非法 JSON）
+nan_rows = [{"ts": float("nan"), "query": "坏时间的问题"}, {"ts": float("inf"), "query": "无穷时间"}]
+nan_out = KG.scan(nan_rows, days=0, now=NOW)
+check("NaN/Infinity 时间戳的行被跳过", nan_out["items"] == [], str(nan_out["items"]))
+check("counts 里也没算进去", nan_out["counts"]["miss"] == 0, str(nan_out["counts"]))
+
 # 长度门槛按规范化后的 key 算（"在吗？？" 原始 4 字会漏进来）
 noise = KG.scan([row("在吗？？"), row("？？？？")], days=30, now=NOW)
 check("标点撑长度的噪音被滤掉", noise["items"] == [], str(noise["items"]))

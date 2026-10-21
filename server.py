@@ -6708,6 +6708,161 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._head_only = False
 
+    # ---------- 草稿箱 / 知识库缺口（POST） ----------
+    def _drafts_post(self, body: dict) -> None:
+        """草稿箱的写操作。坏文件抛 `ValueError`，由 do_POST 翻成 400。"""
+        from bot import drafts as DF
+        rt = getattr(BOT, "runtime", None) if BOT is not None else None
+        act = str(body.get("action") or "").strip().lower()
+        did = str(body.get("id") or "").strip()
+        if act in ("send", "edit", "drop") and not did:
+            self._json({"ok": False, "error": "缺少 id"}, 400)
+            return
+        if act == "edit":
+            try:
+                item = DF.set_text(STATE_DIR, did, str(body.get("text") or ""))
+            except ValueError as e:
+                # 空回复：不允许「改成空再发」（那等于静默丢弃）
+                self._json({"ok": False, "error": str(e)}, 400)
+                return
+            if item is None:
+                self._json({"ok": False, "error": "这条草稿不在了"}, 404)
+                return
+            self._json({"ok": True, "item": item})
+            return
+        if act == "drop":
+            self._json({"ok": True, "dropped": DF.drop(STATE_DIR, did)})
+            return
+        if act in ("drop_all", "send_all"):
+            chat = str(body.get("chat") or "").strip()
+            if act == "drop_all":
+                self._json({"ok": True, "removed": DF.drop_all(STATE_DIR, chat=chat)})
+                return
+            if rt is None or BOT.loop is None:
+                self._json({"ok": False, "error": "bot 没在跑"}, 503)
+                return
+            # 宽容读遇到坏文件会改名后返回空列表 —— 「发了 0 条」看起来像成功，
+            # 实际队列文件坏了、只有 `.bad-*` 里还有备份。先 strict 读一次。
+            DF._load(STATE_DIR, strict=True)
+            # 先把「点这一下时已经在队列里的」快照下来：边发边重读会把
+            # 发消息期间别人刚进来的新草稿也发掉（审核模式就白开了），
+            # 而且群一直有消息时这个循环永远不结束。
+            batch = DF.list_items(STATE_DIR, chat=chat, limit=DF.MAX_ITEMS)
+            # 队列是时间倒序（新的在前）：按时间正序发，别把对话倒着播
+            batch.sort(key=DF._order)
+            sent, failed = 0, []
+            # 整轮时间预算：100 条 × 最多 90 秒 = 面板要等几十分钟，浏览器/代理
+            # 早就断了。到点就带着 left 返回，剩下的下一次再点。
+            deadline = time.time() + 50
+            for it in batch:
+                if time.time() > deadline:
+                    failed.append(f"时间到，剩下 {len(batch) - sent - len(failed)} 条没发")
+                    break
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        _send_draft_bounded(rt, it["id"]), BOT.loop)
+                    fut.result(timeout=45)
+                    sent += 1
+                except (Exception, asyncio.CancelledError) as e:
+                    # `wait_for` 到点会 cancel 内层任务，而 `fut.result()`
+                    # 把这个取消状态原样复制过来 —— 抛的是 CancelledError
+                    # （BaseException 的子类，`except Exception` 接不住）。
+                    # 不接的话整轮断在这里，后面的草稿不再尝试，
+                    # `do_POST` 也写不出任何 JSON（面板只看到空响应）。
+                    # 只多接 CancelledError：KeyboardInterrupt / SystemExit
+                    # 该往上走，不该被记成「草稿发送失败」。
+                    failed.append(f"{it['id']}: {type(e).__name__}: {e}")
+            self._json({"ok": True, "sent": sent, "failed": failed,
+                        "left": DF.count(STATE_DIR, chat=chat)})
+            return
+        if act == "send":
+            if rt is None or BOT.loop is None:
+                self._json({"ok": False, "error": "bot 没在跑"}, 503)
+                return
+            try:
+                fut = asyncio.run_coroutine_threadsafe(_send_draft_bounded(rt, did),
+                                                      BOT.loop)
+                res = fut.result(timeout=90)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 404)
+                return
+            except (Exception, asyncio.CancelledError) as e:
+                # 超时被 cancel 时抛的是 CancelledError（不是 Exception）
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            self._json({**res, "left": DF.count(STATE_DIR)})
+            return
+        self._json({"ok": False,
+                    "error": "action 只能是 send / edit / drop / send_all / drop_all"},
+                   400)
+        return
+
+
+    def _gaps_post(self, body: dict) -> None:
+        """知识库缺口的写操作（补录 / 忽略）。"""
+        if not self._guard():
+            return
+        from bot import kbgaps as KG
+        act = str(body.get("action") or "").strip().lower()
+        text = str(body.get("text") or "").strip()
+        key = KG.norm(text)
+        if not key:
+            self._json({"ok": False, "error": "缺少问题内容"}, 400)
+            return
+        if act in ("ignore", "unignore"):
+            # 名单按角色分（同一个问题两个角色可能都要），所以先定 cid
+            ig_cid = re.sub(r"[^a-z0-9_\-]", "",
+                            str(body.get("character") or "").strip().lower())[:32] \
+                or _active_cid()
+            st = KG.set_status(STATE_DIR, "ignored", key, on=(act == "ignore"),
+                               cid=ig_cid)
+            self._json({"ok": True, "ignored": st["ignored"]})
+            return
+        if act != "add":
+            self._json({"ok": False, "error": "action 只能是 add / ignore / unignore"}, 400)
+            return
+        # do_POST 里没有统一的 `q`（见 /api/characters/import 那次的教训），
+        # 角色只从 body 取 —— 不能调 `_mem_cid(q)`，那会 NameError。
+        cid = re.sub(r"[^a-z0-9_\-]", "",
+                     str(body.get("character") or "").strip().lower())[:32] or _active_cid()
+        if _char_store().get(cid) is None:
+            self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
+            return
+        answer = str(body.get("answer") or "").strip()
+        if not answer:
+            self._json({"ok": False, "error": "写一句她该怎么答"}, 400)
+            return
+        # `strict`：角色不存在时**不要**回落写进 klee 的库（串库）
+        payload = {"text": f"问：{text[:300]}\n答：{answer[:1200]}",
+                   "title": text[:30], "source": "缺口补录",
+                   "character": cid, "strict": True}
+        try:
+            req = urllib.request.Request(
+                KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:      # noqa: S310
+                out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
+            except ValueError:
+                msg = None
+            self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
+            return
+        except Exception as e:                                 # noqa: BLE001
+            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 502)
+            return
+        if not out.get("ok", True):
+            # 知识库返回 200 但 ok=false（比如切块失败）：不能记成「已补录」，
+            # 否则这条问题从清单里消失、库里却什么都没有
+            self._json({"ok": False, "character": cid,
+                        "error": str(out.get("error") or "知识库没有写入")}, 502)
+            return
+        st = KG.set_status(STATE_DIR, "added", key, on=True, cid=cid)
+        self._json({"ok": True, "character": cid, **out, "added": st["added"]})
+        return
+
+
     def do_POST(self):
         u = urlparse(self.path)
         _CHAR_CACHE.update(ts=0.0, data=None)      # 写操作之后别再吐旧的角色/插件快照
@@ -7895,7 +8050,7 @@ class Handler(BaseHTTPRequestHandler):
             # 「试一下」：用**面板上正在生效的**配置跑一遍，不依赖前端复制规则
             from bot import guard as GD
             cfg = (BOT.config if BOT is not None else {}) or {}
-            self._json(GD.inspect(str(body.get("text") or "")[:4000],
+            self._json(GD.inspect(str(body.get("text") or ""),
                                   words=str(cfg.get("guard_words") or ""),
                                   patterns=str(cfg.get("guard_patterns") or ""),
                                   builtin=bool(cfg.get("guard_builtin", True))))
@@ -7904,143 +8059,25 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/drafts":
             if not self._guard():
                 return
-            from bot import drafts as DF
-            rt = getattr(BOT, "runtime", None) if BOT is not None else None
-            act = str(body.get("action") or "").strip().lower()
-            did = str(body.get("id") or "").strip()
-            if act in ("send", "edit", "drop") and not did:
-                self._json({"ok": False, "error": "缺少 id"}, 400)
-                return
-            if act == "edit":
-                try:
-                    item = DF.set_text(STATE_DIR, did, str(body.get("text") or ""))
-                except ValueError as e:
-                    # 空回复：不允许「改成空再发」（那等于静默丢弃）
-                    self._json({"ok": False, "error": str(e)}, 400)
-                    return
-                if item is None:
-                    self._json({"ok": False, "error": "这条草稿不在了"}, 404)
-                    return
-                self._json({"ok": True, "item": item})
-                return
-            if act == "drop":
-                self._json({"ok": True, "dropped": DF.drop(STATE_DIR, did)})
-                return
-            if act in ("drop_all", "send_all"):
-                chat = str(body.get("chat") or "").strip()
-                if act == "drop_all":
-                    self._json({"ok": True, "removed": DF.drop_all(STATE_DIR, chat=chat)})
-                    return
-                if rt is None or BOT.loop is None:
-                    self._json({"ok": False, "error": "bot 没在跑"}, 503)
-                    return
-                # 先把「点这一下时已经在队列里的」快照下来：边发边重读会把
-                # 发消息期间别人刚进来的新草稿也发掉（审核模式就白开了），
-                # 而且群一直有消息时这个循环永远不结束。
-                batch = DF.list_items(STATE_DIR, chat=chat, limit=DF.MAX_ITEMS)
-                # 队列是时间倒序（新的在前）：按时间正序发，别把对话倒着播
-                batch.sort(key=DF._order)
-                sent, failed = 0, []
-                for it in batch:
-                    try:
-                        fut = asyncio.run_coroutine_threadsafe(
-                            _send_draft_bounded(rt, it["id"]), BOT.loop)
-                        fut.result(timeout=90)
-                        sent += 1
-                    except (Exception, asyncio.CancelledError) as e:
-                        # `wait_for` 到点会 cancel 内层任务，而 `fut.result()`
-                        # 把这个取消状态原样复制过来 —— 抛的是 CancelledError
-                        # （BaseException 的子类，`except Exception` 接不住）。
-                        # 不接的话整轮断在这里，后面的草稿不再尝试，
-                        # `do_POST` 也写不出任何 JSON（面板只看到空响应）。
-                        # 只多接 CancelledError：KeyboardInterrupt / SystemExit
-                        # 该往上走，不该被记成「草稿发送失败」。
-                        failed.append(f"{it['id']}: {type(e).__name__}: {e}")
-                self._json({"ok": True, "sent": sent, "failed": failed,
-                            "left": DF.count(STATE_DIR, chat=chat)})
-                return
-            if act == "send":
-                if rt is None or BOT.loop is None:
-                    self._json({"ok": False, "error": "bot 没在跑"}, 503)
-                    return
-                try:
-                    fut = asyncio.run_coroutine_threadsafe(_send_draft_bounded(rt, did),
-                                                          BOT.loop)
-                    res = fut.result(timeout=90)
-                except ValueError as e:
-                    self._json({"ok": False, "error": str(e)}, 404)
-                    return
-                except Exception as e:                             # noqa: BLE001
-                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
-                    return
-                self._json({**res, "left": DF.count(STATE_DIR)})
-                return
-            self._json({"ok": False,
-                        "error": "action 只能是 send / edit / drop / send_all / drop_all"},
-                       400)
+            try:
+                self._drafts_post(body)
+            except ValueError as e:
+                # strict 读会抛「草稿队列文件坏了」——要给面板一句人话，
+                # 不能让异常冒出 do_POST（那样响应体是空的）
+                self._json({"ok": False, "error": str(e)}, 400)
+            except OSError as e:
+                self._json({"ok": False, "error": f"读写失败：{e}"}, 500)
             return
 
         if u.path == "/api/kb/gaps":
             if not self._guard():
                 return
-            from bot import kbgaps as KG
-            act = str(body.get("action") or "").strip().lower()
-            text = str(body.get("text") or "").strip()
-            key = KG.norm(text)
-            if not key:
-                self._json({"ok": False, "error": "缺少问题内容"}, 400)
-                return
-            if act in ("ignore", "unignore"):
-                # 名单按角色分（同一个问题两个角色可能都要），所以先定 cid
-                ig_cid = re.sub(r"[^a-z0-9_\-]", "",
-                                str(body.get("character") or "").strip().lower())[:32] \
-                    or _active_cid()
-                st = KG.set_status(STATE_DIR, "ignored", key, on=(act == "ignore"),
-                                   cid=ig_cid)
-                self._json({"ok": True, "ignored": st["ignored"]})
-                return
-            if act != "add":
-                self._json({"ok": False, "error": "action 只能是 add / ignore / unignore"}, 400)
-                return
-            # do_POST 里没有统一的 `q`（见 /api/characters/import 那次的教训），
-            # 角色只从 body 取 —— 不能调 `_mem_cid(q)`，那会 NameError。
-            cid = re.sub(r"[^a-z0-9_\-]", "",
-                         str(body.get("character") or "").strip().lower())[:32] or _active_cid()
-            if _char_store().get(cid) is None:
-                self._json({"ok": False, "error": f"没有角色 {cid!r}"}, 400)
-                return
-            answer = str(body.get("answer") or "").strip()
-            if not answer:
-                self._json({"ok": False, "error": "写一句她该怎么答"}, 400)
-                return
-            # `strict`：角色不存在时**不要**回落写进 klee 的库（串库）
-            payload = {"text": f"问：{text[:300]}\n答：{answer[:1200]}",
-                       "title": text[:30], "source": "缺口补录",
-                       "character": cid, "strict": True}
             try:
-                req = urllib.request.Request(
-                    KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=30) as r:      # noqa: S310
-                    out = json.loads(r.read().decode("utf-8", "replace") or "{}")
-            except urllib.error.HTTPError as e:
-                try:
-                    msg = json.loads(e.read().decode("utf-8", "replace")).get("error")
-                except ValueError:
-                    msg = None
-                self._json({"ok": False, "error": msg or f"知识库返回 {e.code}"}, 400)
-                return
-            except Exception as e:                                 # noqa: BLE001
-                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 502)
-                return
-            if not out.get("ok", True):
-                # 知识库返回 200 但 ok=false（比如切块失败）：不能记成「已补录」，
-                # 否则这条问题从清单里消失、库里却什么都没有
-                self._json({"ok": False, "character": cid,
-                            "error": str(out.get("error") or "知识库没有写入")}, 502)
-                return
-            st = KG.set_status(STATE_DIR, "added", key, on=True, cid=cid)
-            self._json({"ok": True, "character": cid, **out, "added": st["added"]})
+                self._gaps_post(body)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+            except OSError as e:
+                self._json({"ok": False, "error": f"读写失败：{e}"}, 500)
             return
 
         if u.path == "/api/newwords":
@@ -8441,6 +8478,15 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 clean[k] = v
                 out[k] = "ok"
+            # 正则在这时就编译一遍：写错一条保存照样「✓ 已写入」的话，
+            # 那条规则以后永远不会命中，而人以为拦住了
+            if "guard_patterns" in clean:
+                from bot import guard as GD
+                _, gerr = GD.compile_rules(str(clean.get("guard_words") or ""),
+                                           str(clean.get("guard_patterns") or ""),
+                                           builtin=False)
+                if gerr:
+                    out["guard_patterns"] = "；".join(gerr)[:200]
             BOT.save_config(clean)
             self._json({"ok": True, "results": out})
             return

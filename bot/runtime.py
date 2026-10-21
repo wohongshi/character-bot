@@ -1543,7 +1543,7 @@ class BotRuntime(RuntimeFeatures):
         """面板那张卡：配置 + 最近命中（命中日志是 jsonl，读尾部就够）。"""
         from . import guard as guard_mod
         rows = []
-        p = self.state_dir / "guard_log.jsonl"
+        p = self.state_dir / guard_mod.LOG_FILE
         try:
             with p.open("rb") as f:
                 f.seek(max(0, p.stat().st_size - 256 * 1024))
@@ -1774,7 +1774,6 @@ class BotRuntime(RuntimeFeatures):
             # 存不进就别装死：宁可照常发出去（审核是加分项，不是单点故障）
             logger.warning("草稿入队失败，改为直接发：%s", e)
             return {"ok": False, "error": str(e)}
-        self.stats["drafted"] += 1
         if out.get("dropped"):
             logger.info("草稿队列满了，挤掉 %s 条最旧的", out["dropped"])
         return {"ok": True, **out}
@@ -1786,8 +1785,10 @@ class BotRuntime(RuntimeFeatures):
         各发一次 —— 群里就看到她说两遍。发失败 `restore` 回去，不丢。
         """
         from . import drafts as drafts_mod
-        # 读改写整份 drafts.json，别在事件循环里做（和 _queue_draft 一致）
-        item = await asyncio.to_thread(drafts_mod.pop, self.state_dir, did)
+        # **同步** pop：`to_thread` 的 await 点一旦被取消（`wait_for` 超时、
+        # 关服务），工作线程照样把文件改了，而协程在 restore 之前就退栈 ——
+        # 草稿消失、消息没发、也没人报错。同步调用的几毫秒远小于这个风险。
+        item = drafts_mod.pop(self.state_dir, did)
         if not item:
             raise ValueError("这条草稿已经不在了（可能刚发过）")
         chat = item["chat"]
@@ -2030,6 +2031,9 @@ class BotRuntime(RuntimeFeatures):
             # 读改写整份 drafts.json（最多 100 条 × 4000 字），别在事件循环里做
             out = await asyncio.to_thread(self._queue_draft, ctx, reply, held_imgs)
             if out.get("ok"):
+                # 计数放在**事件循环**里加：`_queue_draft` 跑在工作线程，
+                # `self.stats[k] += 1` 不是原子操作，两个群同时入队会少记
+                self.stats["drafted"] += 1
                 self.note(chat_id, ctx.text, "draft", f"等确认（{reply[:20]}…）")
                 return
             # 草稿存不进去：图不能就这么吞了（审核是加分项，不是单点故障）

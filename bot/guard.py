@@ -144,7 +144,10 @@ def apply(text: str, *, action: str = "mask", replace_text: str = REPLACE_DEFAUL
     rules, errors = _compile_cached(words, patterns, bool(builtin))
     labels, out = [], body
     for label, rx in rules:
-        if not rx.search(out):
+        # 判定看**原文**：前一条规则把片段换成 `***` 之后，落在那个片段里的
+        # 后续规则就再也匹配不到了 —— 面板「试一下」显示 3 条命中、日志里只
+        # 记 1 条，审计时对不上。打码仍然只作用在 `out` 上。
+        if not rx.search(body):
             continue
         labels.append(label)
         if act == "mask":

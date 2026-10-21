@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -85,19 +86,27 @@ def load_state(state_dir: Path | str, *, strict: bool = False) -> dict:
             raise ValueError("缺口名单文件坏了（已备份），这次不改动") from None
         return empty
     out = {"ignored": [], "added": []}
-    if isinstance(raw, dict):
-        for k in ("ignored", "added"):
-            rows = raw.get(k)
-            if isinstance(rows, str):
-                rows = [rows]          # 单个字符串不能逐字符拆开
-            if not isinstance(rows, (list, tuple)):
-                continue               # 数字/对象：当没设
-            seen = set()
-            for v in rows:
-                key = str(v or "").strip()
-                if key and key not in seen:
-                    seen.add(key)
-                    out[k].append(key)
+    if not isinstance(raw, dict):
+        if strict:
+            # 能解析但结构不对：写回去会把整份历史决定抹掉
+            raise ValueError("缺口名单结构不对（没动它）")
+        return out
+    for k in ("ignored", "added"):
+        rows = raw.get(k)
+        if rows is None:
+            continue
+        if isinstance(rows, str):
+            rows = [rows]              # 单个字符串不能逐字符拆开
+        elif not isinstance(rows, (list, tuple)):
+            if strict:
+                raise ValueError(f"缺口名单的 {k} 不是列表（没动它）")
+            continue                   # 数字/对象：当没设
+        seen = set()
+        for v in rows:
+            key = str(v or "").strip()
+            if key and key not in seen:
+                seen.add(key)
+                out[k].append(key)
     return out
 
 
@@ -164,8 +173,11 @@ def read_rows(path: Path, *, max_bytes: int = ROTATE_BYTES) -> list[dict]:
     一条消息被劈成两半就再也解析不出来（中文里这些字符是能出现的）。
     """
     try:
-        size = path.stat().st_size
         with path.open("rb") as f:
+            # 大小从**已打开的文件**取：先 stat 再 open 会和 maybe_rotate 撞车
+            # （轮转把文件换成很短的一份，`seek(size-max)` 就落到 EOF 之外，
+            # 读出来是空 → 这个请求报「没有缺口」）
+            size = os.fstat(f.fileno()).st_size
             if size > max_bytes:
                 f.seek(size - max_bytes)
                 f.readline()                       # 丢掉半行
@@ -212,7 +224,9 @@ def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
             ts = float(row.get("ts") or 0)
         except (TypeError, ValueError):
             continue
-        if ts <= 0:
+        # `json.loads` 认 NaN/Infinity，而它们的 `<= 0` 都是 False：
+        # 不挡就会把 nan/inf 写进 first/last，`json.dumps` 出来是非法 JSON
+        if not math.isfinite(ts) or ts <= 0:
             continue                 # 没有时间戳 = 排不出先后，别混进「最近」里
         if ts < since:
             continue

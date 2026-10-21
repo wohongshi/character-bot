@@ -4220,7 +4220,7 @@ async function loadKbGaps(){
     <div class="kbhit" data-kg="${i}" style="display:flex;gap:10px;align-items:flex-start">
       <span class="tag" style="flex:none">×${it.count}</span>
       <div style="flex:1;min-width:0">
-        <div>${esc(it.text)}<span class="kv" style="margin-left:6px">${it.best ? `最高相似度 ${it.best}` : "完全没命中"}</span></div>
+        <div>${esc(it.text)}<span class="kv" style="margin-left:6px">${it.best ? `最差相似度 ${it.best}` : "完全没命中"}</span></div>
         <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
           <input placeholder="她该怎么答（一句话就够）" data-kg-ans style="flex:1;min-width:180px">
           <button class="btn primary tiny" onclick="kgAdd(${i})">补进库</button>
@@ -6391,7 +6391,7 @@ const CFG_GROUPS = [
      {k:"guard_words", label:"敏感词", multi:true, ph:"逗号或换行分隔，比如：退群，骂人的词",
       hint:"命中就按上面的动作处理；词按字面匹配，不分大小写"},
      {k:"guard_patterns", label:"自定义正则", multi:true, ph:"一行一条，比如：\\d{17}",
-      hint:"写错了面板会直接报错 —— 不会「以为拦住了其实没拦」"},
+      hint:"保存时会校验；万一还有漏网的，在「管控 → 出站内容闸 → 试一下」能看到红字"},
    ]},
 ];
 // 保存/遍历用：拍平
@@ -7780,7 +7780,9 @@ async function drSend(id){
   const ta = row ? row.querySelector("textarea") : null;
   const item = drItems.find(x => x.id === id);
   // 改了字就先存：不然你在框里调的那一句会被丢掉，发出去的是原稿
-  if (ta && item && ta.value.trim() && ta.value.trim() !== (item.text || "").trim()){
+  // 清空也要提交：`ta.value.trim() &&` 会让空框变成「没改」，
+  // 于是发出去的是**存着的那句旧稿**（人以为发的是空的）
+  if (ta && item && ta.value.trim() !== (item.text || "").trim()){
     const e = await post("/api/drafts", {action: "edit", id, text: ta.value});
     if (!e || !e.ok){ flash("没保存：" + ((e && e.error) || "未知")); return; }
   }

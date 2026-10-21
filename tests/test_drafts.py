@@ -111,6 +111,28 @@ check("坏文件被改名留档（还能人工恢复）",
 check("写路径遇到坏文件直接拒绝（不整份覆盖）",
       _err(lambda: D.add(corrupt, chat="g", text="x")))
 
+# 能解析但结构不对：读路径当空，写路径拒绝（不能整份覆盖）
+shape_dir = TMP / "shape"
+shape_dir.mkdir()
+(shape_dir / D.FILE).write_text('{"drafts": [{"id": "x"}]}', encoding="utf-8")
+check("结构不对时读路径当空队列", D.list_items(shape_dir) == [])
+check("结构不对时写路径拒绝（不覆盖原文件）",
+      _err(lambda: D.add(shape_dir, chat="g", text="x")))
+check("原文件没被改写", (shape_dir / D.FILE).read_text(encoding="utf-8").startswith('{"drafts"'))
+
+# ts 是 NaN/Infinity（json 都认）：不能让非法值一路序列化出去
+nan_dir = TMP / "nan"
+nan_dir.mkdir()
+(nan_dir / D.FILE).write_text(
+    '{"items": [{"id": "a", "chat": "g", "text": "t", "ts": NaN},'
+    ' {"id": "b", "chat": "g", "text": "t2", "ts": Infinity}]}', encoding="utf-8")
+nan_items = D.list_items(nan_dir)
+check("NaN/Infinity 时间戳被换成正常值",
+      all(i["ts"] == i["ts"] and i["ts"] != float("inf") and i["ts"] > 0 for i in nan_items),
+      str([i["ts"] for i in nan_items]))
+check("清理后的队列能正常序列化成 JSON",
+      bool(json.dumps({"items": nan_items}, allow_nan=False)))
+
 print("[3] 上限与坏数据")
 small = TMP / "small"
 small.mkdir()
@@ -199,6 +221,13 @@ check("字符串 \"false\" 解析成 False", saved_tri.get("group:2", {}).get("r
       str(saved_tri.get("group:2")))
 check("字符串 \"true\" 解析成 True", saved_tri.get("group:3", {}).get("review") is True,
       str(saved_tri.get("group:3")))
+# setter 也不能用 bool("false") = True
+tri2 = TMP / "tri2"
+tri2.mkdir()
+CP.set_chat(tri2, "group:1", review="false")
+check("setter：字符串 \"false\" 存成 False",
+      CP.load(tri2)["chats"].get("group:1", {}).get("review") is False,
+      str(CP.load(tri2)["chats"].get("group:1")))
 
 print("[5] 运行时：回复进草稿，不发")
 from bot.characters import CharacterStore              # noqa: E402
@@ -420,6 +449,17 @@ check("不再边发边重读队列", "while True:" not in SRV.split("send_all")[
 check("全部发送接得住取消",
       "except (Exception, asyncio.CancelledError)" in SRV.split("send_all")[1][:1600])
 check("默认关（不打扰现有行为）", '"review_on": False' in CFG)
+# 清空输入框后点发送要真的提交（否则发出去的是存着的旧稿）
+check("drSend 不再用「非空」当条件",
+      "ta && item && ta.value.trim() !==" in HTML and "ta.value.trim() && ta.value" not in HTML)
+check("草稿箱空文本由服务端拒（400）", "回复不能是空的" in (ROOT / "bot" / "drafts.py").read_text(encoding="utf-8"))
+# 全部发送：坏文件先报错、整轮有时间预算
+sd = SRV.split("_drafts_post")[1][:6000]
+check("全部发送前先 strict 读（坏文件要报错）", "DF._load(STATE_DIR, strict=True)" in sd)
+check("全部发送有整轮时间预算", "deadline = time.time() +" in sd)
+check("单条发送也接得住取消", "except (Exception, asyncio.CancelledError)" in sd)
+# 保存自定义正则时做一次编译校验
+check("保存配置时校验正则", "GD.compile_rules" in SRV and '"guard_patterns"' in SRV)
 check("「删」会连审核三态一起清", 'review: ""' in HTML)
 check("确认框用真实总数（列表只取 60 条）", "drTotal" in HTML and "${drTotal} 条" in HTML)
 check("最早一条按分钟/小时/天显示", "小时前" in HTML and "天前" in HTML)

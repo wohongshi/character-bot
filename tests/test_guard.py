@@ -91,6 +91,14 @@ err = G.inspect("x", patterns="([坏")
 check("坏正则**报错**而不是静默跳过", err["errors"] and "正则" in err["errors"][0], str(err))
 check("坏正则不影响好规则", G.inspect("随便说说", words="随便", patterns="([坏")["hit"] is True)
 
+print("[2.5] mask 模式下标签仍按原文判定")
+mix = "路径 /root/x.json 里有 sk-abcdefghijklmnop1234"
+v_mix = G.apply(mix, action="mask")
+check("两条规则都记上（打码不吞后续规则）",
+      set(v_mix["labels"]) == {"本地路径", "疑似密钥"}, str(v_mix["labels"]))
+check("两个片段都被打码", "sk-abc" not in v_mix["text"] and "/root/x.json" not in v_mix["text"],
+      v_mix["text"])
+
 print("[3] 四个动作")
 t = "你的 key 是 sk-abcdefghijklmnop1234 别告诉别人"
 check("off 不动", G.apply(t, action="off")["text"] == t)
@@ -301,6 +309,13 @@ check("多行框有 box-sizing（否则撑出格子）", "box-sizing:border-box"
 check("服务端两个方向都有", SRV.count('u.path == "/api/guard"') == 2,
       str(SRV.count('u.path == "/api/guard"')))
 check("敏感 GET 白名单里有", '"/api/guard",' in SRV)
+# 面板文案：best 是「最差」的那次；正则保存时会校验
+check("面板写的是「最差相似度」", "最差相似度" in HTML)
+check("面板不再承诺「保存时就报错」以外的假话",
+      "保存时会校验" in HTML.split('k:"guard_patterns"')[1][:200],
+      HTML.split('k:"guard_patterns"')[1][:120])
+check("guard_view 用常量而不是硬编码文件名",
+      'guard_mod.LOG_FILE' in (ROOT / "bot" / "runtime.py").read_text(encoding="utf-8"))
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(0 if FAIL == 0 else 1)
