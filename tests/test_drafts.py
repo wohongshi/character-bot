@@ -191,6 +191,8 @@ queued = D.list_items(ST)
 check("草稿落在队列里", len(queued) == 1 and queued[0]["chat"] == "private:9", str(queued))
 check("草稿记下了用户原话", queued[0]["user"] == "你好呀", queued[0]["user"])
 check("草稿记了角色", queued[0]["character"] == rt.active_character, queued[0]["character"])
+check("草稿记住了触发它的那条消息（审批晚了也不会 @ 错人）",
+      queued[0].get("reply_to") == "7", str(queued[0].get("reply_to")))
 check("统计里有 drafted", int(rt.stats.get("drafted") or 0) == 1, str(rt.stats.get("drafted")))
 check("没有写进聊天历史", not (rt.hist.get(f"{rt.active_character}:private:9") or []),
       str(rt.hist)[:80])
@@ -231,7 +233,7 @@ print("[8] 面板视图")
 v = rt.drafts_view()
 check("视图 ok 且带总数", v["ok"] is True and v["total"] == 1, str(v)[:120])
 check("视图里带全局开关状态", v["review_on"] is True)
-check("视图带会话标签", v["items"] and "label" in v["items"][0], str(v["items"])[:80])
+check("视图带「最早一条」和会话数", "oldest" in v and v.get("chats") == 1, str(v)[:120])
 
 print("[9] 面板 / 路由 / 配置真的在")
 HTML = (ROOT / "static" / "index.html").read_text(encoding="utf-8")

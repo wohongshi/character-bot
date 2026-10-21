@@ -6432,10 +6432,15 @@ class Handler(BaseHTTPRequestHandler):
                 weak = base + 0.02
             weak = min(max(weak, 0.0), 1.0)
             out = KG.scan(rows, days=days, limit=_int_param(q, "limit", 30, lo=1, hi=100),
-                          ignored=st["ignored"], added=st["added"], weak=weak)
+                          ignored=st["ignored"], added=st["added"], weak=weak, cid=cid)
+
+            def _mine(lst):
+                pre = f"{cid}\t" if cid else ""
+                return [x[len(pre):] if pre and x.startswith(pre) else x
+                        for x in lst if not pre or x.startswith(pre)]
             self._json({"ok": True, "character": cid, "days": days, "weak": round(weak, 2),
                         **out,
-                        "ignored": st["ignored"][-40:], "added": st["added"][-40:],
+                        "ignored": _mine(st["ignored"])[-40:], "added": _mine(st["added"])[-40:],
                         "hint": "她检索知识库没命中、或只是勉强沾边的问题；补一句就进了她的库"})
             return
         if u.path == "/api/memories/tidy":
@@ -7872,7 +7877,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "缺少 id"}, 400)
                 return
             if act == "edit":
-                item = DF.set_text(STATE_DIR, did, str(body.get("text") or ""))
+                try:
+                    item = DF.set_text(STATE_DIR, did, str(body.get("text") or ""))
+                except ValueError as e:
+                    # 空回复：不允许「改成空再发」（那等于静默丢弃）
+                    self._json({"ok": False, "error": str(e)}, 400)
+                    return
                 if item is None:
                     self._json({"ok": False, "error": "这条草稿不在了"}, 404)
                     return
@@ -7889,15 +7899,24 @@ class Handler(BaseHTTPRequestHandler):
                 if rt is None or BOT.loop is None:
                     self._json({"ok": False, "error": "bot 没在跑"}, 503)
                     return
-                sent, failed = 0, []
-                for it in DF.list_items(STATE_DIR, chat=chat, limit=20):
-                    try:
-                        fut = asyncio.run_coroutine_threadsafe(
-                            rt.send_draft(it["id"]), BOT.loop)
-                        fut.result(timeout=60)
-                        sent += 1
-                    except Exception as e:                         # noqa: BLE001
-                        failed.append(f"{it['id']}: {type(e).__name__}: {e}")
+                sent, failed, tried = 0, [], set()
+                # 一轮只取 100 条（队列上限），失败的会被 restore 回队列 ——
+                # 所以按 id 记账，发过的不再重试，否则这里会死循环
+                while True:
+                    batch = [i for i in DF.list_items(STATE_DIR, chat=chat,
+                                                     limit=DF.MAX_ITEMS)
+                             if i["id"] not in tried]
+                    if not batch:
+                        break
+                    for it in batch:
+                        tried.add(it["id"])
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                rt.send_draft(it["id"]), BOT.loop)
+                            fut.result(timeout=60)
+                            sent += 1
+                        except Exception as e:                     # noqa: BLE001
+                            failed.append(f"{it['id']}: {type(e).__name__}: {e}")
                 self._json({"ok": True, "sent": sent, "failed": failed,
                             "left": DF.count(STATE_DIR, chat=chat)})
                 return
@@ -7932,7 +7951,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "缺少问题内容"}, 400)
                 return
             if act in ("ignore", "unignore"):
-                st = KG.set_status(STATE_DIR, "ignored", key, on=(act == "ignore"))
+                # 名单按角色分（同一个问题两个角色可能都要），所以先定 cid
+                ig_cid = re.sub(r"[^a-z0-9_\-]", "",
+                                str(body.get("character") or "").strip().lower())[:32] \
+                    or _active_cid()
+                st = KG.set_status(STATE_DIR, "ignored", key, on=(act == "ignore"),
+                                   cid=ig_cid)
                 self._json({"ok": True, "ignored": st["ignored"]})
                 return
             if act != "add":
@@ -7967,7 +7991,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:                                 # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 502)
                 return
-            st = KG.set_status(STATE_DIR, "added", key, on=True)
+            if not out.get("ok", True):
+                # 知识库返回 200 但 ok=false（比如切块失败）：不能记成「已补录」，
+                # 否则这条问题从清单里消失、库里却什么都没有
+                self._json({"ok": False, "character": cid,
+                            "error": str(out.get("error") or "知识库没有写入")}, 502)
+                return
+            st = KG.set_status(STATE_DIR, "added", key, on=True, cid=cid)
             self._json({"ok": True, "character": cid, **out, "added": st["added"]})
             return
 

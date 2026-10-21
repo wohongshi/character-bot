@@ -46,12 +46,6 @@ BUILTIN = (
 )
 
 
-def _bool(v) -> bool:
-    if isinstance(v, str):
-        return v.strip().lower() in ("1", "true", "yes", "on")
-    return bool(v)
-
-
 def split_words(raw: str) -> list[str]:
     """逗号 / 换行 / 顿号 / 空格 都当分隔符；去空白、保序去重。"""
     parts = re.split(r"[,，、\n\r]+", str(raw or ""))

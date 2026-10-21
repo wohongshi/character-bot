@@ -79,8 +79,10 @@ def save_state(state_dir: Path | str, data: dict) -> dict:
     """原子写；两个名单都**保序**（顺序就是「谁先被忽略的」）。"""
     p = path_for(state_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    body = {"ignored": list(dict.fromkeys(str(x) for x in (data.get("ignored") or []) if str(x)))[:MAX_ITEMS],
-            "added": list(dict.fromkeys(str(x) for x in (data.get("added") or []) if str(x)))[:MAX_ITEMS]}
+    # 满了从**最旧的**丢：名单是「后加的更重要」，[:N] 保的是最旧的那批，
+    # 结果新 key 一写就被截掉、面板点了「忽略」却毫无变化（真的踩过）
+    body = {"ignored": list(dict.fromkeys(str(x) for x in (data.get("ignored") or []) if str(x)))[-MAX_ITEMS:],
+            "added": list(dict.fromkeys(str(x) for x in (data.get("added") or []) if str(x)))[-MAX_ITEMS:]}
     with _LOCK:
         tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -88,13 +90,25 @@ def save_state(state_dir: Path | str, data: dict) -> dict:
     return body
 
 
-def set_status(state_dir: Path | str, kind: str, key: str, on: bool = True) -> dict:
+def _skey(cid: str, key: str) -> str:
+    """名单里的存储键：`角色\t问题`。
+
+    不按角色分的话，给亚托莉补过的问题在胡桃的清单里也会消失（同一个问题
+    两个人可能都需要），而且「忽略」会在全局生效 —— 面板是按角色看的。
+    """
+    cid = str(cid or "").strip().lower()
+    return f"{cid}\t{key}" if cid else key
+
+
+def set_status(state_dir: Path | str, kind: str, key: str, on: bool = True,
+               *, cid: str = "") -> dict:
     """把某个 key 标成 ignored / added（`on=False` 撤销）。读-改-写整段持锁。"""
     if kind not in ("ignored", "added"):
         raise ValueError("kind 只能是 ignored / added")
     key = str(key or "").strip()
     if not key:
         raise ValueError("缺问题内容")
+    key = _skey(cid, key)
     with _LOCK:
         data = load_state(state_dir)
         other = "added" if kind == "ignored" else "ignored"
@@ -139,7 +153,7 @@ def read_rows(path: Path, *, max_bytes: int = 6 * 1024 * 1024) -> list[dict]:
 
 def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
          min_len: int = MIN_LEN, now: float | None = None,
-         ignored=(), added=(), weak: float = 0.0,
+         ignored=(), added=(), weak: float = 0.0, cid: str = "",
          skip_via: tuple[str, ...] = ("panel",)) -> dict:
     """把「没命中 / 只是勉强沾边」的查询聚合成清单（纯函数，方便测）。
 
@@ -152,7 +166,8 @@ def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
     """
     now = time.time() if now is None else float(now)
     since = now - days * 86400 if days and days > 0 else 0.0
-    ign, add = set(ignored or ()), set(added or ())
+    ign = {x for x in (ignored or ())}
+    add = {x for x in (added or ())}
     agg: dict[str, dict] = {}
     scanned = miss = faint = skipped = 0
     for row in rows or ():
@@ -201,9 +216,10 @@ def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
             cur["best"] = min(cur.get("best", best), round(best, 3))   # 取最差的那次
     open_items, n_ign, n_add = [], 0, 0
     for row in agg.values():
-        if row["key"] in add:
+        row_key = _skey(cid, row["key"])
+        if row_key in add:
             row["status"], n_add = "added", n_add + 1
-        elif row["key"] in ign:
+        elif row_key in ign:
             row["status"], n_ign = "ignored", n_ign + 1
         else:
             row["status"] = "open"
@@ -213,6 +229,26 @@ def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
             "counts": {"scanned": scanned, "miss": miss, "weak": faint,
                        "skipped": skipped, "keys": len(agg),
                        "open": len(open_items), "ignored": n_ign, "added": n_add}}
+
+
+def append_row(path: Path, row: dict) -> bool:
+    """追加一条命中记录。
+
+    走本模块的锁：`maybe_rotate` 是「读全文 → os.replace」，
+    这期间别人 append 进旧 inode 的行会跟着旧文件一起消失。
+    """
+    try:
+        body = json.dumps(row, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError):
+        return False
+    with _LOCK:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(body)
+        except OSError:
+            return False
+    return True
 
 
 def maybe_rotate(path: Path, *, max_bytes: int = ROTATE_BYTES,

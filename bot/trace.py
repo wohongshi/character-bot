@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import collections
+import threading
 import time
 
 # stage → (中文, 语气)
@@ -48,6 +49,10 @@ class Trace:
 
     def __init__(self, maxlen: int = MAX_ROWS):
         self._q: collections.deque = collections.deque(maxlen=max(1, int(maxlen)))
+        # `note()` 在 bot 的事件循环线程里 append，`rows()`/`counts()` 在
+        # ThreadingHTTPServer 的请求线程里遍历 —— deque 迭代期间被改会抛
+        # `RuntimeError: deque mutated during iteration`（面板偶发 500）
+        self._lock = threading.Lock()
 
     def note(self, chat: str, text: str, stage: str, detail: str = "",
              *, user: str = "", character: str = "", now: float | None = None) -> dict:
@@ -61,7 +66,8 @@ class Trace:
             "user": str(user or "")[:40],
             "character": str(character or "")[:20],
         }
-        self._q.append(row)
+        with self._lock:
+            self._q.append(row)
         return row
 
     def rows(self, *, chat: str = "", limit: int = 60, stage: str = "") -> list[dict]:
@@ -70,7 +76,9 @@ class Trace:
         stage = str(stage or "").strip()
         n = max(1, min(int(limit or 60), MAX_ROWS))
         out = []
-        for row in reversed(self._q):
+        with self._lock:
+            snapshot = list(self._q)
+        for row in reversed(snapshot):
             if chat and row["chat"] != chat:
                 continue
             if stage and row["stage"] != stage:
@@ -88,7 +96,9 @@ class Trace:
         chat = str(chat or "").strip()
         seen = 0
         out: dict[str, int] = {}
-        for row in reversed(self._q):
+        with self._lock:
+            snapshot = list(self._q)
+        for row in reversed(snapshot):
             if chat and row["chat"] != chat:
                 continue
             out[row["stage"]] = out.get(row["stage"], 0) + 1
@@ -98,12 +108,14 @@ class Trace:
         return out
 
     def clear(self) -> int:
-        n = len(self._q)
-        self._q.clear()
+        with self._lock:
+            n = len(self._q)
+            self._q.clear()
         return n
 
     def __len__(self) -> int:
-        return len(self._q)
+        with self._lock:
+            return len(self._q)
 
 
 def labels() -> dict:

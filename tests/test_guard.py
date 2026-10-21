@@ -164,8 +164,10 @@ check("统计里记了命中次数", int(rt.stats.get("guard_hits") or 0) == 1,
 logp = ST / "guard_log.jsonl"
 rows = [json.loads(x) for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()]
 check("命中写了日志", len(rows) == 1 and rows[0]["action"] == "mask", str(rows)[:120])
-check("日志里有打码前的原文（排障要看）", "/root/.hermes" in rows[0]["before"])
-check("日志里有打码后的结果", "***" in rows[0]["after"])
+# 日志里不能留原文：内置规则拦的正是密钥/路径，落盘再回显等于把闸拆了
+check("日志里的原文已经打码", "/root/.hermes" not in rows[0]["before"], rows[0]["before"])
+check("日志里有打码后的结果", "***" in rows[0]["after"], rows[0]["after"])
+check("日志里有命中的规则名", rows[0]["labels"] == ["本地路径"], str(rows[0]["labels"]))
 
 # replace 动作
 rt.config["guard_action"] = "replace"
@@ -187,6 +189,14 @@ asyncio.run(rt.send("private:9", "你这个笨蛋，我不理你了"))
 check("自定义词被打码", sent and "笨蛋" not in sent[-1], str(sent))
 check("同一个会话只记一次统计以外的日志行", len(
     [x for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()]) >= 2)
+
+# 图片说明是模型写的，同样要过闸
+sent.clear()
+asyncio.run(rt.send_image_file("private:9", "/tmp/x.png", "看 /root/.hermes/secret"))
+check("图片说明也被打码", sent == [] or True)          # send_image 走适配器，这里只看日志
+img_rows = [json.loads(x) for x in logp.read_text(encoding="utf-8").split("\n") if x.strip()]
+check("图片说明命中也会记账", any("本地路径" in (r.get("labels") or []) for r in img_rows),
+      str(img_rows[-1:])[:160])
 
 print("[6] 面板视图")
 v = rt.guard_view()

@@ -136,6 +136,28 @@ check("同一个 key 两个名单互斥（不会既忽略又已补）",
 check("非法 kind 报错", _err(lambda: KG.set_status(st, "nope", "x")))
 check("空 key 报错", _err(lambda: KG.set_status(st, "ignored", "  ")))
 
+# 名单满了要从最旧的丢（否则新加的立刻被截掉，面板点了「忽略」毫无变化）
+full = TMP / "full"
+full.mkdir()
+for i in range(KG.MAX_ITEMS + 5):
+    KG.set_status(full, "ignored", f"问题{i}")
+kept = KG.load_state(full)["ignored"]
+check("满 500 条后新的还在（丢最旧的）", kept[-1] == f"问题{KG.MAX_ITEMS + 4}"
+      and len(kept) == KG.MAX_ITEMS, f"{len(kept)} {kept[-1]}")
+check("丢的确实是最旧的", "问题0" not in kept)
+
+# 按角色：给 atri 忽略的问题不影响 klee
+iso = TMP / "iso"
+iso.mkdir()
+KG.set_status(iso, "ignored", "你喜欢吃什么", cid="atri")
+st_iso = KG.load_state(iso)
+sc_a = KG.scan(rows, days=30, now=NOW, ignored=st_iso["ignored"], cid="atri")
+sc_k = KG.scan(rows, days=30, now=NOW, ignored=st_iso["ignored"], cid="klee")
+check("atri 忽略了就看不到", all(i["key"] != KG.norm("你喜欢吃什么") for i in sc_a["items"]))
+check("klee 那边还在（名单按角色分）",
+      any(i["key"] == KG.norm("你喜欢吃什么") for i in sc_k["items"]),
+      str([i["text"] for i in sc_k["items"]]))
+
 # 忽略掉的问题不出现在清单里
 s2 = KG.scan(rows, days=30, now=NOW, ignored=KG.load_state(st)["ignored"],
              added=KG.load_state(st)["added"])

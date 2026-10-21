@@ -67,7 +67,10 @@ def _clean_item(raw) -> dict | None:
     return {"id": did, "ts": ts, "chat": chat,
             "character": str(raw.get("character") or "").strip().lower(),
             "user": str(raw.get("user") or "")[:MAX_USER],
-            "text": text[:MAX_TEXT], "images": images[:MAX_IMAGES]}
+            "text": text[:MAX_TEXT], "images": images[:MAX_IMAGES],
+            # 触发它的那条消息：审批可能过几分钟，那时候 `_last_inbound` 早就
+            # 换成别人了 —— 不带上的话，引用/@ 都会指错人
+            "reply_to": str(raw.get("reply_to") or "")[:32]}
 
 
 def _load(state_dir: Path | str) -> list[dict]:
@@ -109,7 +112,8 @@ def _new_id(items: list[dict], now: float) -> str:
 
 
 def add(state_dir: Path | str, *, chat: str, character: str = "", user: str = "",
-        text: str = "", images=None, now: float | None = None) -> dict:
+        text: str = "", images=None, reply_to: str = "",
+        now: float | None = None) -> dict:
     """入队一条。返回 `{item, count, dropped}`（`dropped` = 因为超上限被挤掉的条数）。"""
     chat = str(chat or "").strip()
     text = str(text or "").strip()
@@ -124,7 +128,8 @@ def add(state_dir: Path | str, *, chat: str, character: str = "", user: str = ""
         item = {"id": _new_id(items, now), "ts": now, "chat": chat,
                 "character": str(character or "").strip().lower(),
                 "user": str(user or "")[:MAX_USER],
-                "text": text[:MAX_TEXT], "images": imgs}
+                "text": text[:MAX_TEXT], "images": imgs,
+                "reply_to": str(reply_to or "")[:32]}
         items.append(item)
         dropped = 0
         while len(items) > MAX_ITEMS:

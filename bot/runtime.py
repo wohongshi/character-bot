@@ -550,12 +550,17 @@ class BotRuntime(RuntimeFeatures):
             self._watch_task = asyncio.create_task(self._watch_plugins())
 
     async def stop(self) -> None:
-        # 还没到点的合并窗口：取消掉，别让它们在关服务的路上再发一条
-        for chat_id, st in list(self._coal.items()):
+        # 还没到点的合并窗口：取消掉，别让它们在关服务的路上再发一条。
+        # 必须 await：否则 stop() 已经返回，_chat 还在跑，关服务不是确定性的。
+        pending = []
+        for st in list(self._coal.values()):
             t = st.get("task")
             if t is not None and not t.done():
                 t.cancel()
+                pending.append(t)
         self._coal.clear()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         task, self._watch_task = self._watch_task, None
         if task is not None:
             task.cancel()
@@ -724,6 +729,10 @@ class BotRuntime(RuntimeFeatures):
 
     async def send_image_file(self, chat_id: str, path: str, caption: str | None = None,
                               **kwargs) -> SimpleNamespace:
+        # 说明文字是模型写的，和正文一样是「出站文字」—— 只拦 send() 的话，
+        # 把路径写进图片说明就绕过去了
+        if caption:
+            caption = self._guard_text(chat_id, str(caption))
         is_group = str(chat_id).startswith("group:")
         anchor_mid, anchor_uid = self._last_inbound.get(chat_id, ("", ""))
         quote = (anchor_mid or None) if self.quote_reply else None
@@ -787,8 +796,8 @@ class BotRuntime(RuntimeFeatures):
                         "hits": [{"source": c.get("source", ""), "title": c.get("title", ""),
                                   "dense": float(c.get("dense") or 0)} for c in chunks[:5]],
                     }
-                    with (self.state_dir / "kb_hits.jsonl").open("a", encoding="utf-8") as f:
-                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    from . import kbgaps
+                    kbgaps.append_row(self.state_dir / kbgaps.HITS, row)
                     # 每 200 次检查一次大小：每条都 stat 是白给，从不管又会无限长
                     n = int(getattr(self, "_kb_log_n", 0)) + 1
                     self._kb_log_n = n
@@ -1575,9 +1584,24 @@ class BotRuntime(RuntimeFeatures):
         if not v.get("hit"):
             return text
         self.stats["guard_hits"] = int(self.stats.get("guard_hits") or 0) + 1
+        if v.get("errors"):
+            # 规则写错必须有人知道：静默跳过等于「以为拦了其实没拦」。
+            # 同一个错误只报一次（每条消息都刷屏就没法看了）。
+            key = "|".join(v["errors"])
+            if key != getattr(self, "_guard_err_key", ""):
+                self._guard_err_key = key
+                logger.warning("出站内容闸有规则写错了（这些规则不会生效）：%s",
+                               "；".join(v["errors"]))
         try:
+            # 落盘的原文先打码：内置规则要拦的正是密钥/路径，把它原样写进
+            # 日志再在面板回显，等于把闸自己拆了（日志会被截图、会被同步）
+            safe = guard_mod.apply(text, action="mask",
+                                   words=str(self.config.get("guard_words") or ""),
+                                   patterns=str(self.config.get("guard_patterns") or ""),
+                                   builtin=bool(self.config.get("guard_builtin", True))).get("text")
             with (self.state_dir / "guard_log.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(guard_mod.log_row(chat_id, v, text), ensure_ascii=False) + "\n")
+                f.write(json.dumps(guard_mod.log_row(chat_id, v, str(safe or "")),
+                                   ensure_ascii=False) + "\n")
             n = int(getattr(self, "_guard_log_n", 0)) + 1
             self._guard_log_n = n
             if not n % 200:                        # 别每条都 stat；也别无限长
@@ -1703,7 +1727,7 @@ class BotRuntime(RuntimeFeatures):
             out = drafts_mod.add(self.state_dir, chat=ctx.chat_id,
                                  character=self.active_character,
                                  user=str(ctx.text or ""), text=reply,
-                                 images=images)
+                                 images=images, reply_to=str(ctx.message_id or ""))
         except (OSError, ValueError) as e:
             # 存不进就别装死：宁可照常发出去（审核是加分项，不是单点故障）
             logger.warning("草稿入队失败，改为直接发：%s", e)
@@ -1725,17 +1749,25 @@ class BotRuntime(RuntimeFeatures):
             raise ValueError("这条草稿已经不在了（可能刚发过）")
         chat = item["chat"]
         cid = str(item.get("character") or "") or self.active_character
+        # 引用「触发草稿的那条」，不是「这个会话最后一条」：审批可能过几分钟，
+        # 那时候群里已经聊了十几轮，@ 到的会是完全无关的人
+        reply_to = item.get("reply_to") or None
+        sent_imgs: list[str] = []
         try:
             for fp in item.get("images") or []:
                 res = await self.send_image_file(chat, str(fp))
                 if not getattr(res, "success", False):
                     raise RuntimeError("图片没发出去")
+                sent_imgs.append(str(fp))
             if item.get("text"):
-                res = await self.send(chat, item["text"], sentence_split=True)
+                res = await self.send(chat, item["text"], reply_to=reply_to, sentence_split=True)
                 if not getattr(res, "success", False):
                     raise RuntimeError("发送失败（限流或适配器出错）")
         except Exception:
-            drafts_mod.restore(self.state_dir, item)
+            # 只放回**没发出去**的部分：图已经进群了，重试再发一遍就是刷屏
+            rest = dict(item)
+            rest["images"] = [p for p in (item.get("images") or []) if p not in sent_imgs]
+            drafts_mod.restore(self.state_dir, rest)
             raise
         self._log_msg(chat, "assistant", item.get("text") or "")
         try:
@@ -1765,15 +1797,10 @@ class BotRuntime(RuntimeFeatures):
         """面板那张卡：队列 + 每个会话的审核状态（不然你不知道该给谁开）。"""
         from . import drafts as drafts_mod
         items = drafts_mod.list_items(self.state_dir, chat=chat, limit=limit)
-        labels = {}
-        try:
-            labels = self._chat_labels()
-        except Exception:                                          # noqa: BLE001
-            labels = {}
-        for it in items:
-            it["label"] = labels.get(it["chat"]) or it["chat"]
+        stat = drafts_mod.summary(self.state_dir)
         return {"ok": True, "items": items, "count": len(items),
                 "total": drafts_mod.count(self.state_dir),
+                "oldest": stat["oldest"], "chats": stat["chats"],
                 "review_on": bool(self.config.get("review_on")),
                 "hint": "开了「先审后发」的会话，她的回复会停在这里，等你在面板点发送"}
 
@@ -1935,6 +1962,12 @@ class BotRuntime(RuntimeFeatures):
             if out.get("ok"):
                 self.note(chat_id, ctx.text, "draft", f"等确认（{reply[:20]}…）")
                 return
+            # 草稿存不进去：图不能就这么吞了（审核是加分项，不是单点故障）
+            for fp in held_imgs:
+                try:
+                    await self.send_image_file(chat_id, str(fp))
+                except Exception as e:                             # noqa: BLE001
+                    logger.info("草稿失败后补发图片也失败：%s", e)
             # 存不进草稿就往下走正常发送（见 _queue_draft 的注释）
         self._log_msg(chat_id, "assistant", reply)
         try:

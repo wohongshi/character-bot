@@ -6389,7 +6389,7 @@ const CFG_GROUPS = [
      {k:"guard_replace", label:"整条换掉时发这句"},
      {k:"guard_words", label:"敏感词", ph:"逗号分隔，比如：退群，骂人的词",
       hint:"命中就按上面的动作处理；词按字面匹配，不分大小写"},
-     {k:"guard_patterns", label:"自定义正则", ph:"一行一条，比如：\\d{17}",
+     {k:"guard_patterns", label:"自定义正则", multi:true, ph:"一行一条，比如：\\d{17}",
       hint:"写错了面板会直接报错 —— 不会「以为拦住了其实没拦」"},
    ]},
 ];
@@ -7660,8 +7660,10 @@ async function ctlSaveChat(id){
              : ("这一行没设任何项，已恢复成跟随全局：" + chatLabel(id)));
 }
 async function ctlClearChat(id){
+  // review 也要显式清：`_is_default` 见到 "review" 就不算默认，
+  // 只发另外四项的话，一条「只设过审核」的会话点了「删」还会挂在那儿
   const d = await post("/api/control/chat", {chat_id: id, mode: "inherit", quiet: [],
-                                             quiet_mention: false, note: ""});
+                                             quiet_mention: false, note: "", review: ""});
   if (!d || !d.ok){ flash("没删掉：" + ((d && d.error) || "未知")); return; }
   ctlData = d.after; ctlRenderChats(); flash("已恢复成跟随全局");
 }
@@ -7747,7 +7749,9 @@ async function drLoad(){
   }
   drItems = d.items || [];
   const meta = $("drMeta");
-  if (meta) meta.textContent = `· ${d.total} 条` + (d.review_on ? " · 全局默认要审" : "");
+  const age = d.oldest ? Math.max(0, Math.round((Date.now() / 1000 - Number(d.oldest)) / 60)) : 0;
+  if (meta) meta.textContent = `· ${d.total} 条` + (d.review_on ? " · 全局默认要审" : "")
+    + (d.total ? ` · 最早一条 ${age ? age + " 分钟前" : "刚刚"}` : "");
   if (!drItems.length){
     box.innerHTML = `<div class="empty"><b>📝</b><span>没有待发的</span><i>没开审核模式的会话，她是直接说的</i></div>`;
     return;
@@ -7761,7 +7765,7 @@ async function drLoad(){
         <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
           <button class="btn primary tiny" onclick="drSend(${jsq(it.id)})">发送</button>
           <button class="btn tiny" onclick="drDrop(${jsq(it.id)})">丢弃</button>
-          <span class="kv" style="margin:0">${esc(it.label || it.chat)}${(it.images || []).length ? ` · 带 ${it.images.length} 张图` : ""}</span>
+          <span class="kv" style="margin:0">${esc(chatLabel(it.chat))}${(it.images || []).length ? ` · 带 ${it.images.length} 张图` : ""}</span>
         </div>
       </div>
     </div>`).join("");
@@ -7790,8 +7794,10 @@ async function drAll(act){
   if (!confirm(act === "send" ? `真的把 ${drItems.length} 条全发出去？` : "全部丢弃？这个不能撤销")) return;
   const d = await post("/api/drafts", {action: act === "send" ? "send_all" : "drop_all"});
   if (!d || !d.ok){ flash("失败：" + ((d && d.error) || "未知")); return; }
-  flash(act === "send" ? `发了 ${d.sent} 条${(d.failed || []).length ? `，${d.failed.length} 条失败` : ""}`
-                       : `丢了 ${d.removed} 条`);
+  flash(act === "send"
+    ? `发了 ${d.sent} 条${(d.failed || []).length ? `，${d.failed.length} 条失败` : ""}`
+      + (d.left ? `，还剩 ${d.left} 条` : "")
+    : `丢了 ${d.removed} 条`);
   drLoad();
 }
 
@@ -7845,7 +7851,7 @@ async function gdLoad(){
                                     : "· 没开";
   box.innerHTML = c.on
     ? `<div class="kv" style="margin:0">内置规则：${esc((d.builtin_rules || []).join(" / "))}
-        ${c.builtin ? "" : "（已关）"}${c.words ? ` · 自定义词 ${esc(c.words.split(/[,，、\\n]/).filter(Boolean).length)} 个` : ""}</div>`
+        ${c.builtin ? "" : "（已关）"}${c.words ? ` · 自定义词 ${esc(c.words.split(/[,，、\n]/).filter(Boolean).length)} 个` : ""}</div>`
     : `<div class="kv" style="margin:0">现在不检查。开了之后所有出站文字都过一遍（闲聊、命令回复、提醒、主动消息）。</div>`;
   const rows = d.recent || [];
   const rec = $("gdRecent");
@@ -8037,6 +8043,9 @@ function cfgRow(field, vals){
       const t = typeof o === "string" ? o : o.t;
       return `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(t)}</option>`;
     }).join("")}</select>`;
+  } else if (field.multi) {
+    ctl = `<textarea rows="3" id="cfg_${field.k}" placeholder="${esc(field.ph || "")}"
+      style="width:100%;font-family:var(--font-body);font-size:13px">${esc(val)}</textarea>`;
   } else if (field.secret) {
     ctl = `<div class="row" style="gap:6px;flex-wrap:nowrap">
       <input type="password" id="cfg_${field.k}" value="${esc(val)}" placeholder="${esc(field.ph || "")}" style="flex:1">
