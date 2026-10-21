@@ -36,7 +36,9 @@ from pathlib import Path
 MAX_ITEMS = 100          # 队列上限（条）
 MAX_TEXT = 4000          # 单条回复上限（字符）
 MAX_USER = 600           # 触发它的那句用户消息，只留开头
-MAX_IMAGES = 3           # 一条草稿最多挂几张图
+# agent 最多 3 张 + 表情包最多 3 张 = 6：审核模式下如果只存 3 张，
+# 同一条回复「开审核」和「不开审核」发出来的图数量就不一样了（静默少发）
+MAX_IMAGES = 6           # 一条草稿最多挂几张图
 # 引用用的消息 id：QQ 官方（`ROBOT1.0_...`）和飞书（`om_...`）都超过 32 字符，
 # 截短会引错消息、或者被平台当非法被动回复直接发失败
 MAX_REPLY_TO = 128
@@ -66,7 +68,10 @@ def _clean_images(raw) -> list[dict]:
             path = str(ent.get("path") or ent.get("file") or "").strip()
             cap = str(ent.get("caption") or "")[:200]
         elif isinstance(ent, (str, bytes)):
-            path, cap = str(ent).strip(), ""
+            # `str(b"/root/x")` 是 `"b'/root/x'"`，那个路径在磁盘上不存在，
+            # 重试永远失败 —— 专门接受 bytes 就说明这里要 decode
+            txt = ent.decode("utf-8", "replace") if isinstance(ent, bytes) else ent
+            path, cap = str(txt).strip(), ""
         else:
             continue
         if path:
@@ -104,11 +109,31 @@ def _clean_item(raw) -> dict | None:
             "reply_to": str(raw.get("reply_to") or "")[:MAX_REPLY_TO]}
 
 
-def _load(state_dir: Path | str) -> list[dict]:
+def _load(state_dir: Path | str, *, strict: bool = False) -> list[dict]:
+    """读队列。
+
+    `strict=True`（写路径：add / pop / restore / set_text）时**读不出来就抛**：
+    这些函数是「读 → 改 → 整份写回」（`os.replace`），把坏文件当空队列处理
+    等于下一次入队就把最多 100 条还没发出去的回复永久抹掉。
+    读路径（面板列队列）宽容一点：损坏的文件先改名留档，再当空队列。
+    """
     p = path_for(state_dir)
     try:
         raw = json.loads(p.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        if strict:
+            raise
+        return []
+    except ValueError:
+        # 手改坏 / 旧版本写了半截：留一份给人恢复，别直接覆盖
+        try:
+            p.replace(p.with_name(f"{p.name}.bad-{int(time.time())}"))
+        except OSError:
+            pass
+        if strict:
+            raise ValueError("草稿队列文件坏了（已备份），这次不改动") from None
         return []
     rows = raw.get("items") if isinstance(raw, dict) else None
     if not isinstance(rows, (list, tuple)):
@@ -160,7 +185,7 @@ def add(state_dir: Path | str, *, chat: str, character: str = "", user: str = ""
         raise ValueError("草稿是空的")
     now = time.time() if now is None else float(now)
     with _LOCK:
-        items = _load(state_dir)
+        items = _load(state_dir, strict=True)
         item = {"id": _new_id(items, now), "ts": now, "chat": chat,
                 "character": str(character or "").strip().lower(),
                 "user": str(user or "")[:MAX_USER],
@@ -182,7 +207,13 @@ def _order(item: dict) -> tuple:
     同一毫秒里入队的 10 条以上会显示成倒序 —— `_new_id` 正是为这种批量准备的。
     """
     _, _, seq = item["id"].partition("-")
-    return (item["ts"], int(seq) if seq.isdigit() else 1)
+    # `isdigit()` 对 '²'/'①' 也返回 True，但 `int()` 会抛 —— 一条被手改坏的 id
+    # 就能让整个 /api/drafts 500。用 isdecimal + 兜底。
+    try:
+        num = int(seq) if seq.isdecimal() else 1
+    except (TypeError, ValueError):
+        num = 1
+    return (item["ts"], num)
 
 
 def list_items(state_dir: Path | str, *, chat: str = "", limit: int = 50) -> list[dict]:
@@ -218,7 +249,7 @@ def pop(state_dir: Path | str, did: str) -> dict | None:
     """
     did = str(did or "").strip()
     with _LOCK:
-        items = _load(state_dir)
+        items = _load(state_dir, strict=True)
         for i, row in enumerate(items):
             if row["id"] == did:
                 items.pop(i)
@@ -241,7 +272,7 @@ def restore(state_dir: Path | str, item: dict) -> dict | None:
     if not clean:
         return None
     with _LOCK:
-        items = _load(state_dir)
+        items = _load(state_dir, strict=True)
         if any(i["id"] == clean["id"] for i in items):
             return {"item": clean, "dropped": 0}   # 已经在了，别搞出两份
         items.append(clean)
@@ -260,7 +291,7 @@ def set_text(state_dir: Path | str, did: str, text: str) -> dict | None:
     if not text:
         raise ValueError("回复不能是空的（不想发就用「丢弃」）")
     with _LOCK:
-        items = _load(state_dir)
+        items = _load(state_dir, strict=True)
         for row in items:
             if row["id"] == did:
                 row["text"] = text[:MAX_TEXT]
@@ -277,7 +308,7 @@ def drop_all(state_dir: Path | str, *, chat: str = "") -> int:
     """清空（`chat` 给了就只清那个会话）。返回删掉的条数。"""
     chat = str(chat or "").strip()
     with _LOCK:
-        items = _load(state_dir)
+        items = _load(state_dir, strict=True)
         keep = [i for i in items if chat and i["chat"] != chat]
         removed = len(items) - len(keep)
         if removed:

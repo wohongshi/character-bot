@@ -79,6 +79,15 @@ check("带说明的图连说明一起存", a2["item"]["images"] == [{"path": "/r
                                                        "caption": "看图"}],
       str(a2["item"]["images"]))
 check("奇怪类型当没图（不抛）", D.add(img_dir, chat="g", text="有字", images=5)["item"]["images"] == [])
+a3 = D.add(img_dir, chat="g", text="", images=[b"/root/c.webp"])
+check("bytes 路径被解码（不是 \"b'/root/c.webp'\"）",
+      a3["item"]["images"] == [{"path": "/root/c.webp", "caption": ""}],
+      str(a3["item"]["images"]))
+weird = img_dir / D.FILE
+weird.write_text(json.dumps({"items": [{"id": "d1-\u00b2", "chat": "g", "text": "怪 id"}]}),
+                 encoding="utf-8")
+check("被手改坏的 id 不会让整个队列读不出来", len(D.list_items(img_dir)) == 1,
+      str(len(D.list_items(img_dir))))
 bad = img_dir / D.FILE
 bad.write_text(json.dumps({"items": [
     {"id": "x1", "chat": "g", "text": "t", "images": "/root/x.webp"},
@@ -89,6 +98,18 @@ check("坏 images 不影响整份队列读出来", len(loaded) == 3, str(len(loa
 check("字符串 images 被规范化成 [{path}]",
       loaded[2]["images"] == [{"path": "/root/x.webp", "caption": ""}],
       str(loaded[2]["images"]))
+
+print("[2.8] 队列文件坏了：先留档，写路径拒绝覆盖")
+corrupt = TMP / "corrupt"
+corrupt.mkdir()
+(corrupt / D.FILE).write_text("{ 半截 json", encoding="utf-8")
+check("读路径当空队列（不炸）", D.list_items(corrupt) == [])
+check("坏文件被改名留档（还能人工恢复）",
+      any(p.name.startswith(D.FILE + ".bad") for p in corrupt.iterdir()),
+      str([p.name for p in corrupt.iterdir()]))
+(corrupt / D.FILE).write_text("{ 又坏了", encoding="utf-8")
+check("写路径遇到坏文件直接拒绝（不整份覆盖）",
+      _err(lambda: D.add(corrupt, chat="g", text="x")))
 
 print("[3] 上限与坏数据")
 small = TMP / "small"
@@ -162,6 +183,22 @@ CP.set_chat(P, "group:6", review=False)
 CP.set_chat(P, "group:6", mode="inherit")
 check("只有 review=false 的会话不会被当成默认值丢掉",
       CP.load(P)["chats"].get("group:6", {}).get("review") is False)
+
+print("[4.5] 三态不能被压缩")
+import json as _json                                    # noqa: E402
+tri = TMP / "tri"
+tri.mkdir()
+(tri / "chat_policy.json").write_text(_json.dumps({"chats": {
+    "group:1": {"mode": "inherit", "review": None},     # 手改出 null = 跟全局
+    "group:2": {"mode": "inherit", "review": "false"},  # 字符串 false
+    "group:3": {"mode": "inherit", "review": "true"}}}), encoding="utf-8")
+saved_tri = CP.load(tri)["chats"]
+check("null 不会被当成显式 false", "review" not in (saved_tri.get("group:1") or {}),
+      str(saved_tri.get("group:1")))
+check("字符串 \"false\" 解析成 False", saved_tri.get("group:2", {}).get("review") is False,
+      str(saved_tri.get("group:2")))
+check("字符串 \"true\" 解析成 True", saved_tri.get("group:3", {}).get("review") is True,
+      str(saved_tri.get("group:3")))
 
 print("[5] 运行时：回复进草稿，不发")
 from bot.characters import CharacterStore              # noqa: E402
@@ -304,8 +341,47 @@ rt.send = real_send
 check("取消后草稿还在（不是静默消失）", D.get(ST, q_c["id"]) is not None, str(D.count(ST)))
 D.drop(ST, q_c["id"])
 
+print("[6.8] 只发出一部分：只补剩下的")
+D.add(ST, chat="private:9", character=rt.active_character, text="第一句。第二句。")
+q_p = D.list_items(ST)[0]
+
+
+async def _partial(*a, **k):
+    return type("R", (), {"success": False, "sent_parts": 1,
+                          "parts": ["第一句。", "第二句。"]})()
+
+
+real_send2 = rt.send
+rt.send = _partial
+try:
+    asyncio.run(rt.send_draft(q_p["id"]))
+except Exception:
+    pass
+rt.send = real_send2
+back_p = D.get(ST, q_p["id"])
+check("草稿放回来了", back_p is not None, str(D.count(ST)))
+check("只补没发出去的那句（不重复已发的）", back_p and back_p["text"] == "第二句。",
+      str(back_p and back_p["text"]))
+D.drop(ST, q_p["id"])
+
+print("[6.9] flush 只发自己那个窗口")
+from bot.framework import FeatureContext as FC          # noqa: E402
+
+ctx_a = FC(adapter=rt.ob, text="A 的话", is_group=False, group_id="",
+           user_id="9", user_name="a", message_id="1")
+ctx_a.character = rt.active_character
+win_a = {"texts": ["A 的话"], "ctx": ctx_a, "task": None, "user_id": "9"}
+rt._coal["private:9"] = win_a
+win_b = {"texts": ["B 的话"], "ctx": ctx_a, "task": None, "user_id": "77"}
+rt._coal["private:9"] = win_b                      # 并发场景：被换成了别人的窗口
+before_n = len(sent)
+asyncio.run(rt._flush_coalesce("private:9", expect=win_a))
+check("窗口已经换人时不发（避免把别人的消息发出去）", len(sent) == before_n, str(sent[before_n:]))
+check("别人的窗口还在", rt._coal.get("private:9") is win_b)
+rt._coal.clear()
+
 print("[7] 会话级覆盖")
-CP.set_chat(ST, "private:9", review=False)
+CP.set_chat(ST, "private:9", review=False)   # 显式不审
 before = len(sent)
 asyncio.run(feed("这次直接回我"))
 check("会话设成不用审就直接发", len(sent) == before + 1, str(sent[-1:]))
@@ -341,8 +417,8 @@ check("超时在 loop 内部取消（wait_for）", "_send_draft_bounded" in SRV
 check("不再边发边重读队列", "while True:" not in SRV.split("send_all")[1][:1200])
 # wait_for 超时会让 fut.result() 抛 CancelledError（BaseException）——
 # 只接 Exception 的话整轮中断、响应也写不出去
-check("全部发送接得住取消（BaseException）",
-      "except BaseException as e:" in SRV.split("send_all")[1][:1600])
+check("全部发送接得住取消",
+      "except (Exception, asyncio.CancelledError)" in SRV.split("send_all")[1][:1600])
 check("默认关（不打扰现有行为）", '"review_on": False' in CFG)
 check("「删」会连审核三态一起清", 'review: ""' in HTML)
 check("确认框用真实总数（列表只取 60 条）", "drTotal" in HTML and "${drTotal} 条" in HTML)

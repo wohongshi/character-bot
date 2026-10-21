@@ -59,17 +59,41 @@ def hits_path(state_dir: Path | str) -> Path:
 
 # ---------- 忽略 / 已补录 名单 ----------
 
-def load_state(state_dir: Path | str) -> dict:
+def load_state(state_dir: Path | str, *, strict: bool = False) -> dict:
+    """读名单。
+
+    `strict=True`（`set_status` 的读-改-写）时，文件坏了就**拒绝写入**：
+    把损坏当空名单处理，下一次「忽略/补录」会把整份历史决定覆盖掉。
+    坏文件先改名留档，人工还能捞回来。
+    """
     p = path_for(state_dir)
+    empty = {"ignored": [], "added": []}
     try:
         raw = json.loads(p.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
-        return {"ignored": [], "added": []}
+    except FileNotFoundError:
+        return empty
+    except OSError:
+        if strict:
+            raise
+        return empty
+    except ValueError:
+        try:
+            p.replace(p.with_name(f"{p.name}.bad-{int(time.time())}"))
+        except OSError:
+            pass
+        if strict:
+            raise ValueError("缺口名单文件坏了（已备份），这次不改动") from None
+        return empty
     out = {"ignored": [], "added": []}
     if isinstance(raw, dict):
         for k in ("ignored", "added"):
+            rows = raw.get(k)
+            if isinstance(rows, str):
+                rows = [rows]          # 单个字符串不能逐字符拆开
+            if not isinstance(rows, (list, tuple)):
+                continue               # 数字/对象：当没设
             seen = set()
-            for v in (raw.get(k) or []):
+            for v in rows:
                 key = str(v or "").strip()
                 if key and key not in seen:
                     seen.add(key)
@@ -113,7 +137,7 @@ def set_status(state_dir: Path | str, kind: str, key: str, on: bool = True,
     key = _skey(cid, key)
     bare = str(key).split("\t", 1)[-1]
     with _LOCK:
-        data = load_state(state_dir)
+        data = load_state(state_dir, strict=True)   # 坏了就别覆盖
         other = "added" if kind == "ignored" else "ignored"
         # 旧版本存的是裸 key（没有角色前缀）：不论加还是撤，都一起清掉，
         # 否则升级后「撤销忽略」只会删掉带前缀的那条，裸 key 还在名单里
@@ -210,10 +234,10 @@ def scan(rows: list[dict], *, days: int = 30, limit: int = 30,
             faint += 1                                 # 勉强沾边
         else:
             miss += 1
-        if len(q) < min_len:
-            continue
         key = norm(q)
-        if not key:
+        # 按**规范化后**的长度判断：`在吗？？` 原始长度 4 能过 MIN_LEN=4，
+        # 但 key 是「在吗」（2 字），正是这里想滤掉的噪音
+        if not key or len(key) < min_len:
             continue
         cur = agg.get(key)
         if cur is None:

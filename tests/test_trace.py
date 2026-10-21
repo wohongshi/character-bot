@@ -180,8 +180,14 @@ asyncio.run(feed(ev("这个群不理我", chat="group:200")))
 last = rt.trace.rows(limit=1)[0]
 check("会话 disabled → disabled", last["stage"] == "disabled", str(last))
 
-# 静默时段
-chatpolicy.set_chat(ST, "group:300", quiet=["00:00", "23:59"])
+# 静默时段：窗口要**按当前时间**算，写死 "00:00"-"23:59" 在 23:59 那一分钟
+# 是不包含的（半开区间），测试会在一天里的某一分钟随机翻红
+import time as _time
+_now = _time.localtime()
+_min = _now.tm_hour * 60 + _now.tm_min
+Q1 = f"{(_min - 2) % 1440 // 60:02d}:{(_min - 2) % 1440 % 60:02d}"
+Q2 = f"{(_min + 2) % 1440 // 60:02d}:{(_min + 2) % 1440 % 60:02d}"
+chatpolicy.set_chat(ST, "group:300", quiet=[Q1, Q2])
 asyncio.run(feed(ev("半夜说话", chat="group:300", mentioned=True)))
 last = rt.trace.rows(limit=1)[0]
 check("静默时段 → quiet", last["stage"] == "quiet", str(last))

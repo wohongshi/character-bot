@@ -34,19 +34,24 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 
 ACTIONS = ("off", "log", "mask", "replace")
 ACTIONS_CN = {"off": "不检查", "log": "只记录", "mask": "打码后发", "replace": "整条换掉"}
 MASK = "***"
 REPLACE_DEFAULT = "（这句话不能说，换个话题好不好）"
-MAX_TEXT = 8000
 
 # 注意 `\b` 在这里是陷阱：Python 的 `\w` 包含汉字，`密钥是sk-…` 里
 # 「是」和「s」之间**没有**词边界，规则会整条漏掉。所以用「前面不是 ASCII
 # 标识符字符」的负向后顾。
 BUILTIN = (
     # 常见系统目录；路径段允许非 ASCII（`/home/张三/x.txt`），到空白或中文标点为止
-    ("本地路径", r"/(?:root|home|etc|var|opt|srv|tmp|usr|data|mnt|media)"
+    # 前面不能是 ASCII 的主机名/协议字符：`https://example.com/data/report` 里那段
+    # `/data/report` 是 URL 路径，不是本机路径（打成 `https://example.com***`
+    # 等于把一条正常链接改坏）。中文紧贴（`在/root/x`）仍然命中 —— 汉字不在
+    # 这个字符类里。
+    ("本地路径", r"(?<![A-Za-z0-9_:/.])"
+                r"/(?:root|home|etc|var|opt|srv|tmp|usr|data|mnt|media)"
                 r"(?:/[^\s/，。！？；：、\"'（）【】]+)+"),
     ("疑似密钥", r"(?<![A-Za-z0-9_-])(?:sk|pk|rk)-[A-Za-z0-9._-]{16,}"),
     ("Bearer 令牌", r"(?i)(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/-]{16,}"),

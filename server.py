@@ -6444,6 +6444,10 @@ class Handler(BaseHTTPRequestHandler):
                              or 0.4)
             except (TypeError, ValueError):
                 base = 0.4
+            # 配置是从磁盘直接读的（没走 coerce），`json.loads` 又认 `NaN`：
+            # 手改出一个 `kb_threshold: NaN` 就能让下面整条链失效
+            if not math.isfinite(base):
+                base = 0.4
             try:
                 weak = float((q.get("weak") or [""])[0] or (base + 0.02))
             except (TypeError, ValueError, OverflowError):
@@ -7943,12 +7947,14 @@ class Handler(BaseHTTPRequestHandler):
                             _send_draft_bounded(rt, it["id"]), BOT.loop)
                         fut.result(timeout=90)
                         sent += 1
-                    except BaseException as e:                  # noqa: BLE001
+                    except (Exception, asyncio.CancelledError) as e:
                         # `wait_for` 到点会 cancel 内层任务，而 `fut.result()`
-                        # 把这个取消状态原样复制过来 —— 抛的是
-                        # `concurrent.futures.CancelledError`（BaseException）。
-                        # 只接 Exception 的话整轮就断在这里，后面的草稿不再尝试，
+                        # 把这个取消状态原样复制过来 —— 抛的是 CancelledError
+                        # （BaseException 的子类，`except Exception` 接不住）。
+                        # 不接的话整轮断在这里，后面的草稿不再尝试，
                         # `do_POST` 也写不出任何 JSON（面板只看到空响应）。
+                        # 只多接 CancelledError：KeyboardInterrupt / SystemExit
+                        # 该往上走，不该被记成「草稿发送失败」。
                         failed.append(f"{it['id']}: {type(e).__name__}: {e}")
                 self._json({"ok": True, "sent": sent, "failed": failed,
                             "left": DF.count(STATE_DIR, chat=chat)})
@@ -8007,8 +8013,10 @@ class Handler(BaseHTTPRequestHandler):
             if not answer:
                 self._json({"ok": False, "error": "写一句她该怎么答"}, 400)
                 return
+            # `strict`：角色不存在时**不要**回落写进 klee 的库（串库）
             payload = {"text": f"问：{text[:300]}\n答：{answer[:1200]}",
-                       "title": text[:30], "source": "缺口补录", "character": cid}
+                       "title": text[:30], "source": "缺口补录",
+                       "character": cid, "strict": True}
             try:
                 req = urllib.request.Request(
                     KB_URL + "/add", data=json.dumps(payload).encode("utf-8"),

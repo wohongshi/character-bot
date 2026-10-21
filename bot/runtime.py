@@ -174,6 +174,14 @@ class _PreviewAdapter:
         return f"group:{group_id}" if is_group else f"private:{user_id}"
 
 
+class _PartialSend(RuntimeError):
+    """只发出了一部分：`remaining` 是还没进群的那几句。"""
+
+    def __init__(self, remaining: str):
+        super().__init__("只发出了一部分")
+        self.remaining = str(remaining or "")
+
+
 class BotRuntime(RuntimeFeatures):
     """面板自持的运行时：事件分发 + 插件 + 模型/知识库 + 适配器。"""
 
@@ -683,7 +691,7 @@ class BotRuntime(RuntimeFeatures):
         # rate_limit_per_min 对 TTS 完全不生效，也不计入 sent。
         if not self.allow_send(chat_id):
             logger.warning("限流：%s 超过 rate_limit_per_min=%s", chat_id, self.rate_limit_per_min)
-            return SimpleNamespace(success=False, error="rate_limited")
+            return SimpleNamespace(success=False, error="rate_limited", sent_parts=0)
         if not text:
             ok = False
             for vt in voice_texts[:1]:
@@ -718,7 +726,10 @@ class BotRuntime(RuntimeFeatures):
                 except Exception as e:                             # noqa: BLE001
                     self.stats["errors"] += 1
                     logger.warning("发送失败（%s）: %s", chat_id, e)
-                    return SimpleNamespace(success=False)
+                    # 带出「前 i 段已经进群了」：调用方（草稿重发）据此只补剩下的，
+                    # 否则整段重发就是群里看到她说了两遍
+                    return SimpleNamespace(success=False, error=str(e), sent_parts=i,
+                                           parts=list(parts))
                 if i < len(parts) - 1:
                     await asyncio.sleep(random.uniform(self.send_interval_min,
                                                        max(self.send_interval_min,
@@ -1640,16 +1651,29 @@ class BotRuntime(RuntimeFeatures):
             # 这条不能合并（命令/图/太长）：先把攒着的发掉，顺序不能乱
             await self._flush_coalesce(chat_id)
             return False
-        st = self._coal.get(chat_id)
-        if st is not None and st.get("user_id") != ctx.user_id:
-            # 群里两个人同时说话：不能把 A 的问题当 B 的问 —— ctx 会被后者覆盖，
-            # 引用/@ 也会指到 B。先把上一个人的发掉，再开新窗口。
-            await self._flush_coalesce(chat_id)
-            st = None
+        # 群里两个人同时说话：不能把 A 的问题当 B 的问 —— ctx 会被后者覆盖，
+        # 引用/@ 也会指到 B。先把上一个人的发掉，再开新窗口。
+        #
+        # `_flush_coalesce` 内部要 await 一次 `_chat`（模型调用，几百毫秒到几秒），
+        # 这期间**同一会话的第三条消息**会在另一个 task 里建好新窗口。回来之后
+        # 无条件写 `self._coal[chat_id]` 会把它覆盖掉 —— 那个窗口的 texts 只存在
+        # dict 里，消息直接消失。所以每轮都重新取一次，并且只认自己的。
+        st = None
+        for _ in range(3):
+            cur = self._coal.get(chat_id)
+            if cur is None:
+                st = {"texts": [], "ctx": ctx, "task": None, "user_id": ctx.user_id}
+                self._coal[chat_id] = st
+                st["task"] = asyncio.ensure_future(
+                    self._coal_flush_later(chat_id, cfg["window"]))
+                break
+            if cur.get("user_id") == ctx.user_id:
+                st = cur
+                break
+            await self._flush_coalesce(chat_id, expect=cur)
         if st is None:
-            st = {"texts": [], "ctx": ctx, "task": None, "user_id": ctx.user_id}
-            self._coal[chat_id] = st
-            st["task"] = asyncio.ensure_future(self._coal_flush_later(chat_id, cfg["window"]))
+            # 一直在换人（群很吵）：别等了，这条直接走正常流程
+            return False
         st["texts"].append(ctx.text)
         st["ctx"] = ctx                            # 用最后一条的 message_id 去引用
         self.note(chat_id, ctx.text, "coalesce", f"已攒 {len(st['texts'])} 条")
@@ -1669,17 +1693,24 @@ class BotRuntime(RuntimeFeatures):
         except Exception as e:                                     # noqa: BLE001
             logger.warning("合并后的消息发送失败（%s）：%s", chat_id, e)
 
-    async def _flush_coalesce(self, chat_id: str) -> None:
-        """把窗口里的几句合成一段，走正常的 `_chat`。"""
+    async def _flush_coalesce(self, chat_id: str, expect: dict | None = None) -> None:
+        """把窗口里的几句合成一段，走正常的 `_chat`。
+
+        `expect`：只弹**这个**窗口。并发场景下 `_coal[chat_id]` 可能已经被
+        另一个 task 换成别人的新窗口 —— 按 chat_id 盲弹会把别人的消息发出去。
+        """
+        held = self._coal.get(chat_id)
+        if expect is not None and held is not expect:
+            return
         st = self._coal.pop(chat_id, None)
         if not st:
             return
         task = st.get("task")
         try:
-            cur = asyncio.current_task()
+            me = asyncio.current_task()
         except RuntimeError:                       # 不在 loop 里（测试/坏调用）
-            cur = None
-        if task is not None and task is not cur and not task.done():
+            me = None
+        if task is not None and task is not me and not task.done():
             task.cancel()
         from . import coalesce as coal_mod
         text = coal_mod.merge_texts(st.get("texts"))
@@ -1755,7 +1786,8 @@ class BotRuntime(RuntimeFeatures):
         各发一次 —— 群里就看到她说两遍。发失败 `restore` 回去，不丢。
         """
         from . import drafts as drafts_mod
-        item = drafts_mod.pop(self.state_dir, did)
+        # 读改写整份 drafts.json，别在事件循环里做（和 _queue_draft 一致）
+        item = await asyncio.to_thread(drafts_mod.pop, self.state_dir, did)
         if not item:
             raise ValueError("这条草稿已经不在了（可能刚发过）")
         chat = item["chat"]
@@ -1775,8 +1807,13 @@ class BotRuntime(RuntimeFeatures):
             if item.get("text"):
                 res = await self.send(chat, item["text"], reply_to=reply_to, sentence_split=True)
                 if not getattr(res, "success", False):
+                    sent_n = int(getattr(res, "sent_parts", 0) or 0)
+                    parts = list(getattr(res, "parts", None) or [])
+                    if sent_n and parts:
+                        # 前几句已经发出去了：只把剩下的放回去，别整段重放
+                        raise _PartialSend("".join(parts[sent_n:]))
                     raise RuntimeError("发送失败（限流或适配器出错）")
-        except BaseException:
+        except BaseException as exc:
             # `BaseException`：`asyncio.CancelledError` 不是 `Exception`（py3.8+），
             # 而取消是真实路径 —— server 用 `wait_for` 包住这里，关服务也会取消。
             # 只 catch Exception 的话，草稿已经 pop 掉、又没放回，等于静默丢失。
@@ -1785,6 +1822,15 @@ class BotRuntime(RuntimeFeatures):
             rest["images"] = [e for e in (item.get("images") or [])
                               if str(e.get("path") if isinstance(e, dict) else e)
                               not in sent_imgs]
+            if isinstance(exc, _PartialSend):
+                # 只补没发出去的那几句（前面的气泡已经进群了）
+                rest["text"] = exc.remaining
+                logger.warning("草稿只发出了一部分，剩下的 %s 字放回队列", len(exc.remaining))
+            elif getattr(exc, "sent_parts", 0):
+                rest["text"] = ""          # 说不清发了哪几段：宁可不补，也不重复
+            # 这里是失败/取消路径（很少走到），而且**不能 await**：
+            # 任务已经被取消，后续 await 会立刻再抛 CancelledError，
+            # 草稿就放不回去了。同步写一次，几毫秒。
             back = drafts_mod.restore(self.state_dir, rest) or {}
             if back.get("dropped"):
                 # 放回时队列满了，挤掉了别的待审草稿 —— 必须说出来，

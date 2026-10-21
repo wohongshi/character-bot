@@ -70,7 +70,15 @@ def _clean(row: dict) -> dict:
     if "quiet_mention" in row:
         out["quiet_mention"] = bool(row.get("quiet_mention"))
     if "review" in row:
-        out["review"] = bool(row.get("review"))
+        # 三态：true / false / 不存在。`None`（手改成 null）必须当成「跟全局」，
+        # `bool(None)` 会变成显式 false —— 那个群从此不审，而且看不出来。
+        val = row.get("review")
+        if isinstance(val, bool):
+            out["review"] = val
+        elif isinstance(val, str) and val.strip().lower() in ("1", "true", "yes", "on"):
+            out["review"] = True
+        elif isinstance(val, str) and val.strip().lower() in ("0", "false", "no", "off"):
+            out["review"] = False
     note = str(row.get("note") or "").strip()[:40]
     if note:
         out["note"] = note

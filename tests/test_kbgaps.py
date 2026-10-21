@@ -182,6 +182,25 @@ check("忽略/已补录的不进 open 清单", all(i["key"] != KG.norm("你喜�
 check("counts 里分别计数", s2["counts"]["ignored"] == 1 and s2["counts"]["added"] == 0,
       str(s2["counts"]))
 
+print("[3.5] 名单文件的坏结构")
+bad_dir = TMP / "bad_state"
+bad_dir.mkdir()
+(bad_dir / KG.FILE).write_text('{"ignored": 5, "added": "在吗"}', encoding="utf-8")
+st_bad = KG.load_state(bad_dir)
+check("非列表的 ignored 当没设（不抛 TypeError）", st_bad["ignored"] == [], str(st_bad))
+check("字符串的 added 当成一条（不是逐字符拆）", st_bad["added"] == ["在吗"], str(st_bad))
+(bad_dir / KG.FILE).write_text("{ 半截", encoding="utf-8")
+KG.load_state(bad_dir)                    # 读一次才会触发留档
+check("坏文件改名留档", any(p.name.startswith(KG.FILE + ".bad") for p in bad_dir.iterdir()),
+      str([p.name for p in bad_dir.iterdir()]))
+(bad_dir / KG.FILE).write_text("{ 又坏", encoding="utf-8")
+check("写路径遇到坏文件拒绝覆盖（不把历史决定抹掉）",
+      _err(lambda: KG.set_status(bad_dir, "ignored", "随便")))
+
+# 长度门槛按规范化后的 key 算（"在吗？？" 原始 4 字会漏进来）
+noise = KG.scan([row("在吗？？"), row("？？？？")], days=30, now=NOW)
+check("标点撑长度的噪音被滤掉", noise["items"] == [], str(noise["items"]))
+
 print("[4] 读日志尾部 / 轮转")
 log = st / KG.HITS
 log.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in

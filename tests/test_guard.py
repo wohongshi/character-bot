@@ -54,6 +54,12 @@ check("/var 下的路径也认", G.inspect("看 /var/lib/klee/config.json")["hit
 check("中文目录名也认", G.inspect("在 /home/张三/secret.txt 里")["hit"] is True)
 check("普通斜杠不误报", G.inspect("1/2 和 a/b 这种不算路径")["hit"] is False,
       str(G.inspect("1/2 和 a/b 这种不算路径")["labels"]))
+check("URL 里的路径不算本地路径（别把链接改坏）",
+      G.inspect("https://example.com/data/report?id=1")["hit"] is False,
+      str(G.inspect("https://example.com/data/report?id=1")["labels"]))
+check("URL 打码后链接保持完整",
+      G.apply("看 https://example.com/data/report", action="mask")["text"]
+      == "看 https://example.com/data/report")
 # 能匹配空串的正则 = 每条都命中 + mask 在每个字之间插 ***
 v_empty = G.inspect("随便一句", patterns=r"\d*")
 check("空匹配正则被拒绝并报错", v_empty["hit"] is False
