@@ -865,7 +865,9 @@ class FeatureManager:
             _info = self.plugins.get(_name) or {}
             if not _info.get("error"):
                 continue
-            for _c in (_info.get("characters") or ()):
+            _chars = (self._file_chars(_path) or
+                      tuple(_info.get("characters") or ()))
+            for _c in _chars:
                 self._retry_plugins.setdefault(str(_c), set()).add(_name)
         self.loaded = True
         self.last_reload_ts = time.time()
@@ -1089,6 +1091,23 @@ class FeatureManager:
             if Path(getattr(mod, "__file__", "") or "").name == f"{name}.py":
                 sys.modules.pop(mod_name, None)
 
+    @staticmethod
+    def _file_chars(path: Path) -> tuple:
+        """从插件源码里读 CHARACTERS（不执行）。
+
+        `exec_module` 之前 `info["characters"]` 还是空的，失败后就丢了这个信息 ——
+        重试/归属都要靠它，所以单独扫一遍文件。
+        """
+        try:
+            src = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ()
+        m = re.search(r"^CHARACTERS\s*=\s*(?:\(([^)]*)\)|\[\s*([^\]]*)\])", src, re.M)
+        if not m:
+            return ()
+        names = re.findall(r"""["']([^"']+)["']""", m.group(1) or m.group(2) or "")
+        return tuple(str(x).strip().lower() for x in names if str(x).strip())
+
     # ---------- 按角色按需装载 ----------
     def _want_characters(self) -> set[str]:
         """这次装载应该**真的注册**哪些角色。
@@ -1141,17 +1160,23 @@ class FeatureManager:
             ok_cid = False
             for name, path in todo:
                 info0 = self.plugins.get(name) or {}
-                mine = cid in {str(x).strip().lower()
-                               for x in (info0.get("characters") or ())}
+                # exec 失败后 info["characters"] 会变空：以文件里的为准
+                chars0 = (self._file_chars(path) or
+                          tuple(str(x).strip().lower()
+                                for x in (info0.get("characters") or ())))
+                mine = cid in chars0
                 try:
                     self._load_one(path, self._enabled_cfg, self._settings)
                 except Exception as e:                            # noqa: BLE001
                     logger.warning("OneBot: 按需装载插件 %s 失败 — %s", name, e)
                     self._dormant[name] = path
                     self._drop_modules(name)
-                    if mine:
-                        self._retry_plugins.setdefault(cid, set()).add(name)
-                        self._retry_at[cid] = time.time() + RETRY_COOLDOWN
+                    # 失败归给「这个插件所属、且当前在用」的每个角色：
+                    # 只记 cid 的话，另一个角色的插件坏了永远没人重试
+                    for c in (chars0 or (cid,)):
+                        if str(c) in self._loaded_chars:
+                            self._retry_plugins.setdefault(str(c), set()).add(name)
+                            self._retry_at[str(c)] = time.time() + RETRY_COOLDOWN
                     continue
                 info = self.plugins.get(name) or {}
                 if info.get("error") or not info.get("registered"):
@@ -1159,9 +1184,10 @@ class FeatureManager:
                                    name, str(info.get("error"))[:80] or "未注册",
                                    int(RETRY_COOLDOWN))
                     self._dormant[name] = path
-                    if mine:
-                        self._retry_plugins.setdefault(cid, set()).add(name)
-                        self._retry_at[cid] = time.time() + RETRY_COOLDOWN
+                    for c in (chars0 or (cid,)):
+                        if str(c) in self._loaded_chars:
+                            self._retry_plugins.setdefault(str(c), set()).add(name)
+                            self._retry_at[str(c)] = time.time() + RETRY_COOLDOWN
                 else:
                     self._dormant.pop(name, None)
                     self._retry_plugins.get(cid, set()).discard(name)
@@ -1169,10 +1195,16 @@ class FeatureManager:
                         ok_cid = True
             if not self._retry_plugins.get(cid):
                 self._retry_plugins.pop(cid, None)
-            if not ok_cid and pending == set() and todo and cid in self._loaded_chars:
-                # 第一次装、且**这个角色自己的**插件一个都没成：摘掉已加载标记，
-                # 下次 ensure 会整批重来（已注册成功的那些不在这种情况里）
-                self._loaded_chars.discard(cid)
+            if not ok_cid and not pending and todo and cid in self._loaded_chars:
+                # 「这个角色一个已注册的插件都没有」才摘标记 ——
+                # 只要还有别人替它注册过（共享插件、或上一轮已成功的），就不能摘：
+                # 摘了 release_character 会早退，那些插件再也回收不了。
+                still = any(
+                    cid in (self._file_chars(self.dir / str((i.get("file") or f"{n}.py")))
+                            or tuple(i.get("characters") or ()))
+                    for n, i in list(self.plugins.items()) if i.get("registered"))
+                if not still:
+                    self._loaded_chars.discard(cid)
             return bool(todo)
 
     def release_character(self, cid: str) -> list[str]:
