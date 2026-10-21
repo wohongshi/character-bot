@@ -947,9 +947,9 @@ body[data-density="wide"] .card{padding:20px 24px}
 .ovnum.bad{color:var(--red)}
 .tag.cold{opacity:.6}
 /* 手机上一列放不下：退回自动折行，数字仍右对齐 */
-/* 桌面那套 6 列的最小宽度约 596px + 卡片/侧栏内边距 ≈ 906px：
-   在 820px 以下就用两行布局，否则 761–906px 之间会挤爆 */
-@media (max-width:820px){
+/* 桌面那套 6 列的最小宽度 534px + 5 个 gap = 584，再加内容区/卡片内边距与侧栏
+   约 900px —— 断点必须落在 900 以上，否则 821–900 这一段会挤爆 */
+@media (max-width:920px){
   /* 手机上放不下一行 6 列：名字一行，五个数字另起一行、各带小标签 */
   .ovrow{grid-template-columns:repeat(5, 1fr);row-gap:4px;padding:6px 6px 6px 2px}
   .ovrow.ovhead{display:none}

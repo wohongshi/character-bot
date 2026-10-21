@@ -134,6 +134,15 @@ SRV = (ROOT / "server.py").read_text(encoding="utf-8")
 check("路由在", '"/api/characters/overview"' in SRV)
 check("敏感名单里有", '"/api/characters/overview"' in
       SRV.split("_SENSITIVE_GET = frozenset({")[1].split("})")[0])
+# 断点必须大于「桌面 6 列的最小宽度 + 内边距 + 侧栏」，否则窄桌面会挤爆
+import re as _re
+_m = _re.search(r"\.ovrow\{display:grid;grid-template-columns:([^;]+);", HTML)
+# 只取列定义这一段（后面的 gap/padding 里的 px 不算列宽）
+_cols = [int(x) for x in _re.findall(r"(\d+)px", _m.group(1))] if _m else []
+_bp = _re.search(r"@media \(max-width:(\d+)px\)\{\s*/\* 手机上放不下", HTML)
+_min = (sum(_cols) + 10 * max(0, len(_cols) - 1) + 64 + 228) if _cols else 10 ** 9
+check("总览断点 ≥ 六列最小宽度 + 侧栏", bool(_bp) and int(_bp.group(1)) >= _min,
+      f"breakpoint={_bp.group(1) if _bp else None} min={_min}")
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(0 if FAIL == 0 else 1)
