@@ -1114,13 +1114,13 @@ class FeatureManager:
                 chars = {str(x).strip().lower() for x in (info.get("characters") or ())}
                 if chars & self._loaded_chars:
                     todo.append((name, path))
+            ok_any = False
             for name, path in todo:
                 try:
                     self._load_one(path, self._enabled_cfg, self._settings)
                 except Exception as e:                            # noqa: BLE001
                     logger.warning("OneBot: 按需装载插件 %s 失败 — %s", name, e)
                     self._dormant[name] = path
-                    self._loaded_chars.discard(cid)
                     self._retry_at[cid] = time.time() + RETRY_COOLDOWN
                     self._drop_modules(name)
                     continue
@@ -1133,10 +1133,15 @@ class FeatureManager:
                                    name, str(info.get("error"))[:80] or "未注册",
                                    int(RETRY_COOLDOWN))
                     self._dormant[name] = path
-                    self._loaded_chars.discard(cid)
                     self._retry_at[cid] = time.time() + RETRY_COOLDOWN
                 else:
                     self._dormant.pop(name, None)
+                    ok_any = True
+            if not ok_any and todo:
+                # 一个都没装成：把角色从「已加载」摘掉，下次 ensure 才会重试。
+                # 只要有装成功的就**不能摘** —— 否则它注册的命令/钩子再也回收不了
+                # （release_character 会在 `cid not in _loaded_chars` 处早退）。
+                self._loaded_chars.discard(cid)
             return bool(todo)
 
     def release_character(self, cid: str) -> list[str]:

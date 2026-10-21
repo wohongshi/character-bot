@@ -2096,13 +2096,15 @@ def _usage_summary(days: int = 7, *, today: bool = False) -> dict:
         m["completion"] += c_tok
         m["total"] += t_tok
         m["ms"] += ms
+        day = None
         try:
             day = time.strftime("%m-%d", time.localtime(float(r.get("ts") or 0)))
         except (TypeError, ValueError, OSError, OverflowError):
-            continue          # 坏时间戳的行不进逐日图（别让整份统计炸掉）
-        d = by_day.setdefault(day, {"date": day, "requests": 0, "total": 0})
-        d["requests"] += 1
-        d["total"] += t_tok
+            day = None        # 坏时间戳的行**只**不进逐日图，后面照常记账
+        if day is not None:
+            d = by_day.setdefault(day, {"date": day, "requests": 0, "total": 0})
+            d["requests"] += 1
+            d["total"] += t_tok
         # 按角色归账（旧记录没有这个字段 → 单独一组，别硬塞给当前角色）
         cid = str(r.get("character") or "")
         c = by_char.setdefault(cid, {"id": cid, "requests": 0, "total": 0, "ms": 0.0})
@@ -3852,10 +3854,10 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
     # 而那时备份 / 删旧插件 / 换主题都已经做过了 —— 一条坏包能把旧角色弄成半个新的
     if not str(payload.get("name") or "").strip():
         raise ImportError_("character.json 缺少 name")
-    backup = None
-    if _char_store().get(cid) and not replace:
+    existing = _char_store().get(cid)
+    if existing and not replace:
         raise ImportError_(f"角色 {cid} 已存在（不能覆盖；要覆盖请勾上「覆盖同名角色」）")
-    backup = cid if _char_store().get(cid) else None
+    backup = cid if existing else None
     soul = text_of("SOUL.md")
     if len(soul.strip()) < 80:
         raise ImportError_("SOUL.md 太短（至少 80 字）")
@@ -4099,11 +4101,13 @@ def _char_overview(days: int = 7) -> dict:
     mgr = getattr(getattr(BOT, "runtime", None), "mgr", None) if BOT is not None else None
     loaded: set = set()
     per: dict = {}
+    lazy_on = True
     if mgr is not None and hasattr(mgr, "loaded_characters"):
         try:
             info = mgr.loaded_characters()
             loaded = set(info.get("loaded") or [])
             per = dict(info.get("per") or {})
+            lazy_on = bool(info.get("lazy", True))
         except Exception as e:                                      # noqa: BLE001
             logger.info("角色总览：读已加载状态失败：%s", e)
     health = _kb_health()          # 只调一次：知识库挂掉时每次要等整轮超时
@@ -4189,7 +4193,8 @@ def _char_overview(days: int = 7) -> dict:
         rows.append({
             "id": cid, "name": c.get("name") or cid, "emoji": c.get("emoji") or "",
             "active": cid == active,
-            "loaded": (cid in loaded) if loaded else True,
+            # 按需装载关掉时「全部角色都在装」，没有「待命」这回事
+            "loaded": True if not lazy_on else (cid in loaded),
             "plugins": int(per.get(cid) or 0),
             "plugins_total": int(total_plugins.get(cid) or 0),
             "bound": int(bound.get(cid) or 0),

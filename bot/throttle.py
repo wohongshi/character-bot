@@ -99,10 +99,19 @@ class Window:
             dq = self._hits.setdefault(cid, deque())
             dq.append(now)
             if len(self._hits) > MAX_CHATS:
-                dead = [k for k, v in self._hits.items()
+                # 先清一小时没动静的，再按「最久没说话」逐个淘汰，直到回到上限。
+                # 只清 dead 的话，活跃会话多时一个都清不掉，每来一条消息都要
+                # 全表扫一遍（O(n) per message）。
+                dead = [k for k, v in list(self._hits.items())
                         if not v or now - v[-1] > 3600.0]
-                for k in dead[: max(0, len(dead) - MAX_CHATS // 2)]:
+                for k in dead:
                     self._hits.pop(k, None)
+                while len(self._hits) > MAX_CHATS:
+                    oldest = min(self._hits.items(),
+                                 key=lambda kv: kv[1][-1] if kv[1] else 0.0)[0]
+                    if oldest == cid:          # 别把刚记的这条踢掉
+                        break
+                    self._hits.pop(oldest, None)
 
     def reset(self, chat_id: str | None = None) -> None:
         with self._lock:

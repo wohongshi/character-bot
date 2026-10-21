@@ -99,8 +99,6 @@ def collect(rows):
             for n in range(1, MAX_WORD + 1):
                 for i in range(1, len(s) - n):
                     w = s[i:i + n]
-                    if _LEFT in w or _RIGHT in w:
-                        continue
                     cnt[w] += 1
                     if n == 1:
                         continue

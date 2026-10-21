@@ -489,7 +489,7 @@ class BotRuntime(RuntimeFeatures):
     def unpin_character(self, cid: str) -> None:
         cid = str(cid or "").strip().lower()
         pins = set(getattr(self, "_pinned_chars", set()))
-        if cid and pins - {cid} != pins:
+        if cid and cid in pins:
             self._pinned_chars = pins - {cid}
 
     def _event_chat_id(self, ev: dict) -> str:
@@ -1814,10 +1814,10 @@ class BotRuntime(RuntimeFeatures):
                 except Exception as e:                             # noqa: BLE001
                     logger.warning("适配器 %s 重配置失败：%s", ad.platform, e)
         self.setup_extras(cfg, preserve_buckets=True)
-        # 两个键变了 → 真重载插件。**放线程里**：这段跑在事件循环线程上
-        # （`loop.call_soon_threadsafe`），load() 要 exec/注册上百个插件、还要
-        # 起外部进程，直接在循环里做会把心跳和所有群的消息一起卡几秒。
-        if _old is not None and _old != _new:
+        # 开关变化才需要重装（开↔关 = 角色插件装/不装）；**只改上限**不用重装 ——
+        # `load()` 会 exec 全部插件、关掉再重启外部插件进程，把这些插件的
+        # 模块级状态（定时器、缓存、连接）全重置，代价和副作用都不该为一个数字付。
+        if _old is not None and _new is not None and _old != _new and _old[0] != _new[0]:
             def _reload_lazy() -> None:
                 try:
                     self.mgr.load()
@@ -1828,6 +1828,12 @@ class BotRuntime(RuntimeFeatures):
                                    "去面板点一次「重载」或重启）：%s", e)
 
             threading.Thread(target=_reload_lazy, name="lazy-reload", daemon=True).start()
+        elif _old is not None and _new is not None and _old[1] != _new[1]:
+            try:
+                self.mgr.max_loaded_characters = max(1, int(_new[1]))
+                self._sync_loaded()
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning("更新按需装载上限失败：%s", e)
 
     # ---------- 状态 ----------
 
