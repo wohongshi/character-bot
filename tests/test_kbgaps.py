@@ -189,6 +189,11 @@ log.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in
 got = KG.read_rows(log)
 check("坏行跳过", len(got) == 2, str(got))
 check("不存在的文件返回空", KG.read_rows(st / "nope.jsonl") == [])
+# 默认读取窗口必须 ≥ 保留上限，否则 6–12MB（还没轮转）只被看到后一半
+import inspect
+check("read_rows 默认窗口 = ROTATE_BYTES",
+      inspect.signature(KG.read_rows).parameters["max_bytes"].default == KG.ROTATE_BYTES,
+      str(inspect.signature(KG.read_rows).parameters["max_bytes"].default))
 
 big = st / "big.jsonl"
 big.write_text("\n".join(json.dumps({"ts": i, "query": f"q{i}"}) for i in range(5000)) + "\n",

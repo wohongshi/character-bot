@@ -3307,6 +3307,16 @@ def _run_job_body(job: dict, cid: str) -> None:
         logger.error("写 chat.jsonl 失败（worker 继续跑）：%s", e)
 
 
+async def _send_draft_bounded(rt, did: str, timeout: float = 60):
+    """在 loop 内部给 `send_draft` 套超时。
+
+    `fut.result(timeout=…)` 到点只是**这边不等了**，协程还在跑 ——
+    面板显示失败、消息却可能已经发出去，而「全部发送」会接着发下一条。
+    必须让取消发生在 loop 里（`asyncio.wait_for` 会真正 cancel）。
+    """
+    return await asyncio.wait_for(rt.send_draft(did), timeout=timeout)
+
+
 def _chat_worker(name: str = "chat-worker") -> None:
     while True:
         job = _chat_q.get()
@@ -7913,24 +7923,21 @@ class Handler(BaseHTTPRequestHandler):
                 if rt is None or BOT.loop is None:
                     self._json({"ok": False, "error": "bot 没在跑"}, 503)
                     return
-                sent, failed, tried = 0, [], set()
-                # 一轮只取 100 条（队列上限），失败的会被 restore 回队列 ——
-                # 所以按 id 记账，发过的不再重试，否则这里会死循环
-                while True:
-                    batch = [i for i in DF.list_items(STATE_DIR, chat=chat,
-                                                     limit=DF.MAX_ITEMS)
-                             if i["id"] not in tried]
-                    if not batch:
-                        break
-                    for it in batch:
-                        tried.add(it["id"])
-                        try:
-                            fut = asyncio.run_coroutine_threadsafe(
-                                rt.send_draft(it["id"]), BOT.loop)
-                            fut.result(timeout=60)
-                            sent += 1
-                        except Exception as e:                     # noqa: BLE001
-                            failed.append(f"{it['id']}: {type(e).__name__}: {e}")
+                # 先把「点这一下时已经在队列里的」快照下来：边发边重读会把
+                # 发消息期间别人刚进来的新草稿也发掉（审核模式就白开了），
+                # 而且群一直有消息时这个循环永远不结束。
+                batch = DF.list_items(STATE_DIR, chat=chat, limit=DF.MAX_ITEMS)
+                # 队列是时间倒序（新的在前）：按时间正序发，别把对话倒着播
+                batch.sort(key=DF._order)
+                sent, failed = 0, []
+                for it in batch:
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            _send_draft_bounded(rt, it["id"]), BOT.loop)
+                        fut.result(timeout=90)
+                        sent += 1
+                    except Exception as e:                     # noqa: BLE001
+                        failed.append(f"{it['id']}: {type(e).__name__}: {e}")
                 self._json({"ok": True, "sent": sent, "failed": failed,
                             "left": DF.count(STATE_DIR, chat=chat)})
                 return
@@ -7939,8 +7946,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "bot 没在跑"}, 503)
                     return
                 try:
-                    fut = asyncio.run_coroutine_threadsafe(rt.send_draft(did), BOT.loop)
-                    res = fut.result(timeout=60)
+                    fut = asyncio.run_coroutine_threadsafe(_send_draft_bounded(rt, did),
+                                                          BOT.loop)
+                    res = fut.result(timeout=90)
                 except ValueError as e:
                     self._json({"ok": False, "error": str(e)}, 404)
                     return

@@ -142,6 +142,16 @@ def add(state_dir: Path | str, *, chat: str, character: str = "", user: str = ""
         return {"item": item, "count": len(items), "dropped": dropped}
 
 
+def _order(item: dict) -> tuple:
+    """排序键：时间 + 同一毫秒内的**数字**序号。
+
+    按 id 字符串排的话 `…-10` 会排在 `…-2` 前面（`"1" < "2"`），
+    同一毫秒里入队的 10 条以上会显示成倒序 —— `_new_id` 正是为这种批量准备的。
+    """
+    base, _, seq = item["id"].partition("-")
+    return (item["ts"], int(seq) if seq.isdigit() else 1)
+
+
 def list_items(state_dir: Path | str, *, chat: str = "", limit: int = 50) -> list[dict]:
     """时间倒序；`chat` 给了就只看那个会话。"""
     chat = str(chat or "").strip()
@@ -149,7 +159,7 @@ def list_items(state_dir: Path | str, *, chat: str = "", limit: int = 50) -> lis
     items = _load(state_dir)
     if chat:
         items = [i for i in items if i["chat"] == chat]
-    items.sort(key=lambda i: (i["ts"], i["id"]), reverse=True)
+    items.sort(key=_order, reverse=True)
     return items[:n]
 
 
@@ -185,19 +195,26 @@ def pop(state_dir: Path | str, did: str) -> dict | None:
 
 
 def restore(state_dir: Path | str, item: dict) -> dict | None:
-    """发送失败把草稿放回去（放回队尾，时间戳不变）。"""
+    """发送失败把草稿放回去（放回队尾，时间戳不变）。
+
+    返回 `{item, dropped}`：`dropped` 是因为队列满被挤掉的**别的**草稿条数。
+    和 `add()` 一样必须报出来 —— 发一条失败的消息，代价不能是另一条待审的
+    草稿悄悄消失。
+    """
     clean = _clean_item(item)
     if not clean:
         return None
     with _LOCK:
         items = _load(state_dir)
         if any(i["id"] == clean["id"] for i in items):
-            return clean                       # 已经在了，别搞出两份
+            return {"item": clean, "dropped": 0}   # 已经在了，别搞出两份
         items.append(clean)
+        dropped = 0
         while len(items) > MAX_ITEMS:
             items.pop(0)
+            dropped += 1
         _save(state_dir, items)
-        return clean
+        return {"item": clean, "dropped": dropped}
 
 
 def set_text(state_dir: Path | str, did: str, text: str) -> dict | None:

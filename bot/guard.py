@@ -47,7 +47,11 @@ BUILTIN = (
 
 
 def split_words(raw: str) -> list[str]:
-    """逗号 / 换行 / 顿号 / 空格 都当分隔符；去空白、保序去重。"""
+    """逗号 / 顿号 / 换行 都当分隔符；去空白、保序去重。
+
+    **不按空格切**：词里可能本来就有空格（`fuck you` 这种英文短语），
+    切开就变成两个词，命中范围完全不同。面板的提示也是这么写的。
+    """
     parts = re.split(r"[,，、\n\r]+", str(raw or ""))
     out, seen = [], set()
     for p in parts:

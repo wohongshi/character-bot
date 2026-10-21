@@ -54,6 +54,10 @@ v = G.inspect("退群、拉黑、封号都别说了", words="退群，拉黑、�
 check("三个词都命中", sorted(v["labels"]) == ["词:封号", "词:拉黑", "词:退群"], str(v["labels"]))
 check("大小写不敏感", G.inspect("Say BADWORD", words="badword")["hit"] is True)
 check("换行分隔也行", G.inspect("甲和乙", words="甲\n乙")["labels"] == ["词:甲", "词:乙"])
+check("不按空格切（英文短语要保持完整）",
+      G.split_words("fuck you,笨蛋") == ["fuck you", "笨蛋"],
+      str(G.split_words("fuck you,笨蛋")))
+check("含空格的短语能整体命中", G.inspect("say fuck you please", words="fuck you")["hit"] is True)
 check("词按字面匹配（不会被当正则）", G.inspect("1+1=2", words="1+1")["hit"] is True)
 check("钉住的正则能命中", G.inspect("我的电话 13800138000", patterns=r"1[3-9]\d{9}")["hit"] is True)
 err = G.inspect("x", patterns="([坏")
@@ -214,7 +218,7 @@ check("log 动作的日志也不落明文",
 # 规则写错：即使没命中也要报一次（否则用户以为拦住了）
 rt.config.update({"guard_action": "mask", "guard_words": "", "guard_patterns": "([坏"})
 rt._guard_err_key = ""
-out = rt._guard_text("private:9", "一句完全正常的话")
+out = asyncio.run(rt._guard_text("private:9", "一句完全正常的话"))
 check("写错的正则不会改内容", out == "一句完全正常的话")
 check("写错的正则仍会记下错误", "正则" in str(getattr(rt, "_guard_err_key", "")),
       str(getattr(rt, "_guard_err_key", "")))

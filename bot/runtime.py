@@ -673,7 +673,7 @@ class BotRuntime(RuntimeFeatures):
                    sentence_split: bool | None = None, **kwargs) -> SimpleNamespace:
         text = str(content or "").strip()
         if text:
-            text = self._guard_text(chat_id, text)
+            text = await self._guard_text(chat_id, text)
         voice_texts = []
         if self.tts_enabled and text:
             text, voice_texts = self.extract_voice_tags(text)
@@ -732,7 +732,7 @@ class BotRuntime(RuntimeFeatures):
         # 说明文字是模型写的，和正文一样是「出站文字」—— 只拦 send() 的话，
         # 把路径写进图片说明就绕过去了
         if caption:
-            caption = self._guard_text(chat_id, str(caption))
+            caption = await self._guard_text(chat_id, str(caption))
         is_group = str(chat_id).startswith("group:")
         anchor_mid, anchor_uid = self._last_inbound.get(chat_id, ("", ""))
         # 和 send() 一套规则：显式给了 reply_to 就引用那条，否则才用「最后一条进来
@@ -800,16 +800,9 @@ class BotRuntime(RuntimeFeatures):
                                   "dense": float(c.get("dense") or 0)} for c in chunks[:5]],
                     }
                     from . import kbgaps
+                    # 轮转交给 append_row 自己（它按 ROTATE_EVERY 计数，
+                    # 这里再挂一个计数器就是两套轮转）
                     kbgaps.append_row(self.state_dir / kbgaps.HITS, row)
-                    # 每 200 次检查一次大小：每条都 stat 是白给，从不管又会无限长
-                    n = int(getattr(self, "_kb_log_n", 0)) + 1
-                    self._kb_log_n = n
-                    if not n % 200:
-                        from . import kbgaps
-                        try:
-                            kbgaps.maybe_rotate(self.state_dir / kbgaps.HITS)
-                        except Exception as e2:                    # noqa: BLE001
-                            logger.debug("KB 命中日志轮转失败: %s", e2)
                 except OSError as e:                              # noqa: BLE001
                     logger.debug("KB 命中日志写入失败: %s", e)
             return ctx_text
@@ -1569,8 +1562,12 @@ class BotRuntime(RuntimeFeatures):
                 "builtin_rules": [b[0] for b in guard_mod.BUILTIN],
                 "hint": "所有出站文字都过这里（闲聊、命令回复、提醒、主动消息）"}
 
-    def _guard_text(self, chat_id: str, text: str) -> str:
-        """出站内容闸：返回该发的文本；没命中就原样返回（零成本路径）。"""
+    async def _guard_text(self, chat_id: str, text: str) -> str:
+        """出站内容闸：返回该发的文本；没命中就原样返回（零成本路径）。
+
+        判定是纯内存计算（同步），**落盘放线程**：命中很频繁时（一个群的
+        每条回复都可能带路径）在事件循环里 open/write 会卡心跳和别的群。
+        """
         if not text or not bool(self.config.get("guard_on")):
             return text
         try:
@@ -1598,32 +1595,47 @@ class BotRuntime(RuntimeFeatures):
             return text
         self.stats["guard_hits"] = int(self.stats.get("guard_hits") or 0) + 1
         try:
-            # 落盘的原文先打码：内置规则要拦的正是密钥/路径，把它原样写进
-            # 日志再在面板回显，等于把闸自己拆了（日志会被截图、会被同步）
-            safe = guard_mod.apply(text, action="mask",
-                                   words=str(self.config.get("guard_words") or ""),
-                                   patterns=str(self.config.get("guard_patterns") or ""),
-                                   builtin=bool(self.config.get("guard_builtin", True))).get("text")
-            # verdict 里也要换成打码版：`log` 动作下 apply() 不改文本，
-            # v["text"] 就是原文 —— log_row 会把它写进 after，等于又漏一次
-            safe_v = dict(v)
-            safe_v["text"] = str(safe or "")
-            with (self.state_dir / "guard_log.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(guard_mod.log_row(chat_id, safe_v, str(safe or "")),
-                                   ensure_ascii=False) + "\n")
-            n = int(getattr(self, "_guard_log_n", 0)) + 1
-            self._guard_log_n = n
-            if not n % 200:                        # 别每条都 stat；也别无限长
-                gp = self.state_dir / "guard_log.jsonl"
-                if gp.stat().st_size > 2 * 1024 * 1024:
-                    tail = [ln for ln in gp.read_text(encoding="utf-8", errors="replace")
-                            .split("\n") if ln.strip()][-1000:]
-                    gp.write_text("\n".join(tail) + "\n", encoding="utf-8")
-        except OSError as e:                       # noqa: BLE001
+            await asyncio.to_thread(self._guard_log, chat_id, v, text)
+        except Exception as e:                                     # noqa: BLE001
             logger.debug("内容闸日志写入失败: %s", e)
         logger.info("出站内容闸命中 %s（动作 %s）", v.get("labels"), v.get("action"))
         # log 动作只记录，不改内容（先观察，确认没有误报再加严）
         return str(v.get("text") if v.get("action") in ("mask", "replace") else text)
+
+    def _guard_log(self, chat_id: str, verdict: dict, text: str) -> None:
+        """落盘一条命中（同步；调用方用 `to_thread` 包起来）。
+
+        写进日志的原文先打码：内置规则要拦的正是密钥/路径，把它原样写进日志
+        再在面板回显，等于把闸自己拆了（日志会被截图、会被同步）。
+        `verdict` 里的 `text` 也要换成打码版 —— `log` 动作下 apply() 不改文本，
+        原文会从 `after` 漏出去。
+        """
+        from . import guard as guard_mod
+        safe = guard_mod.apply(text, action="mask",
+                               words=str(self.config.get("guard_words") or ""),
+                               patterns=str(self.config.get("guard_patterns") or ""),
+                               builtin=bool(self.config.get("guard_builtin", True))).get("text")
+        safe_v = dict(verdict)
+        safe_v["text"] = str(safe or "")
+        gp = self.state_dir / "guard_log.jsonl"
+        try:
+            with gp.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(guard_mod.log_row(chat_id, safe_v, str(safe or "")),
+                                   ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.debug("内容闸日志写入失败: %s", e)
+            return
+        n = int(getattr(self, "_guard_log_n", 0)) + 1
+        self._guard_log_n = n
+        if n % 200:                                # 别每条都 stat；也别无限长
+            return
+        try:
+            if gp.stat().st_size > 2 * 1024 * 1024:
+                tail = [ln for ln in gp.read_text(encoding="utf-8", errors="replace")
+                        .split("\n") if ln.strip()][-1000:]
+                gp.write_text("\n".join(tail) + "\n", encoding="utf-8")
+        except OSError as e:
+            logger.debug("内容闸日志轮转失败: %s", e)
 
     # ---------- 连发合并 ----------
     def coalesce_cfg(self) -> dict:
@@ -1776,7 +1788,11 @@ class BotRuntime(RuntimeFeatures):
             # 只放回**没发出去**的部分：图已经进群了，重试再发一遍就是刷屏
             rest = dict(item)
             rest["images"] = [p for p in (item.get("images") or []) if p not in sent_imgs]
-            drafts_mod.restore(self.state_dir, rest)
+            back = drafts_mod.restore(self.state_dir, rest) or {}
+            if back.get("dropped"):
+                # 放回时队列满了，挤掉了别的待审草稿 —— 必须说出来，
+                # 不然那条就静默消失了
+                logger.warning("草稿放回时队列已满，挤掉 %s 条最旧的", back["dropped"])
             raise
         self._log_msg(chat, "assistant", item.get("text") or "")
         try:

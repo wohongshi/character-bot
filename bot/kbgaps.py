@@ -128,8 +128,13 @@ def set_status(state_dir: Path | str, kind: str, key: str, on: bool = True,
 
 # ---------- 读命中日志 ----------
 
-def read_rows(path: Path, *, max_bytes: int = 6 * 1024 * 1024) -> list[dict]:
+def read_rows(path: Path, *, max_bytes: int = ROTATE_BYTES) -> list[dict]:
     """只读文件尾部（命中日志会很长，整份读进来没必要）。
+
+    默认窗口就是保留上限（`ROTATE_BYTES`）：读得比留得少的话，一份 6–12MB
+    （还没轮到轮转）的日志只被看到后一半，「缺口清单」的次数和时间就被
+    悄悄算少了，而且没有任何地方提示被截断过。
+
 
     按 `\\n` 手工切：`str.splitlines()` 还会在 `\\x85` / `\\u2028` 处断行，
     一条消息被劈成两半就再也解析不出来（中文里这些字符是能出现的）。

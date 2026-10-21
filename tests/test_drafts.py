@@ -96,6 +96,30 @@ c = D.add(ms, chat="g", text="三", now=100)
 check("同一毫秒入队 id 不撞", len({a["item"]["id"], b["item"]["id"], c["item"]["id"]}) == 3,
       str([a["item"]["id"], b["item"]["id"], c["item"]["id"]]))
 
+# 同一毫秒批量入队：显示顺序要按数字后缀（`-10` 应该比 `-2` 新）
+batch_dir = TMP / "batch"
+batch_dir.mkdir()
+for i in range(12):
+    D.add(batch_dir, chat="g", text=f"第{i}条", now=500)
+ordered = [i["text"] for i in D.list_items(batch_dir, limit=20)]
+check("同一毫秒 12 条按入队顺序倒序（不是字符串序）",
+      ordered == [f"第{i}条" for i in range(11, -1, -1)], str(ordered[:4]))
+
+# restore 挤掉别人时必须报告（发一条失败的消息不该让另一条待审的静默消失）
+small2 = TMP / "restore_full"
+small2.mkdir()
+victim = D.add(small2, chat="g", text="最旧的一条")
+keep = D.add(small2, chat="g", text="留着")
+for i in range(D.MAX_ITEMS - 2):
+    D.add(small2, chat="g", text=f"填{i}", now=2000 + i)
+back = D.restore(small2, {**victim["item"], "id": "d-restored"})
+check("restore 报告挤掉几条", (back or {}).get("dropped") == 1, str(back))
+check("被挤掉的确实是最旧的那条", D.get(small2, victim["item"]["id"]) is None)
+check("放回的那条在队列里", D.get(small2, "d-restored") is not None)
+again = D.restore(small2, {**victim["item"], "id": "d-restored"})
+check("已经在队列里就不重复放", (again or {}).get("dropped") == 0
+      and D.count(small2) == D.MAX_ITEMS, str(D.count(small2)))
+
 print("[4] 会话策略里的三态 review")
 P = TMP / "pol"
 P.mkdir()
@@ -248,6 +272,12 @@ check("服务端有两个方向的路由", SRV.count('u.path == "/api/drafts"') 
       str(SRV.count('u.path == "/api/drafts"')))
 check("敏感 GET 白名单里有", '"/api/drafts",' in SRV)
 check("默认配置有 review_on", '"review_on"' in CFG)
+# 「全部发送」：先快照、按时间正序、超时在 loop 里取消
+check("全部发送先快照 id 再发", "DF.list_items(STATE_DIR, chat=chat, limit=DF.MAX_ITEMS)" in SRV)
+check("全部发送按时间正序", "batch.sort(key=DF._order)" in SRV)
+check("超时在 loop 内部取消（wait_for）", "_send_draft_bounded" in SRV
+      and "asyncio.wait_for(rt.send_draft(did)" in SRV)
+check("不再边发边重读队列", "while True:" not in SRV.split("send_all")[1][:1200])
 check("默认关（不打扰现有行为）", '"review_on": False' in CFG)
 check("「删」会连审核三态一起清", 'review: ""' in HTML)
 check("确认框用真实总数（列表只取 60 条）", "drTotal" in HTML and "${drTotal} 条" in HTML)
