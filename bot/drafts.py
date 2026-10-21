@@ -12,7 +12,7 @@
 
     {"items": [{"id": "d1792550855000", "ts": 1792550855.0, "chat": "group:123",
                 "character": "atri", "user": "原话", "text": "她的回复",
-                "images": ["/root/…/sticker.webp"]}]}
+                "images": [{"path": "/root/…/sticker.webp", "caption": "图说"}]}]}
 
 约定
 ----
@@ -49,6 +49,31 @@ def path_for(state_dir: Path | str) -> Path:
     return Path(state_dir) / FILE
 
 
+def _clean_images(raw) -> list[dict]:
+    """把 images 收敛成 `[{"path","caption"}]`。
+
+    这个文件是磁盘上的 JSON，可能被手改过、被别的脚本写过 —— 所以这里不能假设
+    结构：字符串会被逐字符拆成 `["/", "r", "o"]`（`send_draft` 会照着发图），
+    `5` 会直接抛 `TypeError`，而这条路是所有读接口的入口。
+    """
+    out: list[dict] = []
+    if isinstance(raw, (str, bytes, dict)):
+        raw = [raw]                       # 「一个」写成「一个列表」的常见手误
+    if not isinstance(raw, (list, tuple)):
+        return out
+    for ent in raw[:MAX_IMAGES]:
+        if isinstance(ent, dict):
+            path = str(ent.get("path") or ent.get("file") or "").strip()
+            cap = str(ent.get("caption") or "")[:200]
+        elif isinstance(ent, (str, bytes)):
+            path, cap = str(ent).strip(), ""
+        else:
+            continue
+        if path:
+            out.append({"path": path, "caption": cap})
+    return out
+
+
 def _clean_item(raw) -> dict | None:
     """一条草稿的规范化；坏行返回 None（读的时候直接扔掉，不让它继续传播）。"""
     if not isinstance(raw, dict):
@@ -56,7 +81,10 @@ def _clean_item(raw) -> dict | None:
     did = str(raw.get("id") or "").strip()
     chat = str(raw.get("chat") or "").strip()
     text = str(raw.get("text") or "").strip()
-    images = [str(p).strip() for p in (raw.get("images") or []) if str(p or "").strip()]
+    try:
+        images = _clean_images(raw.get("images"))
+    except Exception:                                          # noqa: BLE001
+        images = []                        # 坏结构当没图，别让整条记录废掉
     if not did or not chat:
         return None
     if not text and not images:
@@ -83,9 +111,14 @@ def _load(state_dir: Path | str) -> list[dict]:
     except (OSError, ValueError):
         return []
     rows = raw.get("items") if isinstance(raw, dict) else None
+    if not isinstance(rows, (list, tuple)):
+        return []
     out, seen = [], set()
-    for row in (rows or []):
-        item = _clean_item(row)
+    for row in rows:
+        try:
+            item = _clean_item(row)
+        except Exception:                                      # noqa: BLE001
+            continue                       # 单条坏行不能带走整份队列
         if item and item["id"] not in seen:
             seen.add(item["id"])
             out.append(item)
@@ -120,7 +153,7 @@ def add(state_dir: Path | str, *, chat: str, character: str = "", user: str = ""
     """入队一条。返回 `{item, count, dropped}`（`dropped` = 因为超上限被挤掉的条数）。"""
     chat = str(chat or "").strip()
     text = str(text or "").strip()
-    imgs = [str(p).strip() for p in (images or []) if str(p or "").strip()][:MAX_IMAGES]
+    imgs = _clean_images(images)
     if not chat:
         raise ValueError("缺会话 ID")
     if not text and not imgs:
@@ -148,7 +181,7 @@ def _order(item: dict) -> tuple:
     按 id 字符串排的话 `…-10` 会排在 `…-2` 前面（`"1" < "2"`），
     同一毫秒里入队的 10 条以上会显示成倒序 —— `_new_id` 正是为这种批量准备的。
     """
-    base, _, seq = item["id"].partition("-")
+    _, _, seq = item["id"].partition("-")
     return (item["ts"], int(seq) if seq.isdigit() else 1)
 
 
@@ -201,7 +234,10 @@ def restore(state_dir: Path | str, item: dict) -> dict | None:
     和 `add()` 一样必须报出来 —— 发一条失败的消息，代价不能是另一条待审的
     草稿悄悄消失。
     """
-    clean = _clean_item(item)
+    try:
+        clean = _clean_item(item)
+    except Exception:                                          # noqa: BLE001
+        return None
     if not clean:
         return None
     with _LOCK:

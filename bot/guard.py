@@ -29,7 +29,10 @@
 from __future__ import annotations
 
 import functools
+import json
+import os
 import re
+import threading
 import time
 
 ACTIONS = ("off", "log", "mask", "replace")
@@ -38,10 +41,15 @@ MASK = "***"
 REPLACE_DEFAULT = "（这句话不能说，换个话题好不好）"
 MAX_TEXT = 8000
 
+# 注意 `\b` 在这里是陷阱：Python 的 `\w` 包含汉字，`密钥是sk-…` 里
+# 「是」和「s」之间**没有**词边界，规则会整条漏掉。所以用「前面不是 ASCII
+# 标识符字符」的负向后顾。
 BUILTIN = (
-    ("本地路径", r"(?:/root|/home|/etc)/[A-Za-z0-9_./-]{3,}"),
-    ("疑似密钥", r"\bsk-[A-Za-z0-9._-]{16,}"),
-    ("Bearer 令牌", r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{16,}"),
+    # 常见系统目录；路径段允许非 ASCII（`/home/张三/x.txt`），到空白或中文标点为止
+    ("本地路径", r"/(?:root|home|etc|var|opt|srv|tmp|usr|data|mnt|media)"
+                r"(?:/[^\s/，。！？；：、\"'（）【】]+)+"),
+    ("疑似密钥", r"(?<![A-Za-z0-9_-])(?:sk|pk|rk)-[A-Za-z0-9._-]{16,}"),
+    ("Bearer 令牌", r"(?i)(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/-]{16,}"),
     ("CQ 码", r"\[CQ:[^\]]{1,80}\]"),
 )
 
@@ -83,7 +91,12 @@ def compile_rules(words: str = "", patterns: str = "", *,
         if not pat:
             continue
         try:
-            rules.append((f"正则#{i}", re.compile(pat)))
+            rx = re.compile(pat)
+            # 能匹配空串的正则等于「每条消息都命中」：`mask` 会在每个字之间
+            # 插一个 ***，`log` 会让统计全是假的。必须在编译期拒掉。
+            if rx.search(""):
+                raise re.error("这个正则能匹配空字符串（会在每个字之间打码）")
+            rules.append((f"正则#{i}", rx))
         except re.error as e:
             errors.append(f"第 {i} 行正则：{e}")
     return rules, errors
@@ -101,7 +114,9 @@ def _compile_cached(words: str, patterns: str, builtin: bool):
 def inspect(text: str, *, words: str = "", patterns: str = "",
             builtin: bool = True) -> dict:
     """只查不改：命中了哪些规则（面板的「试一下」用这个）。"""
-    body = str(text or "")[:MAX_TEXT]
+    # 不截断：`apply()`（真正生效的那条路）也不截断，两边看的必须是同一段文字，
+    # 否则贴一段长日志进来会显示「不会命中」，实际发出去却被打码
+    body = str(text or "")
     rules, errors = _compile_cached(words, patterns, bool(builtin))
     labels = [label for label, rx in rules if rx.search(body)]
     return {"ok": True, "hit": bool(labels), "labels": labels, "errors": errors,
@@ -144,3 +159,49 @@ def log_row(chat: str, verdict: dict, before: str, *, now: float | None = None) 
             "labels": list(verdict.get("labels") or [])[:6],
             "before": str(before or "")[:200],
             "after": str(verdict.get("text") or "")[:200]}
+
+
+# ---------- 命中日志（并发安全） ----------
+LOG_FILE = "guard_log.jsonl"
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_KEEP_LINES = 1000
+
+_log_lock = threading.Lock()
+_log_n = 0
+
+
+def append_log(path: Path, row: dict, *, max_bytes: int = LOG_MAX_BYTES,
+               keep: int = LOG_KEEP_LINES, every: int = 200) -> bool:
+    """追加一条命中记录；顺带按大小轮转。
+
+    `Runtime._guard_log` 是 `asyncio.to_thread` 并发跑的（每个群每条命中一个
+    线程），所以计数器和「读全文 → 覆盖」都必须在一把锁里 —— 否则
+    A 线程正在写轮转后的内容，B 线程刚 append 的行会跟着旧文件一起消失
+    （`kbgaps.append_row` 踩过同一个坑）。轮转用 `os.replace`，不留半截文件。
+    """
+    global _log_n
+    try:
+        body = json.dumps(row, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError):
+        return False
+    with _log_lock:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(body)
+        except OSError:
+            return False
+        _log_n += 1
+        if _log_n % max(1, int(every)):
+            return True
+        try:
+            if path.stat().st_size <= max_bytes:
+                return True
+            lines = [ln for ln in path.read_text(encoding="utf-8", errors="replace")
+                     .split("\n") if ln.strip()][-keep:]
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            return False
+    return True

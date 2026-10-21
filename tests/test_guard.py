@@ -46,6 +46,27 @@ check("内置规则可以单关", G.inspect("看看 /root/x", builtin=False)["hi
 check("相对路径不是泄露", G.inspect("工作区里的 notes.json 我看过了")["hit"] is False,
       str(G.inspect("工作区里的 notes.json 我看过了")["labels"]))
 
+print("[1.5] 边界：中文紧贴、常见目录、空匹配")
+check("中文紧贴的密钥也认（`\\b` 在 CJK 里靠不住）",
+      G.inspect("密钥是sk-abcdefghijklmnop1234")["labels"] == ["疑似密钥"],
+      str(G.inspect("密钥是sk-abcdefghijklmnop1234")["labels"]))
+check("/var 下的路径也认", G.inspect("看 /var/lib/klee/config.json")["hit"] is True)
+check("中文目录名也认", G.inspect("在 /home/张三/secret.txt 里")["hit"] is True)
+check("普通斜杠不误报", G.inspect("1/2 和 a/b 这种不算路径")["hit"] is False,
+      str(G.inspect("1/2 和 a/b 这种不算路径")["labels"]))
+# 能匹配空串的正则 = 每条都命中 + mask 在每个字之间插 ***
+v_empty = G.inspect("随便一句", patterns=r"\d*")
+check("空匹配正则被拒绝并报错", v_empty["hit"] is False
+      and any("空字符串" in e for e in v_empty["errors"]), str(v_empty))
+check("空匹配正则不会被打码成星号海",
+      G.apply("abc", action="mask", patterns=r"a*")["text"] == "abc",
+      G.apply("abc", action="mask", patterns=r"a*")["text"])
+# 预览与生效必须看同一段文字
+long_text = "前缀" * 3000 + " sk-abcdefghijklmnop1234"
+check("预览和生效对长文本结论一致",
+      G.inspect(long_text)["hit"] is G.apply(long_text, action="log")["hit"],
+      f'{G.inspect(long_text)["hit"]} vs {G.apply(long_text, action="log")["hit"]}')
+
 print("[2] 自定义词与正则")
 check("逗号/顿号/换行都当分隔符",
       G.split_words("退群，拉黑、封号\n禁言") == ["退群", "拉黑", "封号", "禁言"],
@@ -223,6 +244,31 @@ check("写错的正则不会改内容", out == "一句完全正常的话")
 check("写错的正则仍会记下错误", "正则" in str(getattr(rt, "_guard_err_key", "")),
       str(getattr(rt, "_guard_err_key", "")))
 rt.config["guard_patterns"] = ""
+
+print("[5.5] 命中日志并发安全")
+gp = ST / G.LOG_FILE
+lines_before = len([x for x in gp.read_text(encoding="utf-8").split("\n") if x.strip()]) \
+    if gp.exists() else 0
+import threading as _th
+
+
+def _spam(n):
+    for i in range(n):
+        G.append_log(gp, {"ts": i, "chat": "group:9", "labels": ["测试"], "before": "", "after": ""},
+                     every=1000)
+
+
+ths = [_th.Thread(target=_spam, args=(40,)) for _ in range(4)]
+for t in ths:
+    t.start()
+for t in ths:
+    t.join()
+after_lines = len([x for x in gp.read_text(encoding="utf-8").split("\n") if x.strip()])
+check("并发追加不丢行", after_lines - lines_before == 160, str(after_lines - lines_before))
+G.append_log(gp, {"ts": 1, "labels": ["轮转"]}, max_bytes=10, keep=5, every=1)
+kept_lines = [x for x in gp.read_text(encoding="utf-8").split("\n") if x.strip()]
+check("轮转保留最近 5 行", len(kept_lines) == 5, str(len(kept_lines)))
+check("轮转后文件是完整 JSON", all(json.loads(x) for x in kept_lines))
 
 print("[6] 面板视图")
 v = rt.guard_view()

@@ -1617,25 +1617,10 @@ class BotRuntime(RuntimeFeatures):
                                builtin=bool(self.config.get("guard_builtin", True))).get("text")
         safe_v = dict(verdict)
         safe_v["text"] = str(safe or "")
-        gp = self.state_dir / "guard_log.jsonl"
-        try:
-            with gp.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(guard_mod.log_row(chat_id, safe_v, str(safe or "")),
-                                   ensure_ascii=False) + "\n")
-        except OSError as e:
-            logger.debug("内容闸日志写入失败: %s", e)
-            return
-        n = int(getattr(self, "_guard_log_n", 0)) + 1
-        self._guard_log_n = n
-        if n % 200:                                # 别每条都 stat；也别无限长
-            return
-        try:
-            if gp.stat().st_size > 2 * 1024 * 1024:
-                tail = [ln for ln in gp.read_text(encoding="utf-8", errors="replace")
-                        .split("\n") if ln.strip()][-1000:]
-                gp.write_text("\n".join(tail) + "\n", encoding="utf-8")
-        except OSError as e:
-            logger.debug("内容闸日志轮转失败: %s", e)
+        # 计数 + 轮转在 guard 模块自己的锁里：这里是 `to_thread` 并发调用的，
+        # 无锁的「读全文 → 覆盖」会把别的线程刚写进去的行一起抹掉
+        guard_mod.append_log(self.state_dir / guard_mod.LOG_FILE,
+                             guard_mod.log_row(chat_id, safe_v, str(safe or "")))
 
     # ---------- 连发合并 ----------
     def coalesce_cfg(self) -> dict:
@@ -1656,8 +1641,13 @@ class BotRuntime(RuntimeFeatures):
             await self._flush_coalesce(chat_id)
             return False
         st = self._coal.get(chat_id)
+        if st is not None and st.get("user_id") != ctx.user_id:
+            # 群里两个人同时说话：不能把 A 的问题当 B 的问 —— ctx 会被后者覆盖，
+            # 引用/@ 也会指到 B。先把上一个人的发掉，再开新窗口。
+            await self._flush_coalesce(chat_id)
+            st = None
         if st is None:
-            st = {"texts": [], "ctx": ctx, "task": None}
+            st = {"texts": [], "ctx": ctx, "task": None, "user_id": ctx.user_id}
             self._coal[chat_id] = st
             st["task"] = asyncio.ensure_future(self._coal_flush_later(chat_id, cfg["window"]))
         st["texts"].append(ctx.text)
@@ -1775,8 +1765,10 @@ class BotRuntime(RuntimeFeatures):
         reply_to = item.get("reply_to") or None
         sent_imgs: list[str] = []
         try:
-            for fp in item.get("images") or []:
-                res = await self.send_image_file(chat, str(fp), reply_to=reply_to)
+            for ent in item.get("images") or []:
+                fp = ent.get("path") if isinstance(ent, dict) else str(ent)
+                cap = (ent.get("caption") if isinstance(ent, dict) else "") or None
+                res = await self.send_image_file(chat, str(fp), cap, reply_to=reply_to)
                 if not getattr(res, "success", False):
                     raise RuntimeError("图片没发出去")
                 sent_imgs.append(str(fp))
@@ -1784,10 +1776,15 @@ class BotRuntime(RuntimeFeatures):
                 res = await self.send(chat, item["text"], reply_to=reply_to, sentence_split=True)
                 if not getattr(res, "success", False):
                     raise RuntimeError("发送失败（限流或适配器出错）")
-        except Exception:
+        except BaseException:
+            # `BaseException`：`asyncio.CancelledError` 不是 `Exception`（py3.8+），
+            # 而取消是真实路径 —— server 用 `wait_for` 包住这里，关服务也会取消。
+            # 只 catch Exception 的话，草稿已经 pop 掉、又没放回，等于静默丢失。
             # 只放回**没发出去**的部分：图已经进群了，重试再发一遍就是刷屏
             rest = dict(item)
-            rest["images"] = [p for p in (item.get("images") or []) if p not in sent_imgs]
+            rest["images"] = [e for e in (item.get("images") or [])
+                              if str(e.get("path") if isinstance(e, dict) else e)
+                              not in sent_imgs]
             back = drafts_mod.restore(self.state_dir, rest) or {}
             if back.get("dropped"):
                 # 放回时队列满了，挤掉了别的待审草稿 —— 必须说出来，
@@ -1902,20 +1899,21 @@ class BotRuntime(RuntimeFeatures):
         msgs = self._build_messages(ctx, text, hist=hist_used, kb=kb, summary=ctx_sum)
         self.stats["chats"] += 1
         reply = ""
-        held_imgs: list[str] = []          # 审核模式下随回复一起等的图
+        held_imgs: list[dict] = []         # 审核模式下随回复一起等的图（含说明）
         if self._agent_allowed(ctx):
             try:
                 res = await asyncio.to_thread(self._agent_call, msgs, ctx)
                 for img in (res.get("images") or [])[:3]:
                     fp = str(img.get("path") or "")
+                    cap = str(img.get("caption") or "") or None
                     if review:
-                        # 审核模式：图也扣住。只审嘴、不审图的话，她照样能
-                        # 先把一张不该发的图甩进群。
+                        # 审核模式：图也扣住（**说明一起存** —— 只存路径的话，
+                        # 同一条回复开不开审核发出来的内容就不一样了）。
+                        # 只审嘴、不审图的话，她照样能先把一张不该发的图甩进群。
                         if fp:
-                            held_imgs.append(fp)
+                            held_imgs.append({"path": fp, "caption": cap or ""})
                         continue
-                    await self.send_image_file(chat_id, fp,
-                                               img.get("caption") or None)
+                    await self.send_image_file(chat_id, fp, cap)
                 reply = str(res.get("text") or "").strip()
                 self.stats["agent_runs"] += 1
                 self.stats["agent_tool_calls"] += len(res.get("tool_calls") or [])
@@ -1979,18 +1977,21 @@ class BotRuntime(RuntimeFeatures):
             logger.info("表情替换失败（按原样发）：%s", e)
         for fp in (mark_files or [])[:3]:
             if review:
-                held_imgs.append(str(fp))
+                held_imgs.append({"path": str(fp), "caption": ""})
             else:
                 await self.send_image_file(chat_id, str(fp))
         if review:
-            out = self._queue_draft(ctx, reply, held_imgs)
+            # 读改写整份 drafts.json（最多 100 条 × 4000 字），别在事件循环里做
+            out = await asyncio.to_thread(self._queue_draft, ctx, reply, held_imgs)
             if out.get("ok"):
                 self.note(chat_id, ctx.text, "draft", f"等确认（{reply[:20]}…）")
                 return
             # 草稿存不进去：图不能就这么吞了（审核是加分项，不是单点故障）
-            for fp in held_imgs:
+            for ent in held_imgs:
+                fp = ent.get("path") if isinstance(ent, dict) else str(ent)
+                cap = (ent.get("caption") if isinstance(ent, dict) else "") or None
                 try:
-                    await self.send_image_file(chat_id, str(fp))
+                    await self.send_image_file(chat_id, str(fp), cap)
                 except Exception as e:                             # noqa: BLE001
                     logger.info("草稿失败后补发图片也失败：%s", e)
             # 存不进草稿就往下走正常发送（见 _queue_draft 的注释）

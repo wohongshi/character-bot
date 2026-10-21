@@ -23,6 +23,7 @@ import glob
 import gzip
 from collections import OrderedDict
 import io
+import math
 import hashlib
 import hmac
 import html as _html
@@ -6447,6 +6448,12 @@ class Handler(BaseHTTPRequestHandler):
                 weak = float((q.get("weak") or [""])[0] or (base + 0.02))
             except (TypeError, ValueError, OverflowError):
                 weak = base + 0.02
+            # `float("nan")` 能穿过上面的异常保护，而 `min(max(nan, 0), 1)`
+            # 还是 nan：`round(nan, 2)` 会被 json 序列化成裸的 NaN token（非法
+            # JSON，面板 r.json() 直接抛错），并且 `best < nan` 恒为 False ——
+            # 清单永远是空的。挡在这里最省事。
+            if not math.isfinite(weak):
+                weak = base + 0.02
             weak = min(max(weak, 0.0), 1.0)
             out = KG.scan(rows, days=days, limit=_int_param(q, "limit", 30, lo=1, hi=100),
                           ignored=st["ignored"], added=st["added"], weak=weak, cid=cid)
@@ -7936,7 +7943,12 @@ class Handler(BaseHTTPRequestHandler):
                             _send_draft_bounded(rt, it["id"]), BOT.loop)
                         fut.result(timeout=90)
                         sent += 1
-                    except Exception as e:                     # noqa: BLE001
+                    except BaseException as e:                  # noqa: BLE001
+                        # `wait_for` 到点会 cancel 内层任务，而 `fut.result()`
+                        # 把这个取消状态原样复制过来 —— 抛的是
+                        # `concurrent.futures.CancelledError`（BaseException）。
+                        # 只接 Exception 的话整轮就断在这里，后面的草稿不再尝试，
+                        # `do_POST` 也写不出任何 JSON（面板只看到空响应）。
                         failed.append(f"{it['id']}: {type(e).__name__}: {e}")
                 self._json({"ok": True, "sent": sent, "failed": failed,
                             "left": DF.count(STATE_DIR, chat=chat)})

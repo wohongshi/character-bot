@@ -307,6 +307,9 @@ check("服务端两个方向都有", SRV.count('u.path == "/api/kb/gaps"') == 2,
 check("敏感 GET 白名单里有", '"/api/kb/gaps",' in SRV)
 check("补录会写来源名（能在「语料来源」里整组删）", '"source": "缺口补录"' in SRV)
 check("补录像旧接口一样校验角色存在", '没有角色 {cid!r}' in SRV)
+# `float("nan")` 会穿透 min/max：序列化成非法 JSON，`best < nan` 恒 False
+check("weak 参数挡掉 NaN", "math.isfinite(weak)" in SRV)
+check("server 真的 import 了 math", "\nimport math\n" in SRV)
 
 print(f"\nPASS {PASS} / {PASS + FAIL}")
 sys.exit(0 if FAIL == 0 else 1)

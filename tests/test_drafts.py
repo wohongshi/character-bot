@@ -67,6 +67,29 @@ check("发失败放回去", D.get(S, items[0]["id"]) is not None)
 D.restore(S, it)
 check("放回两次不会变两条", D.count(S) == 2, str(D.count(S)))
 
+print("[2.5] 图片：坏结构不能带崩，说明要留住")
+img_dir = TMP / "imgs"
+img_dir.mkdir()
+a1 = D.add(img_dir, chat="g", text="", images="/root/a.webp")
+check("单个字符串当一张图（不是逐字符拆开）",
+      [e["path"] for e in a1["item"]["images"]] == ["/root/a.webp"],
+      str(a1["item"]["images"]))
+a2 = D.add(img_dir, chat="g", text="", images=[{"path": "/root/b.webp", "caption": "看图"}])
+check("带说明的图连说明一起存", a2["item"]["images"] == [{"path": "/root/b.webp",
+                                                       "caption": "看图"}],
+      str(a2["item"]["images"]))
+check("奇怪类型当没图（不抛）", D.add(img_dir, chat="g", text="有字", images=5)["item"]["images"] == [])
+bad = img_dir / D.FILE
+bad.write_text(json.dumps({"items": [
+    {"id": "x1", "chat": "g", "text": "t", "images": "/root/x.webp"},
+    {"id": "x2", "chat": "g", "text": "t2", "images": 5},
+    {"id": "x3", "chat": "g", "text": "t3", "images": [1, 2]}]}), encoding="utf-8")
+loaded = D.list_items(img_dir)
+check("坏 images 不影响整份队列读出来", len(loaded) == 3, str(len(loaded)))
+check("字符串 images 被规范化成 [{path}]",
+      loaded[2]["images"] == [{"path": "/root/x.webp", "caption": ""}],
+      str(loaded[2]["images"]))
+
 print("[3] 上限与坏数据")
 small = TMP / "small"
 small.mkdir()
@@ -243,6 +266,44 @@ D.drop(ST, q3["id"])
 check("丢弃后队列空", D.count(ST) == 0)
 check("丢弃不会发出去", len(sent) == 2, str(sent))
 
+# 图 + 说明：发出去的时候说明要跟着（改了审核就掉说明，等于内容不一致）
+D.add(ST, chat="private:9", character=rt.active_character, text="看图",
+      images=[{"path": "/tmp/x.png", "caption": "这是一张图"}])
+q_img = D.list_items(ST)[0]
+calls = []
+real_sif = rt.send_image_file
+
+
+async def _spy_sif(chat, path, caption=None, **kw):
+    calls.append((path, caption))
+    return type("R", (), {"success": True})()
+
+
+rt.send_image_file = _spy_sif
+asyncio.run(rt.send_draft(q_img["id"]))
+rt.send_image_file = real_sif
+check("发草稿时图带着说明", calls == [("/tmp/x.png", "这是一张图")], str(calls))
+check("草稿发完就清掉", D.count(ST) == 0)
+
+print("[6.5] 发送被取消：草稿要放回去")
+D.add(ST, chat="private:9", character=rt.active_character, text="要发的话")
+
+
+async def _cancel_me(*a, **k):
+    raise asyncio.CancelledError()
+
+
+real_send = rt.send
+rt.send = _cancel_me
+q_c = D.list_items(ST)[0]
+try:
+    asyncio.run(rt.send_draft(q_c["id"]))
+except asyncio.CancelledError:
+    pass
+rt.send = real_send
+check("取消后草稿还在（不是静默消失）", D.get(ST, q_c["id"]) is not None, str(D.count(ST)))
+D.drop(ST, q_c["id"])
+
 print("[7] 会话级覆盖")
 CP.set_chat(ST, "private:9", review=False)
 before = len(sent)
@@ -278,6 +339,10 @@ check("全部发送按时间正序", "batch.sort(key=DF._order)" in SRV)
 check("超时在 loop 内部取消（wait_for）", "_send_draft_bounded" in SRV
       and "asyncio.wait_for(rt.send_draft(did)" in SRV)
 check("不再边发边重读队列", "while True:" not in SRV.split("send_all")[1][:1200])
+# wait_for 超时会让 fut.result() 抛 CancelledError（BaseException）——
+# 只接 Exception 的话整轮中断、响应也写不出去
+check("全部发送接得住取消（BaseException）",
+      "except BaseException as e:" in SRV.split("send_all")[1][:1600])
 check("默认关（不打扰现有行为）", '"review_on": False' in CFG)
 check("「删」会连审核三态一起清", 'review: ""' in HTML)
 check("确认框用真实总数（列表只取 60 条）", "drTotal" in HTML and "${drTotal} 条" in HTML)

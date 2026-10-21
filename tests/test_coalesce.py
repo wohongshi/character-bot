@@ -57,6 +57,12 @@ check("相邻重复只留一句（复读机）", C.merge_texts(["哈哈", "哈�
 check("不挨着的重复保留", C.merge_texts(["a", "b", "a"]) == "a\nb\na")
 check("空串被丢掉", C.merge_texts(["", " 在吗 ", ""]) == "在吗")
 check("整体有长度上限", len(C.merge_texts(["啊" * 200] * 10)) <= C.MAX_MERGED)
+# 超长时丢**旧的**：最新那句通常才是问题本身（旧的截断会把「明天几点集合」切掉）
+# 每段都要**不一样**：相邻重复会被去重，六段一样的「啊*200」只剩一段
+long_tail = C.merge_texts(["在吗", "那个"] + [f"{i}" + "啊" * 200 for i in range(6)]
+                          + ["明天几点集合"])
+check("超长时保住最新的问题", long_tail.endswith("明天几点集合"), long_tail[-40:])
+check("超长时开场白先被丢", "在吗" not in long_tail, long_tail[:40])
 
 print("[4] 运行时：三条只回一次")
 from bot.characters import CharacterStore              # noqa: E402
@@ -117,12 +123,14 @@ class OB:
 rt.ob = OB()
 
 
-def ev(text, chat="private:9"):
-    uid = chat.split(":")[1]
+def ev(text, chat="private:9", uid=None, mentioned=False):
+    uid = uid or chat.split(":")[1]
     return {"post_type": "message",
             "message_type": "group" if chat.startswith("group:") else "private",
             "self_id": "2", "user_id": uid, "message_id": 3,
-            "message": [{"type": "text", "data": {"text": text}}],
+            "group_id": chat.split(":")[1] if chat.startswith("group:") else "",
+            "message": ([{"type": "at", "data": {"qq": "2"}}] if mentioned else [])
+                       + [{"type": "text", "data": {"text": text}}],
             "sender": {"user_id": uid, "nickname": "t", "role": "member"}}
 
 
@@ -187,6 +195,28 @@ async def main3():
 asyncio.run(main3())
 check("攒着的那句被先发掉了", ms.calls == 1 and len(sent) == 1, f"{ms.calls} {sent}")
 check("发出去的是攒着的那句", "先攒一句" in (ms.last_user or ""), ms.last_user[-80:])
+
+print("[6.5] 群里换人说话：先把上一个人的发掉")
+ms.calls = 0
+sent.clear()
+rt.config["coalesce_window"] = 10
+rt.config["coalesce_max"] = 9
+
+
+async def main35():
+    rt.loop = asyncio.get_running_loop()
+    rt.loop_thread = threading.current_thread()
+    await rt.handle_event(ev("第一个人问的", chat="group:55", uid="101", mentioned=True))
+    await asyncio.sleep(0.02)
+    await rt.handle_event(ev("第二个人插话", chat="group:55", uid="202", mentioned=True))
+    await asyncio.sleep(0.05)
+
+
+ev_group = ev
+asyncio.run(main35())
+check("换人立刻把上一个人的发掉", ms.calls == 1 and len(sent) == 1, f"{ms.calls} {sent}")
+check("发出去的是第一个人的问题", "第一个人问的" in (ms.last_user or ""), ms.last_user[-60:])
+check("第二个人还在自己的窗口里", "group:55" in rt._coal, str(list(rt._coal)))
 
 print("[7] 关掉服务不留尾巴")
 rt.config["coalesce_window"] = 10

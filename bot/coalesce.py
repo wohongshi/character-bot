@@ -68,7 +68,11 @@ def should_merge(cfg: dict, *, text: str, has_images: bool = False,
 
 
 def merge_texts(texts) -> str:
-    """合成一段。相邻的完全重复只留一句 —— 群里刷「哈哈哈哈」时不至于占满上下文。"""
+    """合成一段。相邻的完全重复只留一句 —— 群里刷「哈哈哈哈」时不至于占满上下文。
+
+    超长时**从旧的开始丢**：最新那句通常才是真正的问题（前面的「在吗」「那个」
+    只是铺垫）。从尾部截断的话，留下的全是开场白，问题本身被切掉了。
+    """
     out: list[str] = []
     for t in texts or ():
         body = str(t or "").strip()
@@ -77,4 +81,13 @@ def merge_texts(texts) -> str:
         if out and out[-1] == body:
             continue
         out.append(body)
-    return "\n".join(out)[:MAX_MERGED]
+    kept: list[str] = []
+    total = 0
+    for body in reversed(out):
+        add = len(body) + (1 if kept else 0)
+        if kept and total + add > MAX_MERGED:
+            break
+        kept.append(body)
+        total += add
+    kept.reverse()
+    return "\n".join(kept)[:MAX_MERGED]
