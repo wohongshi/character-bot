@@ -140,7 +140,8 @@ _m = _re.search(r"\.ovrow\{display:grid;grid-template-columns:([^;]+);", HTML)
 # 只取列定义这一段（后面的 gap/padding 里的 px 不算列宽）
 _cols = [int(x) for x in _re.findall(r"(\d+)px", _m.group(1))] if _m else []
 _bp = _re.search(r"@media \(max-width:(\d+)px\)\{\s*/\* 手机上放不下", HTML)
-_min = (sum(_cols) + 10 * max(0, len(_cols) - 1) + 64 + 228) if _cols else 10 ** 9
+# 行 padding 12 + 卡片 36/边框 2 + 内容区 42 + 侧栏 228 + 滚动条 16 + 宽密度余量 12
+_min = (sum(_cols) + 10 * max(0, len(_cols) - 1) + 12 + 38 + 42 + 228 + 16 + 12) if _cols else 10 ** 9
 check("总览断点 ≥ 六列最小宽度 + 侧栏", bool(_bp) and int(_bp.group(1)) >= _min,
       f"breakpoint={_bp.group(1) if _bp else None} min={_min}")
 
