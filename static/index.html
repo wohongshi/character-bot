@@ -926,7 +926,7 @@ body[data-density="wide"] .card{padding:20px 24px}
 .ovrow{display:grid;grid-template-columns:minmax(140px,1fr) 74px 72px 64px 100px 84px;
   gap:6px 10px;align-items:center;padding:6px 10px 6px 2px;border-bottom:1px solid var(--line)}
 /* 表头：只给列名（单位在这里说一次，行里不再重复）*/
-.ovrow.ovhead{border-bottom:1px solid var(--line);padding:2px 0 4px}
+.ovrow.ovhead{border-bottom:1px solid var(--line);padding:2px 10px 4px 2px}
 .ovrow.ovhead span{font-size:max(11px, calc(11px * var(--fx)));color:var(--dim);
   text-align:right;font-family:var(--font-body)}
 .ovrow.ovhead span:first-child{text-align:left}
@@ -942,9 +942,14 @@ body[data-density="wide"] .card{padding:20px 24px}
 .ovnum i{display:none}   /* 桌面给表头，行里不再重复单位 */
 .ulb .tag{font-weight:400;margin-left:4px}
 .ovnum.zero{color:var(--ink-soft)}
+/* 「绑了会话但没有知识库」那一格要红：`.bad` 只定义在插件 iframe 的基线样式里，
+   本页没有（之前等于没生效） */
+.ovnum.bad{color:var(--red)}
 .tag.cold{opacity:.6}
 /* 手机上一列放不下：退回自动折行，数字仍右对齐 */
-@media (max-width:640px){
+/* 桌面那套 6 列的最小宽度约 596px + 卡片/侧栏内边距 ≈ 906px：
+   在 820px 以下就用两行布局，否则 761–906px 之间会挤爆 */
+@media (max-width:820px){
   /* 手机上放不下一行 6 列：名字一行，五个数字另起一行、各带小标签 */
   .ovrow{grid-template-columns:repeat(5, 1fr);row-gap:4px;padding:6px 6px 6px 2px}
   .ovrow.ovhead{display:none}

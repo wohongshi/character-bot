@@ -3932,8 +3932,10 @@ def _import_character_zip(raw: bytes, *, replace: bool = False) -> dict:
             continue
         try:
             old_src = dest.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        except OSError as e:
+            # 读不了就没法判断归属：放过去的话 `_install_plugins` 稍后必炸「已存在」，
+            # 而那时主题已经换过了 —— 宁可现在拒
+            raise ImportError_(f"插件 {fname} 已存在但读不了（{e}），先手动处理") from None
         m = IMPORT_CHARS.search(old_src)
         ids = ({x.strip().strip("\"'") for x in (m.group(1) or "").split(",") if x.strip()}
                if m else set())
